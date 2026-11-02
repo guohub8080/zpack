@@ -1,0 +1,21 @@
+# 构建产物
+bin/
+
+# IDE（WebStorm / VS Code）
+.idea/
+.vscode/
+*.iml
+*.swp
+
+# macOS
+.DS_Store
+build_cli/poc/transcode
+
+# 静态产线产物（源码树与安装前缀——数百 MB 不入库）
+build_cli/*/src/
+build_cli/*/prefix/
+internal/ffmpegcli/libs/
+office/libs/
+docs/bandizip-*.md
+docs/unicoverter-reverse.md
+docs/360zip-*.md

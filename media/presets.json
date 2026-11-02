@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "source_note": "全部数值来自各平台/厂商官方公开推荐规格（2026-11 整理）；社区共建：新增档位直接提 PR 改本文件",
+  "presets": {
+    "youtube": {
+      "name": "YouTube 高清上传",
+      "group": "social",
+      "container": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "video_bitrate": 8000000,
+      "audio_bitrate": 128000,
+      "note": "YouTube 官方推荐 1080p H.264 8Mbps（SDR 30fps 档）"
+    },
+    "bilibili": {
+      "name": "B站 1080P 投稿",
+      "group": "social",
+      "container": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "video_bitrate": 8000000,
+      "audio_bitrate": 128000,
+      "note": "B站投稿工具推荐 1080P H.264 ≤8Mbps AAC"
+    },
+    "douyin": {
+      "name": "抖音竖屏上传",
+      "group": "social",
+      "container": "mp4",
+      "width": 1080,
+      "height": 1920,
+      "video_bitrate": 8000000,
+      "audio_bitrate": 128000,
+      "note": "抖音推荐 1080x1920 竖屏 ≤8Mbps；横屏源按比例适配入竖框（v1 不裁切）"
+    },
+    "gmail": {
+      "name": "Gmail 附件可发",
+      "group": "messaging",
+      "container": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "video_bitrate": 0,
+      "audio_bitrate": 128000,
+      "max_size_bytes": 25000000,
+      "note": "Gmail 附件上限 25MB——源已达标则直拷贝"
+    },
+    "discord": {
+      "name": "Discord 可直接发送",
+      "group": "messaging",
+      "container": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "video_bitrate": 0,
+      "audio_bitrate": 128000,
+      "max_size_bytes": 25000000,
+      "note": "Discord 免费档上传 25MB（Nitro 为更大）"
+    },
+    "wechat": {
+      "name": "微信可发送",
+      "group": "messaging",
+      "container": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "video_bitrate": 0,
+      "audio_bitrate": 128000,
+      "max_size_bytes": 25000000,
+      "note": "微信视频消息保守 25MB 档（文件通道上限更高）"
+    },
+    "iphone": {
+      "name": "iPhone 相册优化",
+      "group": "apple",
+      "container": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "video_bitrate": 6000000,
+      "audio_bitrate": 128000,
+      "note": "HEVC/H.264 1080p 档（iPhone 拍摄常见规格）"
+    },
+    "appletv": {
+      "name": "Apple TV 高清",
+      "group": "apple",
+      "container": "mp4",
+      "width": 1920,
+      "height": 1080,
+      "video_bitrate": 8000000,
+      "audio_bitrate": 128000,
+      "note": "Apple TV 官方支持 H.264/HEVC 1080p"
+    }
+  }
+}
