@@ -1,14 +1,34 @@
 # Windows 完整版云端产线：MSYS2/UCRT64 + MinGW-w64 gcc 静态 FFmpeg → cgo 完整版 zpack.exe
 # 与本机产线同构（build_cli/windows/build.sh 一份脚本两处共用；配料=编码器全家，对齐 mac）；
-# prefix 与 msys2 工具链均缓存——编码器+FFmpeg 只在首跑/变版本时编译。
-# ⚠️ 本仓库纪律：Agent 绝不 push；本文件由用户 push 后自动生效（或手动 workflow_dispatch）。
+# prefix 与 msys2 工具链均缓存——编码器+FFmpeg 只在首跑/变版本/缓存 7 天未用被逐出时编译。
+# 触发节流（2026-11-09 用户关切云端配额）：路径过滤（仅构建相关变更才触发——改文档/夹具不占
+# 时）+ 并发取消（连推只跑最后一个 run）；tag 与手动 dispatch 恒可触发。
 name: build-windows
 
 on:
   push:
     branches: [main]
     tags: ['v*']
+    paths:
+      - 'build_cli/windows/**'
+      - 'cmd/**'
+      - 'cli/**'
+      - 'core/**'
+      - 'image/**'
+      - 'internal/**'
+      - 'media/**'
+      - 'office/**'
+      - 'pdf/**'
+      - 'ui/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/build-windows.yml'
   workflow_dispatch:
+
+# 连续 push 时取消进行中的旧 run——只保留最后一个（省配额）
+concurrency:
+  group: build-windows
+  cancel-in-progress: true
 
 jobs:
   build:
