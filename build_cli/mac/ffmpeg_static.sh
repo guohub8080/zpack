@@ -118,10 +118,10 @@ if [ ! -f "$PREFIX/lib/libvpx.a" ]; then
   echo "✓ libvpx → $PREFIX"
 fi
 
-# ── FFmpeg n8.1.2 全静态（库 + CLI 程序）──
+# ── FFmpeg n9.0 全静态（库 + CLI 程序；2026-11-09 用户定案 8.1.2→9.0，与 Windows 产线对齐）──
 cd "$SRC"
 if [ ! -d ffmpeg ]; then
-  git clone --depth 1 --branch n8.1.2 https://github.com/FFmpeg/FFmpeg.git
+  git clone --depth 1 --branch n9.0 https://github.com/FFmpeg/FFmpeg.git
 fi
 cd ffmpeg
 if [ ! -f "$PREFIX/lib/libavcodec.a" ] || [ ffmpeg -nt "$PREFIX/lib/libavcodec.a" ]; then

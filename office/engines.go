@@ -6,6 +6,7 @@ package office
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,7 +72,9 @@ func ConvertWithEngine(input, output, engine string) (*ExternalConvertResult, er
 		Output:       absPathLocal(output),
 		Engine:       engine,
 		SourceFormat: formatLabel(inputExt),
-		TargetFormat: "docx",
+		// 按输出扩展名推导（doc→docx/xls→xlsx/ppt→pptx 全族通用）——此前写死 "docx"，
+		// 全格式矩阵加入后 xls/xlsx 报错格式名（2026-11-08 Windows 实测修复）
+		TargetFormat: strings.TrimPrefix(strings.ToLower(filepath.Ext(output)), "."),
 		SizeBytes:    outputInfo.Size(),
 	}, nil
 }
@@ -86,10 +89,19 @@ func ConvertWithEngine(input, output, engine string) (*ExternalConvertResult, er
 
 // detectLibreOfficeCmd 探测 LibreOffice 启动命令（argv）
 func detectLibreOfficeCmd() []string {
-	// ① 环境变量显式覆盖（终极健壮——用户自指）
-	if override := os.Getenv("ZPACK_OFFICE_LIBREOFFICE_PATH"); override != "" {
-		if _, statErr := os.Stat(override); statErr == nil {
-			return []string{override}
+	// ① 环境变量显式覆盖（终极健壮——用户自指；容错：带引号剥掉、给目录自动拼 program\soffice.exe）
+	if override := strings.Trim(os.Getenv("ZPACK_OFFICE_LIBREOFFICE_PATH"), ` "`); override != "" {
+		if info, statErr := os.Stat(override); statErr == nil {
+			if info.IsDir() {
+				if _, binErr := os.Stat(filepath.Join(override, "program", "soffice.exe")); binErr == nil {
+					return []string{filepath.Join(override, "program", "soffice.exe")}
+				}
+				if _, binErr := os.Stat(filepath.Join(override, "soffice.exe")); binErr == nil {
+					return []string{filepath.Join(override, "soffice.exe")}
+				}
+			} else {
+				return []string{override}
+			}
 		}
 	}
 	// ② PATH
@@ -107,11 +119,23 @@ func detectLibreOfficeCmd() []string {
 			}
 		}
 	case "windows":
+		// 注册表优先（InstallPath 为安装器权威写入——任意自定义安装位都写；用户级在 HKCU、
+		// 32 位在 WOW6432Node），目录猜默认位仅作兜底
+		if installDir := libreOfficeInstallDir(); installDir != "" {
+			return []string{filepath.Join(installDir, "soffice.exe")}
+		}
 		for _, root := range []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("LOCALAPPDATA")} {
 			if root == "" {
 				continue
 			}
 			binary := filepath.Join(root, "LibreOffice", "program", "soffice.exe")
+			if _, statErr := os.Stat(binary); statErr == nil {
+				return []string{binary}
+			}
+		}
+		// 盘符扫描（绿色解压版无注册表——覆盖「解压到 D:\LibreOffice 不设 env」场景；26 个 Stat 开销微秒级）
+		for driveLetter := 'C'; driveLetter <= 'Z'; driveLetter++ {
+			binary := string(driveLetter) + `:\LibreOffice\program\soffice.exe`
 			if _, statErr := os.Stat(binary); statErr == nil {
 				return []string{binary}
 			}
@@ -208,7 +232,16 @@ func convertViaLibreOffice(input, output string) error {
 	}
 	args := []string{"--headless", "--norestore"}
 	if mkErr == nil {
-		args = append(args, "-env:UserInstallation=file://"+profileDir)
+		// file URL 必须合法（Windows 上 profileDir 是 C:\... 反斜杠形态，手拼 file:// 会产
+		// 畸形 URI → LibreOffice profile 初始化失败、甚至弹「bootstrap.ini 已损坏」对话框
+		// ——经 url.URL 构造：卷符路径补前导 / 成 file:///C:/... 形态，空格等自动转义
+		// （2026-11-08 Windows 实测修复）
+		slashProfile := filepath.ToSlash(profileDir)
+		if !strings.HasPrefix(slashProfile, "/") {
+			slashProfile = "/" + slashProfile // Windows 卷符：file:///C:/...
+		}
+		profileURI := (&url.URL{Scheme: "file", Path: slashProfile}).String()
+		args = append(args, "-env:UserInstallation="+profileURI)
 	}
 	args = append(args, "--convert-to", strings.TrimPrefix(strings.ToLower(filepath.Ext(output)), "."), "--outdir", outputDir, input)
 	argv := append(sofficeArgv, args...)

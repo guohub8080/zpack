@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/flate"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/andybalholm/brotli"
@@ -360,7 +362,9 @@ func TestZipWriteArchiveDeterministicAndRoundtrip(t *testing.T) {
 		if zipEntry.Flags&0x800 == 0 {
 			t.Errorf("条目 %q 应置 EFS 位", zipEntry.Name)
 		}
-		entryContent, contentOk := wantContents[filepath.FromSlash(zipEntry.Name)]
+		// 条目名恒 `/` 风格（zip 规范）——直接以原键查表，不做平台转换
+		// （此前 FromSlash 在 Windows 把条目名转成 `\` 风格致查表恒空，2026-11-08 修复）
+		entryContent, contentOk := wantContents[zipEntry.Name]
 		if !contentOk {
 			continue // pic.jpg
 		}
@@ -397,6 +401,12 @@ func TestTarWriteEntry(t *testing.T) {
 		t.Fatal(writeErr)
 	}
 	if linkErr := os.Symlink("a.txt", filepath.Join(sourceDir, "a-link.txt")); linkErr != nil {
+		// Windows 未开开发者模式/非管理员时无符号链接特权（ERROR_PRIVILEGE_NOT_HELD=1314）——
+		// 平台限制非产品缺陷，跳过本用例（2026-11-08 Windows 实测；常量字面量跨平台不可引用故数值比较）
+		var errno syscall.Errno
+		if errors.As(linkErr, &errno) && errno == 1314 {
+			t.Skip("Windows 无符号链接特权（未开开发者模式），跳过符号链接写入用例")
+		}
 		t.Fatal(linkErr)
 	}
 	longName := strings.Repeat("长名字段", 40) + ".txt" // >100 字节，逼出 PAX 扩展记录
@@ -755,6 +765,55 @@ func TestTarCompressedVariantsExtract(t *testing.T) {
 				t.Errorf("%s 内容不一致: %q", testCase.name, extracted)
 			}
 		})
+	}
+}
+
+// TestTarSymlinkExtractForwardRef 符号链接解出端到端（写归档头无需特权，落地才分平台）：
+// 前向引用（链接条目在目标文件之前）覆盖 Windows 无特权降级拷贝的待办补拷路径。
+// 断言用内容等价（ReadFile 跟随链接）——mac/linux 落真符号链接、Windows 降级拷贝两态皆通过
+func TestTarSymlinkExtractForwardRef(t *testing.T) {
+	var archiveBytes bytes.Buffer
+	tarWriter := tar.NewWriter(&archiveBytes)
+	linkHeader := &tar.Header{
+		Name:     "root/fwd-link.txt",
+		Linkname: "payload.txt",
+		Typeflag: tar.TypeSymlink,
+		Mode:     0o777,
+	}
+	if writeErr := tarWriter.WriteHeader(linkHeader); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	fileHeader := &tar.Header{
+		Name:     "root/payload.txt",
+		Typeflag: tar.TypeReg,
+		Mode:     0o644,
+		Size:     int64(len("前向引用目标内容")),
+	}
+	if writeErr := tarWriter.WriteHeader(fileHeader); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if _, writeErr := tarWriter.Write([]byte("前向引用目标内容")); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if closeErr := tarWriter.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "fwd.tar")
+	if writeErr := os.WriteFile(archivePath, archiveBytes.Bytes(), 0o644); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	outDir := t.TempDir()
+	if _, extractErr := Extract(ExtractOptions{Archive: archivePath, OutputDir: outDir}, nil); extractErr != nil {
+		t.Fatal(extractErr)
+	}
+	// ReadFile 跟随符号链接——mac/linux 读到链接目标、Windows 读到降级拷贝，内容恒一致
+	resolved, readErr := os.ReadFile(filepath.Join(outDir, "root", "fwd-link.txt"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(resolved) != "前向引用目标内容" {
+		t.Errorf("前向引用符号链接解析内容不符: %q", resolved)
 	}
 }
 

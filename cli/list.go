@@ -4,6 +4,7 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -57,26 +58,19 @@ func resolveArchivePath(args []string) string {
 	return absolutePath
 }
 
+// absPath 标准库绝对化（2026-11-08 Windows 实测修复：此前手拼 cwd+"/"+p 且以「/ 开头」判
+// 绝对——mac 恰好等价，Windows 上把 C:/ 盘符路径当相对路径拼到 CWD 后。filepath.Abs 跨平台
+// 正确处理卷标/正反斜杠/.. 归一，不再手写）
 func absPath(p string) (string, error) {
-	if len(p) > 0 && p[0] == '/' {
-		return p, nil
+	if p == "" {
+		return os.Getwd()
 	}
 	return filepathAbs(p)
 }
 
-// filepathAbs 本地 abs（避免 import filepath 到处都是）
+// filepathAbs 标准库别名（保持既有调用面）
 func filepathAbs(p string) (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	if len(p) == 0 {
-		return cwd, nil
-	}
-	if p[0] == '/' {
-		return p, nil
-	}
-	return cwd + "/" + p, nil
+	return filepath.Abs(p)
 }
 
 func runList(args []string) {

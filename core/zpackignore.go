@@ -6,6 +6,7 @@ package core
 import (
 	"bufio"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -85,17 +86,19 @@ func (ignore *ZpackIgnore) Matches(relativePath string, isDir bool) bool {
 	return matched
 }
 
-// zpackIgnorePatternMatch 单条模式匹配：支持任意层级后缀匹配（非根限定模式匹配路径的任意尾部）
+// zpackIgnorePatternMatch 单条模式匹配：支持任意层级后缀匹配（非根限定模式匹配路径的任意尾部）。
+// 匹配用 path.Match（恒 `/` 分隔语义）——filepath.Match 在 Windows 上 `*` 不避开 `/`，
+// 单层模式会误吞多层路径（2026-11-08 Windows 实测修复；slashPath 已是 `/` 风格）
 func zpackIgnorePatternMatch(slashPath string, pattern ZpackIgnorePattern) bool {
 	if pattern.RootOnly {
-		matched, _ := filepath.Match(pattern.Pattern, slashPath)
+		matched, _ := path.Match(pattern.Pattern, slashPath)
 		return matched
 	}
 	// 非根限定：匹配路径本身或任何父目录开始的尾部
 	segments := strings.Split(slashPath, "/")
 	for startIdx := 0; startIdx < len(segments); startIdx++ {
 		subPath := strings.Join(segments[startIdx:], "/")
-		if matched, _ := filepath.Match(pattern.Pattern, subPath); matched {
+		if matched, _ := path.Match(pattern.Pattern, subPath); matched {
 			return true
 		}
 	}

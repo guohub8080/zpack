@@ -2,23 +2,40 @@
 
 // Windows 引擎层：MS Office 与 WPS 均走 COM 自动化（go-ole 纯 syscall——无 cgo）。
 // Word.Application / KWPS.Application 同构 API（WPS 兼容 Word COM 面）。
-// ⚠️ Windows 路径未实测（用户将上 Windows 机验证——见 AGENTS.md 注记）。
+// 2026-11-08 Windows 首实测修复：COM apartment 初始化是「每 OS 线程」的，goroutine 会被
+// Go 调度器迁到未初始化线程上（报「尚未调用 CoInitialize」）——全程 LockOSThread 钉线程。
 package office
 
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
 )
 
-// convertViaCOMWordLike COM 自动化（progID: Word.Application / KWPS.Application）
-func convertViaCOMWordLike(input, output, progID, suiteName string) error {
+// withCOMSession COM 会话骨架：钉住 OS 线程 + 初始化 COM + 用毕逆序释放（S_FALSE=本线程
+// 已初始化也算成功，配对 CoUninitialize 维持引用计数平衡）
+func withCOMSession(fn func() error) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if err := initCOM(); err != nil {
 		return err
 	}
+	defer ole.CoUninitialize()
+	return fn()
+}
+
+// convertViaCOMWordLike COM 自动化（progID: Word.Application / KWPS.Application）
+func convertViaCOMWordLike(input, output, progID, suiteName string) error {
+	return withCOMSession(func() error {
+		return convertWordLikeInner(input, output, progID, suiteName)
+	})
+}
+
+func convertWordLikeInner(input, output, progID, suiteName string) error {
 	appObj, createErr := oleutil.CreateObject(progID)
 	if createErr != nil {
 		return fmt.Errorf("未检测到 %s（COM 创建 %s 失败）——安装后重试", suiteName, progID)
@@ -94,9 +111,12 @@ func convertViaWPS(input, output string) error {
 
 // convertViaCOMExcel Excel 系 COM：Workbooks.Open(ReadOnly) + SaveAs(FileFormat=51 xlOpenXMLWorkbook)
 func convertViaCOMExcel(input, output, progID, suiteName string) error {
-	if err := initCOM(); err != nil {
-		return err
-	}
+	return withCOMSession(func() error {
+		return convertExcelInner(input, output, progID, suiteName)
+	})
+}
+
+func convertExcelInner(input, output, progID, suiteName string) error {
 	appObj, createErr := oleutil.CreateObject(progID)
 	if createErr != nil {
 		return fmt.Errorf("未检测到 %s（COM 创建 %s 失败）", suiteName, progID)
@@ -138,9 +158,12 @@ func convertViaCOMExcel(input, output, progID, suiteName string) error {
 // convertViaCOMPowerPoint 演示系 COM：Presentations.Open(ReadOnly, 无窗口) +
 // SaveAs(FileFormat=24 ppSaveAsOpenXMLPresentation)
 func convertViaCOMPowerPoint(input, output, progID, suiteName string) error {
-	if err := initCOM(); err != nil {
-		return err
-	}
+	return withCOMSession(func() error {
+		return convertPowerPointInner(input, output, progID, suiteName)
+	})
+}
+
+func convertPowerPointInner(input, output, progID, suiteName string) error {
 	appObj, createErr := oleutil.CreateObject(progID)
 	if createErr != nil {
 		return fmt.Errorf("未检测到 %s（COM 创建 %s 失败）", suiteName, progID)

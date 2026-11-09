@@ -6,6 +6,7 @@ package core
 
 import (
 	"archive/tar"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -46,13 +48,14 @@ type tarScannedEntry struct {
 }
 
 // openTarStream 从归档源开一条 tar 读流（compression 非 nil 时先包对应解压层——
-// gzip/xz/bzip2/zstd 壳同一入口）；流生命周期由调用方关闭（source.openStream 每次新开）
+// gzip/xz/bzip2/zstd 壳同一入口）；返回的 Closer 关闭解压层与底层流两者（此前只关解压层，
+// 底层 *os.File 泄漏——Windows 上文件被占导致删除失败，2026-11-08 实测修复）
 func openTarStream(source archiveSource, compression singleStreamDecoder) (*tar.Reader, io.Closer, error) {
 	stream, streamErr := source.openStream()
 	if streamErr != nil {
 		return nil, nil, streamErr
 	}
-	var compressionCloser io.Closer
+	var closers closeChain // 关闭顺序：解压层 → 底层流
 	var reader io.Reader = stream
 	if compression != nil {
 		decoded, decodeErr := compression(stream)
@@ -60,10 +63,24 @@ func openTarStream(source archiveSource, compression singleStreamDecoder) (*tar.
 			stream.Close()
 			return nil, nil, decodeErr
 		}
-		compressionCloser = decoded
+		closers = append(closers, decoded)
 		reader = decoded
 	}
-	return tar.NewReader(reader), compressionCloser, nil
+	closers = append(closers, stream)
+	return tar.NewReader(reader), closers, nil
+}
+
+// closeChain 依序关闭多个 Closer（全量尝试，首个错误返回——读侧关闭失败不掩盖其余清理）
+type closeChain []io.Closer
+
+func (chain closeChain) Close() error {
+	var firstErr error
+	for _, closer := range chain {
+		if closeErr := closer.Close(); closeErr != nil && firstErr == nil {
+			firstErr = closeErr
+		}
+	}
+	return firstErr
 }
 
 // tarEntryFromHeader 头 → 预扫条目：名字解码（非 UTF-8 按 GBK 尽力修复，与 zip 同源启发式）、
@@ -355,10 +372,14 @@ func tarExtractStream(source archiveSource, compression singleStreamDecoder, abs
 	if compressionCloser != nil {
 		defer compressionCloser.Close()
 	}
+	var pendingSymlinks []tarScannedEntry // Windows 无特权降级拷贝的前向引用待办
 
 	for {
 		header, nextErr := tarReader.Next()
 		if nextErr == io.EOF {
+			if flushErr := flushPendingSymlinkCopies(pendingSymlinks, absoluteRoot, forceOverwrite, progressState, skippedFiles, logf); flushErr != nil {
+				return flushErr
+			}
 			return nil
 		}
 		if nextErr != nil {
@@ -394,11 +415,31 @@ func tarExtractStream(source archiveSource, compression singleStreamDecoder, abs
 			}
 		case tarKindSymlink:
 			skippedLink, linkErr := tarCreateSymlink(targetPath, entry.linkName, forceOverwrite, skippedFiles, logf)
-			if linkErr != nil {
+			if linkErr == nil {
+				if !skippedLink {
+					progressState.doneFiles.Add(1)
+				}
+				continue
+			}
+			if !isSymlinkPrivilegeError(linkErr) {
 				return fmt.Errorf("写出符号链接 %s 失败: %s", entry.cleanName, linkErr.Error())
 			}
-			if !skippedLink {
-				progressState.doneFiles.Add(1)
+			// Windows 无符号链接特权（未开开发者模式）：降级为拷贝归档内目标成员——业界
+			// bsdtar 同款降级；绝对/逃逸目标预扫已拒，目标必在归档根内。目标可能前向
+			// 引用（尚未解出）——先试即拷，不成立入待办，流结束后统一补拷（2026-11-08 修复）
+			reportLogf(logf, "Windows 无符号链接特权，降级为内容拷贝: %s -> %s", entry.cleanName, entry.linkName)
+			resolvedName := path.Join(path.Dir(entry.cleanName), entry.linkName)
+			sourcePath := filepath.Join(absoluteRoot, filepath.FromSlash(resolvedName))
+			if _, statErr := os.Lstat(sourcePath); statErr == nil {
+				skippedCopy, copyErr := tarCopyExtractedFile(sourcePath, targetPath, forceOverwrite, skippedFiles, logf)
+				if copyErr != nil {
+					return fmt.Errorf("写出符号链接 %s 失败: %s", entry.cleanName, copyErr.Error())
+				}
+				if !skippedCopy {
+					progressState.doneFiles.Add(1)
+				}
+			} else {
+				pendingSymlinks = append(pendingSymlinks, entry)
 			}
 		case tarKindHardlink:
 			sourcePath := filepath.Join(absoluteRoot, filepath.FromSlash(entry.linkName))
@@ -411,6 +452,32 @@ func tarExtractStream(source archiveSource, compression singleStreamDecoder, abs
 			}
 		}
 	}
+}
+
+// flushPendingSymlinkCopies 符号链接特权降级的前向引用收尾：流读完后目标必然全部解出（若
+// 目标条目本身缺失，tarCopyExtractedFile 如实报「目标未解出」——与硬链接同语义）
+func flushPendingSymlinkCopies(entries []tarScannedEntry, absoluteRoot string, forceOverwrite bool, progressState *progressReporter, skippedFiles *atomic.Int64, logf Logf) error {
+	for _, entry := range entries {
+		resolvedName := path.Join(path.Dir(entry.cleanName), entry.linkName)
+		sourcePath := filepath.Join(absoluteRoot, filepath.FromSlash(resolvedName))
+		targetPath := filepath.Join(absoluteRoot, filepath.FromSlash(entry.cleanName))
+		skippedCopy, copyErr := tarCopyExtractedFile(sourcePath, targetPath, forceOverwrite, skippedFiles, logf)
+		if copyErr != nil {
+			return fmt.Errorf("写出符号链接 %s 失败: %s", entry.cleanName, copyErr.Error())
+		}
+		if !skippedCopy {
+			progressState.doneFiles.Add(1)
+		}
+	}
+	return nil
+}
+
+// isSymlinkPrivilegeError 判定符号链接创建失败是否因 Windows 无特权（ERROR_PRIVILEGE_NOT_
+// HELD=1314：未开开发者模式/非管理员）。常量字面量跨平台不可引用（syscall 仅 Windows 导出），
+// 故按数值比较——unix 上 os.Symlink 不返回此码，永不误判
+func isSymlinkPrivilegeError(err error) bool {
+	var errno syscall.Errno
+	return errors.As(err, &errno) && errno == 1314
 }
 
 // tarWriteOutFile 顺序写出普通文件：O_EXCL 原子探测跳过已存在 / force 截断重写（与 zip 同语义）

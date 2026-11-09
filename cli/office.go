@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -39,7 +40,12 @@ func officeConvert(args []string) {
 	tryEngine := ""
 	tryFlags := 0
 	var positional []string
-	for _, arg := range args {
+	skipNext := false // --libreoffice-path 的值不参与后续解析
+	for argIdx, arg := range args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
 		switch {
 		case arg == "--try-msoffice", arg == "--try-wps", arg == "--try-libreoffice":
 			tryFlags++
@@ -48,6 +54,14 @@ func officeConvert(args []string) {
 				"--try-wps":         office.ENGINE_WPS,
 				"--try-libreoffice": office.ENGINE_LIBREOFFICE,
 			}[arg]
+		case arg == "--libreoffice-path":
+			// 显式指路 LibreOffice（便携版/绿色版/非默认安装位）；进程内覆盖同名环境变量——
+			// 优先级：CLI 旗标 > ZPACK_OFFICE_LIBREOFFICE_PATH > 探测链（注册表/PATH/目录猜）
+			if argIdx+1 >= len(args) || strings.HasPrefix(args[argIdx+1], "-") {
+				stdout.ErrorPrint("--libreoffice-path 需要一个路径参数（LibreOffice 根目录或 soffice.exe 全路径均可）")
+			}
+			os.Setenv("ZPACK_OFFICE_LIBREOFFICE_PATH", args[argIdx+1])
+			skipNext = true
 		case !strings.HasPrefix(arg, "-"):
 			positional = append(positional, arg)
 		}
@@ -56,7 +70,7 @@ func officeConvert(args []string) {
 		stdout.ErrorPrint("--try-msoffice / --try-wps / --try-libreoffice 三旗标互斥（一次选一个引擎）")
 	}
 	if len(positional) != 2 {
-		stdout.ErrorPrint("用法: office convert <输入.doc|.wps> <输出.docx> [--try-msoffice|--try-wps|--try-libreoffice]\n--try-* = 探测本机已装套件，隐藏后台进程转换（保真度通常优于内置引擎）；三旗标互斥")
+		stdout.ErrorPrint("用法: office convert <输入> <输出> [--try-msoffice|--try-wps|--try-libreoffice] [--libreoffice-path <路径>]\n--try-* = 探测本机已装套件，隐藏后台进程转换（三旗标互斥）\n--libreoffice-path = 显式指路 LibreOffice（根目录或 soffice.exe 均可；便携版/自定义安装位场景）")
 	}
 	absoluteInput, _ := filepath.Abs(positional[0])
 	absoluteOutput, _ := filepath.Abs(positional[1])

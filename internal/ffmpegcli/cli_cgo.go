@@ -9,7 +9,6 @@ package ffmpegcli
 /*
 #include <stdlib.h>
 #include <stdio.h>
-#cgo LDFLAGS: -L${SRCDIR}/libs -lzpack_ffmpeg_cli -lz -lm -lpthread -liconv
 int zpack_ffmpeg_cli_main(int argc, char **argv);
 */
 import "C"

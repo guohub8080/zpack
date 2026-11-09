@@ -128,10 +128,12 @@ func collectCompressTasks(inputPaths []string, excludeItems []string, ignores []
 				return relErr
 			}
 			tasks = append(tasks, compressTask{
-				taskIndex:  len(tasks),
+				taskIndex: len(tasks),
 				sourcePath: currentPath,
-				entryName:  relativePath,
-				fileInfo:   entryInfo,
+				// 条目名恒 `/` 风格（zip/tar 规范坐标）——filepath.Rel 在 Windows 产出 `\` 风格，
+				// 收集即归一（2026-11-08 Windows 实测修复；写入端 ToSlash 保留作双保险）
+				entryName: filepath.ToSlash(relativePath),
+				fileInfo:  entryInfo,
 			})
 			return nil
 		})

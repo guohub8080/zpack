@@ -218,7 +218,9 @@ func splitArchiveIntoVolumes(archivePath string, volumeSize int64, logf Logf) (s
 		volumeIdx++
 	}
 
-	// 全卷写好 → 删原归档
+	// 全卷写好 → 关句柄再删原归档（Windows 不允许删除被占用文件；defer Close 要到 return
+	// 后才执行——此前「先删后关」mac 上无恙、Windows 必失败，2026-11-08 实测修复）
+	archiveFile.Close()
 	if removeErr := os.Remove(archivePath); removeErr != nil {
 		cleanupSplitVolumes(writtenVolumes)
 		return "", 0, removeErr

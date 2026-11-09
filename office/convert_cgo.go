@@ -9,7 +9,6 @@ package office
 #include <stdint.h>
 #include "office_oxide.h"
 #cgo CFLAGS: -I${SRCDIR}/libs
-#cgo LDFLAGS: -L${SRCDIR}/libs -loffice_oxide -lm -ldl -lpthread
 */
 import "C"
 

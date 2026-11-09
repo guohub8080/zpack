@@ -64,7 +64,7 @@
 | `image info <输入>` | `{"format":"jpeg","width":N,"height":N,"size_bytes":N,"color_model":"ycbcr","orientation":6,"display_width":N,"display_height":N}`（orientation/display 仅 EXIF≠1 时出现） | `{"error_info":"..."}` |
 | `image rotate-left\|rotate-right\|rotate-180\|mirror\|flip <输入> <输出>` | `{"is_success":true,"input":"...","output":"...","source_format":"png","target_format":"png","width":N,"height":N,"size_bytes":N,...}`（纯像素重排无损，ffmpeg 像素级交叉验证） | `{"error_info":"..."}` |
 | `json get <字段路径>` / `json ok` | stdin 读 JSON：get=值裸打印（stdout 纯文本；复合值紧凑 JSON；路径=点分段+数组下标）；ok=is_success → exit 0/1。**零依赖消费层——调用范式全面替代 python3 -c/jq**（2026-11-08 用户定案：单二进制闭环） | 非法 JSON/字段不存在/缺路径 → `{"error_info":"..."}` |
-| `office convert <输入> <输出> [--try-msoffice\|--try-wps\|--try-libreoffice]` | `{"is_success":true,"source_format":"xls(et)","target_format":"xlsx","engine":"...","size_bytes":N}`（**全格式矩阵**：doc/wps→docx、xls/et→xlsx、ppt/dps→pptx——WPS 现代文件与 MS 旧格式同构（.wps/.et/.dps 魔数识别后按对应 MS 格式解析，source_format 报 `core(alias)`）；**族匹配强制**（doc 族只出 docx——跨族拒绝，office_oxide 会尽力转出错误产物故前置校验）；内置=office_oxide（Rust C ABI 静态链，MIT/Apache-2.0，cgo 层纯构建报需完整版）；--try-\* 外部引擎层纯 Go：`--try-msoffice`=Win COM 按类型分派（Word.Application/Excel.Application FileFormat=51/PowerPoint.Application FileFormat=24，go-ole 纯 syscall）/mac Word AppleScript 按包 ID 寻址；`--try-wps`=Win COM（KWPS/KET/KWPP）；`--try-libreoffice`=三平台 soffice --headless 隔离 profile + **目标格式动态**（--convert-to 随输出扩展）；探测层四段式（env 覆盖→PATH→平台动态解析→兜底）；验证=soffice 回读交叉（inline string 产物无 sharedStrings——csv/pptx XML 回读才是互操作铁证）） | `{"error_info":"..."}` |
+| `office convert <输入> <输出> [--try-msoffice\|--try-wps\|--try-libreoffice]` | `{"is_success":true,"source_format":"xls(et)","target_format":"xlsx","engine":"...","size_bytes":N}`（**全格式矩阵**：doc/wps→docx、xls/et→xlsx、ppt/dps→pptx——WPS 现代文件与 MS 旧格式同构（.wps/.et/.dps 魔数识别后按对应 MS 格式解析，source_format 报 `core(alias)`）；**族匹配强制**（doc 族只出 docx——跨族拒绝，office_oxide 会尽力转出错误产物故前置校验）；内置=office_oxide（Rust C ABI 静态链，MIT/Apache-2.0，cgo 层纯构建报需完整版）；--try-\* 外部引擎层纯 Go：`--try-msoffice`=Win COM 按类型分派（Word.Application/Excel.Application FileFormat=51/PowerPoint.Application FileFormat=24，go-ole 纯 syscall）/mac Word AppleScript 按包 ID 寻址；`--try-wps`=Win COM（KWPS/KET/KWPP）；`--try-libreoffice`=三平台 soffice --headless 隔离 profile + **目标格式动态**（--convert-to 随输出扩展）；探测层四段式（env 覆盖→PATH→平台动态解析→兜底；**任意安装位寻址**（2026-11-09 定案）：Win 的 ms/wps 走 COM ProgID 注册表自解析（`CreateObject` 即寻址——装哪个盘都行）；Win 的 LibreOffice 优先查注册表 `HKLM/HKCU\SOFTWARE\LibreOffice\UNO\InstallPath`（安装器权威写入，自定义安装位如 D:\Apps 也覆盖；32 位在 WOW6432Node）——目录猜默认位仅兜底 + 盘符扫描（绿色解压版无注册表场景）；**显式指路双通道**：CLI 旗标 `--libreoffice-path <根目录|soffice.exe 全路径>`（进程内覆盖同名 env，值容错目录形态）> 环境变量 `ZPACK_OFFICE_LIBREOFFICE_PATH` > 探测链）；验证=soffice 回读交叉（inline string 产物无 sharedStrings——csv/pptx XML 回读才是互操作铁证）） | `{"error_info":"..."}` |
 | `pdf merge <1.pdf 2.pdf...> <输出>` | `{"is_success":true,"output":"<绝对>","inputs":[...],"input_count":N,"page_count":N,"size_bytes":N}` | `{"error_info":"..."}` |
 | `pdf extract <输入> --pages 1-3,5,8- [--output]` | `{"is_success":true,"input":"...","output":"...","pages_spec":"...","pages":[N...],"source_page_count":N,"size_bytes":N}`（页码 1 起闭区间；`8-`=到末页、`-5`=首页起；升序去重；**区间末端超出自动截至末页+stderr 提示**（宽尾，同视频剪辑语义）——起始页超出/单页不存在仍报错；缺省输出=同目录 `<名>-extract.pdf`） | 同上 |
 | `pdf resize <输入> --size a4\|a4l\|letter\|210x297mm\|595x842 [--pages] [--output]` | `{"is_success":true,"size_spec":"a4","width_pt":595,"height_pt":842,"pages":[N...],"page_count":N,"total_pages":N,"size_bytes":N}`（**页面尺寸统一**——图片型 PDF 各页图片大小不一 → 统一到纸型/自定义尺寸，内容按页缩放；横页 best-fit 保横（a4→A4L），尾缀 `L/P` 强制方向；**文档型拦截·选中页域**（2026-11-08 用户定案修订：只拦**选中页**中的文字页——混合型 PDF 可 `--pages` 圈住图片页避开文字页不连坐；报错**点名具体页码**「第 2、5 页含文字」+ 指路 `pdf info --all-pages` 与 `--force`；`--force` 放行+stderr 警告亦点名页码）；缺省全部页；缺省输出 `<名>-resized.pdf`） | `{"error_info":"..."}` |
@@ -72,7 +72,7 @@
 | `pdf rotate-left\|rotate-right\|rotate-180 <输入> [--pages 1-3] [--output]` | `{"is_success":true,"input":"...","output":"...","direction":"left","pages":[N...],"page_count":N,"total_pages":N,"size_bytes":N}`（**/Rotate 元数据零损**——同视频写矩阵；方向语义同 image/media 家族；**增量叠加**（已转页再转=累加）；`--pages` 缺省全部页；缺省输出=同目录 `<名>-rotated.pdf`；**mirror 不支持**——PDF 无镜像属性且文本会镜像不可读） | `{"error_info":"..."}` |
 | `pdf info <输入>` | `{"is_success":true,"page_count":N,"width_pt":N,"height_pt":N,"width_mm":N,"height_mm":N,"size_bytes":N,"rotation":90}`（尺寸已反映 /Rotate 观看态；rotation=首页角度，0 不出现） | 同上 |
 | `image merge <图...> [--reference] <输出>` | `{"is_success":true,"reference":"...","inputs":[...],"output":"...","direction":"vertical","width":N,"height":N,"format":"png","image_count":N,"size_bytes":N}` | `{"error_info":"..."}` |
-| `ffmpeg <原版任意参数...>` | **契约唯一例外**：透明代理（进程内直调——ffmpeg CLI 的 main 以 `-Dmain=zpack_ffmpeg_cli_main` 重编译链入，零释放零子进程）——stdout/stderr/exit code 均为 ffmpeg 原生语义（stdout 可为二进制媒体流，`pipe:1` 场景必需），不走 JSON 信封；纯构建报「需完整版」 | — |
+| `ffmpeg <原版任意参数...>` | **契约唯一例外**：透明代理（进程内直调——ffmpeg CLI 的 main 符号改名后静态链入，`zpack ffmpeg` 即普通 C 函数调用，零释放零子进程，原理见「ffmpeg CLI 进程内直调」节）——stdout/stderr/exit code 均为 ffmpeg 原生语义（stdout 可为二进制媒体流，`pipe:1` 场景必需），不走 JSON 信封；纯构建报「需完整版」 | — |
 | `audio convert <输入> <输出> [--bitrate] [--sample-rate] [--mono]` | `{"is_success":true,"mode":"audio-only-output","audio":{"action":"encode","codec":"...","bitrate":N},"size_bytes":N,"ratio":N,"bitrate":N,"sample_rate":N,"mono":true}` | `{"error_info":"..."}` |
 | `audio compress <输入> [--bitrate] [--mono]` | 同上 + `"original_bitrate":N`；缺省目标=原始码率 50%（下限 32k）；目标≥原始明确拒绝 | 同上 |
 | `skill --install [目录]` | `{"is_success":true,"skill":"zpack","installed":["<绝对路径>"],"size_bytes":N}`（无目录参数=探测 `~/.claude/skills`/`~/.agents/skills` 等全部命中处） | 同上 |
@@ -191,9 +191,15 @@ bin/zpack-dev <命令>                                   # media/HDR/HEIC/ffmpeg
 
 **流程**：`bash build_cli/mac/build.sh` → 缺产物自动触发 `ffmpeg_static.sh`（源码级全静态，首次 ~25 分钟，`prefix/` 幂等复用跳过）→ `go clean -cache` 后静态链接构建 → 断言 `otool -L` 零 brew 动态依赖。产物 `bin/zpack` ~48MB，动态依赖仅系统出厂库——**单文件裸机可跑**。`src/` 与 `prefix/` 不入 git（.gitignore），换机重跑产线即复现。
 
-**配料表**（版本钉死）：libjxl v0.11.1（**SKCMS 后端**）/ libaom v3.11 / x264（videolan git）/ x265（**Bitbucket `multicoreware/x265_git`**——code.videolan.org 镜像要认证）/ lame 3.100（sourceforge tarball）/ opus v1.5.2 / libvpx v1.15 / FFmpeg n8.1.2。ffmpeg configure 关键旗标：`--enable-gpl --enable-libx264 --enable-libx265 --enable-libmp3lame --enable-libopus --enable-libvpx --enable-libjxl --enable-libaom --enable-videotoolbox --disable-ffplay --disable-xlib --disable-libxcb`。GPL 库（x264/x265）入列=产物承担 GPL 义务；LGPL 退路=去掉二者（VideoToolbox 仍可 h264/hevc 硬编）。
+**配料表**（版本钉死）：libjxl v0.11.1（**SKCMS 后端**）/ libaom v3.11 / x264（videolan git）/ x265（**Bitbucket `multicoreware/x265_git`**——code.videolan.org 镜像要认证）/ lame 3.100（sourceforge tarball）/ opus v1.5.2 / libvpx v1.15 / FFmpeg **n9.0**（2026-11-09 用户定案 8.1.2→9.0 与 Windows 产线对齐；mac 侧脚本已改、**产线待复跑重验**）。ffmpeg configure 关键旗标：`--enable-gpl --enable-libx264 --enable-libx265 --enable-libmp3lame --enable-libopus --enable-libvpx --enable-libjxl --enable-libaom --enable-videotoolbox --disable-ffplay --disable-xlib --disable-libxcb`。GPL 库（x264/x265）入列=产物承担 GPL 义务；LGPL 退路=去掉二者（VideoToolbox 仍可 h264/hevc 硬编）。
 
-**ffmpeg CLI 进程内直调**：`fftools/ffmpeg.c` 以 `-Dmain=zpack_ffmpeg_cli_main` 重编译，连同 fftools 全对象打包 `libzpack_ffmpeg_cli.a`（~0.5MB，替代 35MB 嵌入二进制——go:embed 不入库、尾注释放方案已退役），产线拷入 `internal/ffmpegcli/libs/`（`#cgo LDFLAGS -L${SRCDIR}/libs`——**裸 `go test`/`go build` 不依赖产线环境变量**）。`zpack ffmpeg` = 进程内函数调用（零释放/零子进程/零缓存目录）；main 结尾 `exit()` 终结进程，退出码/stdio 原生语义（契约唯一例外）。
+**ffmpeg CLI 进程内直调（零释放定案原理，2026-11-09 用户定案记录）**：
+
+- **旧方案为何退役（用户明确厌恶）**：把完整 ffmpeg.exe 二进制（35MB）嵌入 zpack，`zpack ffmpeg` 运行时先**释放成临时文件**再起子进程执行——四宗罪：污染磁盘（临时目录留垃圾、清理失败残留）、**杀毒软件高概率误报**（运行时释放可执行文件是病毒典型行为）、并发冲突（多实例抢同一释放路径要加锁）、慢（每写 35MB + 起进程开销）。go:embed 嵌入/尾注附二进制两版均已退役。
+- **现方案原理**：编译期把 ffmpeg CLI 当普通库链入——`fftools/ffmpeg.c` 重编译后**符号改名**（mac：`-Dmain=zpack_ffmpeg_cli_main` 编译宏；Windows：`objcopy --redefine-sym` 目标文件层改名——`-Dmain` 被 ffmpeg 的 `_WIN32` 分支 `#undef main` 取消，见 Windows 陷阱 #15/#16），连同 fftools 全对象打包 `libzpack_ffmpeg_cli.a`（~0.5MB），与 libav 全家静态链进 zpack.exe 本体。**ffmpeg 的 main 就是我们进程里的一个普通 C 函数**。
+- **运行时形态**：`zpack ffmpeg <参数>` = Go 侧构造 argc/argv → 调用 `C.zpack_ffmpeg_cli_main(argc, argv)`（`internal/ffmpegcli/cli_cgo.go`）——**零文件释放、零子进程、零缓存目录**；main 结尾 `exit()` 终结进程，退出码/stdio 全 ffmpeg 原生语义（契约唯一例外）。Windows 侧 argv 须堵 `prepare_app_arguments` 的 `GetCommandLineW()` 重取（陷阱 #17），否则 ffmpeg 拿到宿主命令行。
+- **运行时零释放已实测验证**（2026-11-09 Windows）：x264/x265 转码 + media info + hash 全轮跑完，临时目录与 CWD 新增文件恰等于产出物本身；转码进行中系统无 ffmpeg 子进程。
+- 产线拷入 `internal/ffmpegcli/libs/`（`#cgo LDFLAGS -L${SRCDIR}/libs`——**裸 `go test`/`go build` 不依赖产线环境变量**）。
 
 **陷阱清单（全部实际踩过；改产线/调 ffmpeg 集成前先读）**：
 
@@ -214,7 +220,47 @@ bin/zpack-dev <命令>                                   # media/HDR/HEIC/ffmpeg
 
 **office_oxide 静态产线（2026-11-08）**：`build_cli/mac/office_static.sh`——v0.1.16 @ cargo（需 brew rust），crate-type 自带 staticlib → `office/libs/liboffice_oxide.a`（44MB，链接按需取件实际增重 ~12MB）+ 头文件；**克隆后必须清除 examples/cmd 与游离 *.go**（污染宿主模块 `go build ./...` 包图——踩过）。作者 Yury F.（pdf_oxide 1179⭐ 同作者）；许可 MIT/Apache-2.0。手搓 cgo 薄壳（SRCDIR libs 模式，同 ffmpegcli），不用其官方 Go 包（env-var 链接不满足裸构建自含）。构建产线入口 `build.sh` 已串接（office/libs 缺失自动触发）。
 
-**⚠️ Windows 侧未实测清单（2026-11-08 用户注记：Windows 机还没编译过，之后上机验证）**：①整条 Windows 产线（zig cc 交叉/静态 ffmpeg/编码器全家）未跑通；②office --try-msoffice 的 COM 路径（Word.Application，go-ole）与 --try-wps（KWPS.Application）按接口文档盲写待实测；③macOS --try-msoffice AppleScript 路径同样未实测（开发机无 Word）；实测过的：内置 office_oxide 转换、--try-libreoffice（本机 LibreOffice 全链路）、未装套件确定性报错。
+**✅ Windows 首实测（2026-11-08，Win11 26200 x64 + Git Bash + Go 1.27.3 windows/amd64）**：纯 Go 构建通过（`CGO_ENABLED=0 go build` → 16.99MB/-s -w）；`go vet` 三平台（windows/linux/darwin）全过；`go test ./...` 全绿。**修复 7 个 Windows 特有潜伏 bug（mac 上全部无症状）**：
+1. **tar 读侧句柄泄漏**（`core/tar.go` openTarStream）：底层流开了只关解压层不关本体——Windows 删被占文件失败暴露（TempDir 清理报「being used by another process」）；closeChain 链式关闭（解压层→底层流）。
+2. **分卷创建「先删后关」**（`core/core.go` splitArchiveIntoVolumes）：`defer Close` 要到 return 后才执行，删原档时句柄还开着 → Windows 拒删；显式先 Close 再 Remove。教训同上——**Windows 上「关闭先于删除」是硬约束，defer 顺序不算数**。
+3. **cli 手拼绝对路径**（`cli/list.go` absPath）：手写 `cwd+"/"+p` 且以「`/` 开头」判绝对——Windows 上 `C:/...` 盘符路径被当相对拼到 CWD 后；改用 `filepath.Abs`。教训：**Go 的 `path/filepath` 就是 os.path 等价物，手拼路径 = 平台 bug 温床**；条目名/glob 匹配这类「逻辑路径」场景用 `path`（恒 `/`），文件系统场景用 `filepath`。
+4. **office COM 未钉线程**（`office/engine_windows.go`）：COM apartment 初始化是每 OS 线程的，goroutine 被调度器迁线程后报「尚未调用 CoInitialize」；withCOMSession：LockOSThread + CoInitializeEx + 配对 CoUninitialize（三路 COM 全包）。
+5. **LibreOffice 隔离 profile 畸形 URI**（`office/engines.go`）：手拼 `file://C:\...`（反斜杠）→ profile 初始化失败（libpng Write Error / 弹「bootstrap.ini 已损坏」窗）；经 `url.URL{Scheme:"file", Path:...}` 构造（卷符路径补前导 `/` 成 `file:///C:/...`，自动转义）。
+6. **glob 语义跨平台漂移**（`internal/cmdutil/glob.go` + `core/zpackignore.go`）：`filepath.Match` 的 `*` 按平台分隔符避让——Windows 上避开 `\` 不避开 `/`，`dist/*` 误匹配 `dist/sub/output.js`（.zpackignore/--exclude 语义漂移）；统一 `path.Match` + 入参 ToSlash。
+7. **tar 符号链接无特权整体失败**：Windows 未开开发者模式时 `os.Symlink` 返回 ERROR_PRIVILEGE_NOT_HELD(1314) → 整包解压失败；降级为拷贝归档内目标成员（bsdtar 同款）+ 前向引用待办补拷 + stderr 日志；附带 `entryName` 收集时 ToSlash 归一（条目名恒 `/` 风格不变量，`core/common.go`）。
+
+**office 三引擎 Windows 全通**（此前②全部盲写）：`--try-msoffice`（Word.Application COM）✓ / `--try-wps`（KWPS.Application，**首启冷启动 >180s 属预期，二次秒级**）✓ / `--try-libreoffice`（隔离 profile 修复后）✓——.doc→.docx 三引擎产物均正常；**Excel 族也已实测**（Excel.Application + KET.Application，.xls→.xlsx ✓，产物经 soffice 回读 csv 数据完整；顺手修复第 8 个 bug：外部引擎层 `target_format` 写死 "docx"——改按输出扩展名推导）。**门禁**：verify.sh 在 Git Bash 可跑（需 stat shim：`stat -f%z`→`stat -c%s` 转发脚本置 PATH 前；shasum/unzip Git Bash 自带）；修复后剩余 6 具名失败均为**脚本坐标系噪音**（python3/perl 以 `/tmp` 坐标写文件 vs MSYS 给 exe 的参数转成 `C:/Users/.../Temp`——两套坐标系错位；crypto 全链路与 hash --check 在 Windows 坐标下手动验证全正常），非产品 bug。verify-image.sh 需系统 ffmpeg 造夹具（实测机未装 → 不可跑；image 家族 convert/rotate/compress/merge/info 用 Go 标准库造夹具手动冒烟全过）。**平台差异备忘**：Git Bash 的 MSYS 参数路径自动转换（`/tmp/x`→`C:/Users/.../Temp/x`，`MSYS_NO_PATHCONV=1` 关闭）；`gofmt -l` 在 autocrlf checkout 下全量误报 CRLF；win exe 依赖仍仅系统出厂 DLL。
+
+**仍未实测**：①office COM 的 PowerPoint.Application/KWPP.Application 路径（与 Word/Excel 同构、共用钉线程修复，逻辑未跑——实测机无 .ppt 夹具来源）；②macOS --try-msoffice AppleScript 路径（开发机无 Word）。
+
+### Windows 完整版产线全记录（build_cli/windows，2026-11-09 首跑贯通；同日配料对齐 mac 定案）
+
+**✅ 已全线跑通且与 mac 配料对齐**（编码器全家完整版 76MB：x264/x265/vpx8/9/aom/jxl/mp3lame/opus + ffmpeg 直调/media/audio/HDR/office 内置全开；import 表仅系统出厂 DLL；x264 与 x265 实转码、media info 解码全验证）。**架构定案：Windows 走本机原生 MinGW 产线（MSYS2/UCRT64 gcc），zig cc 交叉路线退役**。**零解压残留（2026-11-09 用户定案）**：与 mac 的常驻 `src/` 源码树不同——所有 clone/解压/构建树在 `mktemp` 临时目录、`trap` 退出即清（`KEEP_WORK=1` 保留调试现场）；仓库常驻仅三脚本 + prefix 缓存（.gitignore）；prefix 幂等（产物在则整块跳过，重跑零下载零解压）。
+
+**脚本三件**（`bash build_cli/windows/build.sh` 一条命令全流程，对齐 mac/build.sh 形态；子命令 `deps`/`build` 可单跑）：`build.sh`（总入口：工具链环境→deps→office→cgo 组装→DLL 白名单校验）/ `deps_static.sh`（编码器全家 + FFmpeg n9.0 + fftools 直调库 → prefix，`FORCE=1` 全量重建）/ `office_static.sh`（office_oxide v0.1.16，MSYS2 rust windows-gnu staticlib）。云端同构产线 `.github/workflows/build-windows.yml`（windows runner + msys2 action + prefix 缓存 + artifact——**用户 push 后生效**）。前置一次性：`pacman -S --needed git make perl diffutils mingw-w64-ucrt-x86_64-{toolchain,cmake,nasm,pkgconf,libiconv,rust}`。
+
+**配料表（对齐 mac，版本钉死）**：libjxl v0.11.1（SKCMS）/ libaom v3.11.0 / x264（videolan git master）/ x265（**Bitbucket master + x265Version.txt 版本文件法**，4.1 线）/ lame 3.100（--disable-frontend）/ opus v1.5.2 / libvpx v1.15.0（x86_64-win64-gcc target）/ FFmpeg **n9.0** 官方 tarball + office_oxide v0.1.16。ffmpeg configure 关键旗标：`--target-os=mingw32 --disable-shared --enable-static --disable-ffplay --disable-xlib --disable-libxcb --enable-libjxl --enable-libaom --enable-gpl --enable-libx264 --enable-libx265 --enable-libmp3lame --enable-libopus --enable-libvpx --enable-iconv --extra-libs=-liconv`。VideoToolbox 是 mac 专属硬编（Windows 对应 d3d11va/dxva2 硬解默认内置，无对应旗标）。GPL 义务同 mac。
+
+**陷阱清单（全部实际踩过；改产线/调 Windows 集成前先读，编号接 mac 清单）**：
+15. **`-Dmain=` 改名在 Windows 失效**：fftools/cmdutils.h 在 `_WIN32` 分支 `#undef main`（防 SDL 覆盖的历史代码）把宏取消——mac 产线手法失效。
+16. **C main 符号入链 = `fatal error: randinit twice` + 段错误**：曾试「原名 main 编入 + 转发包装」——MinGW CRT（crt2.o）捕获 main 在初始化路径调用，与 Go runtime 再入冲突。**治本：`objcopy --redefine-sym main=zpack_ffmpeg_cli_main` 目标文件层改名**（既绕 #undef 又消除 C main）。
+17. **ffmpeg 在 _WIN32 无视传入 argv**：cmdutils.c 的 `prepare_app_arguments` 用 `GetCommandLineW()` 重取——直调拿到的是**宿主 zpack.exe 的命令行**，`zpack ffmpeg` 的 "ffmpeg" 子命令名被当位置参数（输出名变 "ffmpeg"）。产线 sed 删除两处调用（补丁幂等放 prepare 主体，勿放解压分支——嵌套事故时会被跳过）。
+18. **GNU ld 静态库严格按序**：libavcodec 引用 libiconv 须在其后（mac ld64 两遍扫描无此问题）——`-liconv` 注入 libavcodec.pc 的 Libs 行；configure `--extra-libs` 只进 Libs.private 不生效。
+19. **pkg-config 把 `-Wl,*` 重排到行尾**：Bstatic 包裹手法对 .pc 无效——MSYS2 运行库（z/bz2/lzma/iconv/stdc++/pthread）一律替换为 **.a 绝对路径**（`gcc -print-file-name=libXXX.a` 给路径；勿用 `-print-libgcc-file-name`——那是 gcc 私有目录）。winpthread 特殊：静态 libstdc++.a 自身引用 pthread_*，解铃须在其后——各包 #cgo 段顺序无法保证，用 `go build -ldflags '-extldflags "-Wl,-Bstatic -lpthread -Wl,-Bdynamic"'` 钉到链接行末尾。
+20. **Rust staticlib 不自带链接指令**：liboffice_oxide.a 的 Rust std 要消费者补 `-lntdll -luserenv -lws2_32 -lbcrypt -lcrypt32`（Nt*/GetUserProfileDirectoryW 等）；`-ldl` 是 unix 概念，MinGW 无此库——office 链接旗标拆 `linkflags_windows.go`/`linkflags_other.go`。
+21. **GNU sed BRE 的 `\(..\|..\)` 组合在 MSYS2 失配**：`\([ "]\|$\)` 写法静默不替换——拆成朴素两条（`s| -lz | path |g` + `s| -lz$| path|`）。
+22. **MSYS2 产线环境变量全靠手工**：`bash -lc` 不继承 LocalAppData/APPDATA（go 找不到 GOCACHE/GOENV）——显式 export；GOPROXY 同理（proxy.golang.org 不可达）。
+23. **网络**：ffmpeg.org/GitHub 直连龟速（~60KB/s），走本机代理（`export https_proxy=http://127.0.0.1:7897`）16s 下完 12MB tarball；tuna/ustc 无 ffmpeg releases 镜像。
+24. **目录被残留进程 CWD 占住删不掉**（Windows 特有，`Device or resource busy`）：rm 前确认无 shell 驻留；脚本兜底「内容并入 + dotfiles 单独 mv」（glob `*` 不含 dotfiles，rmdir 会因残留物失败）。
+25. **pacman -Syu 会自杀**：升级 msys2-runtime/bash 时杀掉自身终端，后续安装静默丢失——先跑 -Syu（等它自杀）再单独跑 -S 包列表。
+26. **prefix 缓存与补丁的耦合**：pc 后处理只在 make install 分支跑——补丁/后处理更新时 prefix 命中会跳过，须手动重放或清 prefix；cgo 侧 `-L` 目录里库文件内容变化不触发 go 重链（mac #7 同款），build 脚本恒 `go clean -cache`。
+27. **x265 三连坑**（Windows 专属）：a) Git Bash 的 git 走 schannel 对 Bitbucket 握手失败——`git -c http.sslBackend=openssl`；b) Version.cmake 用 `git describe` 推版本 + MinGW 有 windres 才走 RC 版本块——depth-1 无 tag 推出空串 cmake 崩（`-D` 传值会被 git 推导覆盖）——**治本：clone 后 `rm -rf .git` + 手写 `x265Version.txt`**（Version.cmake 的 tarball 路径读显式版本）；c) 稳定 tag 3.6 的 `cmake_policy(SET CMP0054 OLD)` 被 MSYS2 cmake 4.x 拒（policy 已删除，`CMAKE_POLICY_VERSION_MINIMUM` 逃生阀管不到 SET）——用 master（已适配）。另：GitHub 的 videolan/x265 镜像停更 2020 不可用。
+28. **lame 3.100 frontend 撞 gcc 14+**：隐式函数声明默认错误化——`--disable-frontend`（只要 libmp3lame，同 x264 --disable-cli 哲学）。
+29. **libjxl 静态闭包**（mac #2 的 Windows 加重版）：brotli/hwy 互引顺序在多 pc 展开下失控——libjxl.pc 去 Requires、Libs 全闭包按依赖序重写；cmake 系对象后缀是 `.obj`（非 .o）。
+30. **libjxl dllimport**（Windows 专属）：头文件默认 dllimport 声明 → 链接器找 `__imp_` 符号必挂——静态链须 `-DJXL_STATIC_DEFINE`，注入全部 jxl pc 的 Cflags（mac 无 dllimport 机制故未踩）。
+31. **x265 新版 pc 闭包**：新版 cmake 已自装 x265.pc，但 C++ 运行时在 Libs.private 不被 `pkg-config --libs` 带出——无条件 sed 确保 Libs 行含 `-lstdc++ -lpthread`（mac 手写 pc 块已过时；mac clang 驱动自动链 C++ 故未踩）。
+32. **jxl 全家物理合并**：GNU ld 按序 + pkg-config 展开顺序不可控 → jxl↔jxl_cms 跨库互引在 cgo 终链必挂——`ar x` 解包六个 .a（jxl/jxl_cms/hwy/brotli×3）合并为单一 `libjxl_merged.a`（nullglob：空 glob 会把字面 `*.o` 传给 ar）。
+33. **ffmpeg 9 的 pc 生成器变化**：依赖闭包散装直写 Libs（8.x 走 Requires.private）+ cgo 展开重排——jxl 符号由 merged 兜底库紧跟 `-lav*` 注入三个 av pc（散装残留无害）。
 
 **已知缺口**（vs brew 版，配料待补）：`drawtext` 滤镜（freetype+fribidi+harfbuzz）、`subtitles` 滤镜（libass，mac 走 CoreText 免 fontconfig）、`zscale` 滤镜（zimg）、`libsvtav1`（AV1 快编）。encoders 202 个已反超 brew（195）。
 
@@ -223,7 +269,7 @@ bin/zpack-dev <命令>                                   # media/HDR/HEIC/ffmpeg
 ```
 core/                 ← 核心算法引擎（纯库，顶层产品面）：core.go（Compress/Extract API+Format+Logf）+ format.go（魔数嗅探/扩展名判定）+ common.go（收集/排除/安全判定/智能解压/进度）+ zip.go + tar.go
 media/                ← 媒体功能包
-build_cli/            ← 平台产线：mac/（ffmpeg_static.sh 全静态配料 + build.sh 组装——见「静态产线全记录」节）；windows/linux 待铺（core 同级）：decide.go+plan.go（纯 Go 决策层，业界主流决策矩阵直译）+ engine_cgo.go（go-astiav 引擎，//go:build cgo）+ stub_nocgo.go（纯构建桩）
+build_cli/            ← 平台产线：mac/（ffmpeg_static.sh 全静态配料 + build.sh 组装——见「静态产线全记录」节）；windows/（build.sh 总入口 + deps_static.sh 编码器全家 + office_static.sh——见「Windows 完整版产线全记录」节，2026-11-09 贯通）；linux 待铺
 cli/                  ← CLI 命令面（顶层产品面）：root.go（装配）+ commands.go（旗标解析校验 → 调 core → 输出契约呈现）
 ui/                   ← UI 产品面（顶层）：聚合一切构建 UI 的产物——GUI 壳（gui/）+ 右键菜单（right-click/：macOS Finder/Windows Explorer/Linux 文件管理器）；全部是"启动器"，经 CLI 二进制契约干活（见 ui/doc.go 架构铁律）
 cmd/zpack/            ← CLI 二进制入口（薄 main；未来并排 cmd/zpack-ui）
@@ -246,5 +292,6 @@ docs/                 ← 研究资料目录（本地私藏——逆向研究文
 
 ## 环境事实
 
-- Go 1.27.3（brew，/opt/homebrew）
+- 开发机（mac）：Go 1.27.3（brew，/opt/homebrew）
+- Windows 实测机（2026-11-08 首测）：Win11 26200 x64，Git Bash（MSYS 路径自动转换需留意），Go 1.27.3（C:\Program Files\Go，PATH 不含——先 `export PATH="/c/Program Files/Go/bin:$PATH"`）；本机装齐 MS Office + WPS + LibreOffice（三引擎实测条件）；MSYS2/UCRT64 工具链（C:\msys64，产线用——gcc 16.2/rust/make/nasm/pkgconf，`/c/msys64/usr/bin/bash -lc` 进产线 shell 时需显式 export LOCALAPPDATA/APPDATA/GOPROXY）；系统代理 127.0.0.1:7897（Git Bash 的 curl/git 不自动走——外网下载手动 export）
 - 依赖（go.mod，全纯 Go）：cobra（路由）、klauspost/compress（flate/gzip/zstd）、golang.org/x/text（GBK 解码）、ulikunitz/xz + pierrec/lz4/v4 + andybalholm/brotli（批次 B，+1.78MB mac/+2.46MB win）、bodgit/sevenzip + nwaples/rardecode（批次 C，+0.80MB mac/+0.83MB win）、kdomanski/iso9660（批次 D）、sorairolake/lzip-go + nradchenko/go-wim（批次 E-1）、kentalee/go-lzx（批次 E-2 cab）；win exe 始终仅 kernel32.dll

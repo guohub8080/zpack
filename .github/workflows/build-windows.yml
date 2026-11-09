@@ -1,0 +1,66 @@
+# Windows 完整版云端产线：MSYS2/UCRT64 + MinGW-w64 gcc 静态 FFmpeg → cgo 完整版 zpack.exe
+# 与本机产线同构（build_cli/windows/build.sh 一份脚本两处共用；配料=编码器全家，对齐 mac）；
+# prefix 与 msys2 工具链均缓存——编码器+FFmpeg 只在首跑/变版本时编译。
+# ⚠️ 本仓库纪律：Agent 绝不 push；本文件由用户 push 后自动生效（或手动 workflow_dispatch）。
+name: build-windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          cache: true
+          install: >-
+            git
+            make
+            perl
+            diffutils
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-libiconv
+            mingw-w64-ucrt-x86_64-rust
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: true
+
+      - name: deps prefix 缓存（编码器全家 + FFmpeg n9.0）
+        uses: actions/cache@v4
+        with:
+          path: build_cli/windows/prefix
+          key: deps-n9.0-fullcodecs-win-native-v1
+
+      - name: 依赖产线（编码器全家 + FFmpeg + office_oxide；缓存未命中时）
+        shell: msys2 {0}
+        run: bash build_cli/windows/build.sh deps
+
+      - name: cgo 完整版构建
+        shell: msys2 {0}
+        run: bash build_cli/windows/build.sh build
+
+      - name: 冒烟
+        shell: msys2 {0}
+        run: |
+          ./bin/zpack.exe --version
+          ./bin/zpack.exe ffmpeg -version 2>/dev/null | head -1 || true
+          ./bin/zpack.exe ffmpeg -hide_banner -encoders 2>/dev/null | grep -cE "libx264|libx265|libmp3lame|libopus|libvpx|libjxl|libaom" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zpack-windows-x64-full
+          path: bin/zpack.exe
+          if-no-files-found: error
