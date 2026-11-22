@@ -226,9 +226,68 @@ if [ "$ec" = "0" ] && echo "$out_lr" | grep -q '"quality_degraded":true'; then r
 "$NEW_CLI" image compress "$IMG_WORK/src.png" --target-size 10KB --output "$IMG_WORK/x.png" >/dev/null 2>&1; assert_equal "target-size png 引导 exit" 1 "$?"
 # 与 --quality 互斥
 "$NEW_CLI" image compress "$IMG_WORK/tgt-src.jpg" --target-size 50KB --quality 90 --output "$IMG_WORK/x.jpg" >/dev/null 2>&1; assert_equal "target-size 互斥 exit" 1 "$?"
+# 四档策略（2026-11-22 扩档）：size-only 绝不降质、quality-only 绝不缩尺寸
+out_so=$("$NEW_CLI" image compress "$IMG_WORK/tgt-src.jpg" --target-size "$tgt_bytes" --priority size-only --output "$IMG_WORK/tgt-out-so.jpg" 2>/dev/null); ec=$?
+assert_equal "size-only 压缩 exit" 0 "$ec"
+if echo "$out_so" | grep -q '"quality":90'; then report_pass; else report_fail "size-only 质量钉 90" "90" "$out_so"; fi
+# size-only 极小目标（1KB 需降质才能装下）：绝不降画质 → 明确报错
+out_so2=$("$NEW_CLI" image compress "$IMG_WORK/tgt-src.jpg" --target-size 1KB --priority size-only --output "$IMG_WORK/x.jpg" 2>/dev/null); ec=$?
+assert_equal "size-only 极小目标 exit" 1 "$ec"
+if echo "$out_so2" | grep -q '只缩尺寸'; then report_pass; else report_fail "size-only 拒绝文案" "只降画质引导" "$out_so2"; fi
+out_qo=$("$NEW_CLI" image compress "$IMG_WORK/tgt-src.jpg" --target-size "$tgt_bytes" --priority quality-only --output "$IMG_WORK/tgt-out-qo.jpg" 2>/dev/null); ec=$?
+assert_equal "quality-only 压缩 exit" 0 "$ec"
+qo_w=$(ffprobe -v error -show_entries stream=width -of default=noprint_wrappers=1:nokey=1 "$IMG_WORK/tgt-out-qo.jpg" 2>/dev/null | head -1)
+if [ "$qo_w" = "$src_w" ]; then report_pass; else report_fail "quality-only 分辨率不变" "$src_w" "$qo_w"; fi
+# quality-only 极小目标：分辨率绝不动 → 全量程降质能装下就成功（1KB 通常 q1 可装下）
+"$NEW_CLI" image compress "$IMG_WORK/tgt-src.jpg" --target-size 100B --priority quality-only --output "$IMG_WORK/x.jpg" >/dev/null 2>&1; assert_equal "quality-only 不可达 exit" 1 "$?"
+# 旧值别名仍兼容（size/quality 不变）
+"$NEW_CLI" image compress "$IMG_WORK/tgt-src.jpg" --target-size 50KB --priority size --output "$IMG_WORK/tgt-legacy.jpg" >/dev/null 2>&1; assert_equal "legacy size 别名 exit" 0 "$?"
+"$NEW_CLI" image compress "$IMG_WORK/tgt-src.jpg" --target-size 50KB --priority quality --output "$IMG_WORK/tgt-legacy2.jpg" >/dev/null 2>&1; assert_equal "legacy quality 别名 exit" 0 "$?"
 # 非法体积 / 非法优先级
 "$NEW_CLI" image compress "$IMG_WORK/tgt-src.jpg" --target-size abc --output "$IMG_WORK/x.jpg" >/dev/null 2>&1; assert_equal "target-size 非法值 exit" 1 "$?"
 "$NEW_CLI" image compress "$IMG_WORK/tgt-src.jpg" --target-size 50KB --priority both --output "$IMG_WORK/x.jpg" >/dev/null 2>&1; assert_equal "非法 priority exit" 1 "$?"
+
+# ── image new 新建空白占位图（透明/纯色；像素/物理/纸型）──
+out=$("$NEW_CLI" image new "$IMG_WORK/ph1.png" 800x600 2>/dev/null); ec=$?
+assert_equal "new 像素 exit" 0 "$ec"
+if echo "$out" | grep -q '"width":800,"height":600'; then report_pass; else report_fail "new 尺寸字段" "800x600" "$out"; fi
+# 透明验证：中心像素 RGBA 全零
+alpha_bytes=$(ffmpeg -v error -i "$IMG_WORK/ph1.png" -vf "crop=1:1:400:300" -f rawvideo -pix_fmt rgba - 2>/dev/null | od -An -tu1 | tr -s ' ')
+if [ "$alpha_bytes" = " 0 0 0 0 " ]; then report_pass; else report_fail "new 透明像素" "0 0 0 0" "$alpha_bytes"; fi
+# 纯色验证
+"$NEW_CLI" image new "$IMG_WORK/ph2.png" 100x100 --color red >/dev/null 2>&1
+red_bytes=$(ffmpeg -v error -i "$IMG_WORK/ph2.png" -vf "crop=1:1:50:50" -f rawvideo -pix_fmt rgba - 2>/dev/null | od -An -tu1 | tr -s ' ')
+if [ "$red_bytes" = " 255 0 0 255 " ]; then report_pass; else report_fail "new 红色像素" "255 0 0 255" "$red_bytes"; fi
+# hex 色
+"$NEW_CLI" image new "$IMG_WORK/ph6.png" 10x10 --color '#1a2b3c' >/dev/null 2>&1; assert_equal "new hex 色 exit" 0 "$?"
+# 物理 mm→px 精确
+out=$("$NEW_CLI" image new "$IMG_WORK/ph3.png" 55x90mm --ppi 300 2>/dev/null)
+if echo "$out" | grep -q '"width":650,"height":1063'; then report_pass; else report_fail "new 物理换算" "650x1063" "$out"; fi
+# 纸型 + 方向尾缀
+out=$("$NEW_CLI" image new "$IMG_WORK/ph4.png" a4 --ppi 72 2>/dev/null)
+if echo "$out" | grep -q '"width":595,"height":842'; then report_pass; else report_fail "new 纸型 a4@72" "595x842" "$out"; fi
+out=$("$NEW_CLI" image new "$IMG_WORK/ph5.png" a4l --ppi 72 2>/dev/null)
+if echo "$out" | grep -q '"width":842,"height":595'; then report_pass; else report_fail "new a4l 横版" "842x595" "$out"; fi
+# jpg 白底可行
+"$NEW_CLI" image new "$IMG_WORK/ph7.jpg" 800x600 --color white >/dev/null 2>&1; assert_equal "new jpg 白底 exit" 0 "$?"
+# 退化
+"$NEW_CLI" image new "$IMG_WORK/x.jpg" 800x600 >/dev/null 2>&1; assert_equal "new jpg+透明 exit" 1 "$?"
+# 全格式支持：png/webp/tiff 透明；jpg/webp/bmp/tiff/gif 纯色
+for solid_ext in jpg webp bmp tiff gif; do
+  rm -f "$IMG_WORK/new-solid.$solid_ext"
+  "$NEW_CLI" image new "$IMG_WORK/new-solid.$solid_ext" 50x50 --color red >/dev/null 2>&1
+  if [ -s "$IMG_WORK/new-solid.$solid_ext" ]; then report_pass; else report_fail "new .$solid_ext 纯色" "非空" "空"; fi
+done
+"$NEW_CLI" image new "$IMG_WORK/new-alpha.webp" 50x50 >/dev/null 2>&1; assert_equal "new webp 透明 exit" 0 "$?"
+webp_alpha=$(ffmpeg -v error -i "$IMG_WORK/new-alpha.webp" -vf "crop=1:1:25:25" -f rawvideo -pix_fmt rgba - 2>/dev/null | od -An -tu1 | tr -s ' ')
+if [ "$webp_alpha" = " 0 0 0 0 " ]; then report_pass; else report_fail "new webp 透明像素" "0 0 0 0" "$webp_alpha"; fi
+"$NEW_CLI" image new "$IMG_WORK/new-alpha.tiff" 50x50 >/dev/null 2>&1; assert_equal "new tiff 透明 exit" 0 "$?"
+for noalpha_ext in jpg bmp gif; do
+  "$NEW_CLI" image new "$IMG_WORK/x.$noalpha_ext" 50x50 >/dev/null 2>&1
+  assert_equal "new .${noalpha_ext} 透明拒绝 exit" 1 "$?"
+done
+"$NEW_CLI" image new "$IMG_WORK/x.png" 10x10 --color nosuch >/dev/null 2>&1; assert_equal "new 非法颜色 exit" 1 "$?"
+"$NEW_CLI" image new "$IMG_WORK/x.png" abc >/dev/null 2>&1; assert_equal "new 非法尺寸 exit" 1 "$?"
 
 # ── 退化 ──
 "$NEW_CLI" image convert "$IMG_WORK/src.png" "$IMG_WORK/out.xyz" >/dev/null 2>&1; assert_equal "不支持格式 exit" 1 "$?"

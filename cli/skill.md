@@ -1,6 +1,6 @@
 ---
 name: zpack
-description: 单二进制文档媒体工具箱（stdout 恒一条 JSON、exit 0/1）。压缩/解压（zip/tar 系写，26 种读格式含 7z/rar/分卷/加密）；格式转换；hash 校验（md5/sha256）；视频 convert/compress/clip/merge/rotate/screenshot/cover；音频互转压缩；图片 convert/resize/旋转/长图拼接/HEIC/LivePhoto；PDF merge/extract/rotate/页面统一；doc/wps/xls/ppt → docx/xlsx/pptx（含本机 Office/WPS/LibreOffice 后台转换）；内置 ffmpeg CLI 全量透传。
+description: 单二进制文档媒体工具箱（stdout 恒一条 JSON、exit 0/1）。压缩/解压（zip/7z/tar 系写，26 种读格式含 7z/rar/分卷/加密）；格式转换；hash 校验（md5/sha256）；视频 convert/compress/clip/merge/rotate/screenshot/cover；音频互转压缩；图片 convert/resize/旋转/长图拼接/HEIC/LivePhoto；PDF merge/extract/rotate/页面统一；doc/wps/xls/ppt → docx/xlsx/pptx（含本机 Office/WPS/LibreOffice 后台转换）；内置 ffmpeg CLI 全量透传。
 ---
 
 # zpack 参考手册
@@ -33,9 +33,9 @@ description: 单二进制文档媒体工具箱（stdout 恒一条 JSON、exit 0/
 zpack compress <目录|文件...> --output <路径> [旗标]
 ```
 
-写格式由 --output 扩展名决定：`.zip`（缺省）/`.tar`/`.tar.gz`/`.tgz`/`.tar.xz`/`.tar.zst`。
+写格式由 --output 扩展名决定：`.zip`（缺省）/`.7z`/`.tar`/`.tar.gz`/`.tgz`/`.tar.xz`/`.tar.zst`（.7z=官方 7-Zip C++ 引擎直调，AES-256 加密连文件名一起加密）。
 
-旗标：`--password <值>`（zip AES-256）| `--password-table <文件>`（逐文件密码，行格式 `匹配模式=密码`）| `--volume-size <体积|模板>`（分卷 `.001/.002...`；整档 ≤ 单卷不分卷；模板 `gmail`25MB `cd`=`vcd`700MB `cd650`650MB `fat32` `dvd`=`dvd5`4.7GB `dvd9`8.5GB `bd`=`bd25` `bd50`；下限 64KB）| `--level <0-9>`（缺省 6，0=仅存储）| `--jobs <1-64>`（缺省 min(核数,8)）| `--exclude <glob>`（可多次）| `--comment <文本|@文件>` | `--temp-dir <目录>` | `--quiet`
+旗标：`--password <值>`（zip AES-256；7z AES-256 连文件名加密）| `--password-table <文件>`（逐文件密码，行格式 `匹配模式=密码`）| `--volume-size <体积|模板>`（分卷 `.001/.002...`；整档 ≤ 单卷不分卷；模板 `gmail`25MB `cd`=`vcd`700MB `cd650`650MB `fat32` `dvd`=`dvd5`4.7GB `dvd9`8.5GB `bd`=`bd25` `bd50`；下限 64KB）| `--level <0-9>`（缺省 6，0=仅存储）| `--jobs <1-64>`（缺省 min(核数,8)）| `--exclude <glob>`（可多次）| `--comment <文本|@文件>` | `--temp-dir <目录>` | `--quiet`
 
 行为：目录以目录名为包内根；多文件平铺包根；已存在覆盖；空目录不保留；`.zpackignore`（gitignore 语义）自动生效；缺省排除 `.DS_Store`/`__MACOSX`/`Thumbs.db`/`desktop.ini`/`._*`。
 
@@ -130,6 +130,7 @@ compress 缺省压到原始码率 50%（下限 32k）；目标 ≥ 原始报错�
 用途：格式互转（含 HEIC 手机照片、HDR 场景图）、压到目标体积、精确物理尺寸（打印毫米级）、旋转镜像、多图拼长图、提取 iPhone Live Photo 视频。
 
 ```
+zpack image new <输出> <尺寸> [--color <transparent|色名|#RRGGBB[AA]>] [--ppi <300>]   # 新建空白占位图（全格式；透明仅 png/webp/tiff 保真——jpg/bmp/gif 报错引导；尺寸=像素 800x600 / 物理 55x90mm+--ppi / 纸型 a4|a4l）
 zpack image convert <输入> <输出.jpg|png|webp|bmp|tiff|gif> [--quality <1-100>]
 zpack image compress <输入> ([--target-size <体积>] [--priority <size|quality>] | [--quality <1-100>]) [--output <输出>]
 zpack image resize <输入> <输出> <缩放方式> [--ppi <N>] [--quality <1-100>]
@@ -235,3 +236,11 @@ zpack compress 目录/ --output out.zip > /dev/null 2>&1 && echo OK || echo FAIL
 # 判定类
 zpack hash 文件.iso --expect <官方哈希> && echo 完整 || echo 损坏
 ```
+
+### 刻录光盘（M1：macOS/Linux 实作，Windows M2 IMAPI2）
+- `zpack burn devices` — 枚举刻录机+介质状态（Linux 走 xorriso -devices；缺 xorriso 报安装引导）
+- `zpack burn 镜像.iso` — 烧镜像；默认多区段可追加（Linux 痛点：默认不封盘），`--close` 封盘定稿
+- `zpack burn 目录/ --close` — 目录直刻（自动产临时 ISO：mac=hdiutil makehybrid -joliet，Linux=xorriso -as mkisofs）
+- `zpack burn 文件A 文件B 目录/` — 多输入刻录（任意数量；聚临时舞台产 ISO；.iso 混排拒绝）
+- `--mode multi|mastered|live` — live=优盘式 UDF 包写入（仅 Windows M2 计划，其余平台明确拒绝）；`--blank` 按介质自动擦除（DVD+RW 免擦）
+

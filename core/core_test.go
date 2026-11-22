@@ -1258,6 +1258,62 @@ func TestZipPasswordTable(t *testing.T) {
 	}
 }
 
+// TestZipPasswordLargeEntryEncrypted 加密大条目回归（血案 m03442）：
+// 带密码压缩超过 256KB 缓冲上限的条目，曾降级明文顺序写——产物裸奔零警告。
+// 现在必须真加密：无密码解压被拒，有密码解压内容一致；分卷+密码组合同验。
+func TestZipPasswordLargeEntryEncrypted(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "big.bin")
+	bigContent := make([]byte, 2*1024*1024) // 2MB > ZIP_ENTRY_BUFFER_CAP_BYTES
+	for idx := range bigContent {
+		bigContent[idx] = byte(idx % 251)
+	}
+	if err := os.WriteFile(sourcePath, bigContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 并行路径（jobs>1）：条目超缓冲 → 降级 → 流式加密
+	arcPath := filepath.Join(dir, "big-enc.zip")
+	if _, err := Compress(CompressOptions{Inputs: []string{sourcePath}, Output: arcPath, Password: "pw-test", Jobs: 4}, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertAESLargeEntry(t, arcPath, "big.bin", bigContent)
+
+	// 顺序路径（jobs=1）：整档顺序写也必须加密
+	seqPath := filepath.Join(dir, "big-enc-seq.zip")
+	if _, err := Compress(CompressOptions{Inputs: []string{sourcePath}, Output: seqPath, Password: "pw-test", Jobs: 1}, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertAESLargeEntry(t, seqPath, "big.bin", bigContent)
+
+	// 分卷+密码组合（血案触发现场：切分只是字节复制，密码必须在切分前生效）
+	spanPath := filepath.Join(dir, "span-enc.zip")
+	if _, err := Compress(CompressOptions{Inputs: []string{sourcePath}, Output: spanPath, Password: "pw-test", VolumeSize: 1 << 20}, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertAESLargeEntry(t, spanPath+".001", "big.bin", bigContent)
+}
+
+// assertAESLargeEntry 断言归档真加密：无密码被拒 + 有密码解出内容一致
+func assertAESLargeEntry(t *testing.T, archivePath, entryName string, want []byte) {
+	t.Helper()
+	outNoPw := t.TempDir()
+	if _, err := Extract(ExtractOptions{Archive: archivePath, OutputDir: outNoPw}, nil); err == nil {
+		t.Fatalf("%s 无密码解压竟成功——产物是明文裸奔（血案 m03442 复发）", archivePath)
+	}
+	outPw := t.TempDir()
+	if _, err := Extract(ExtractOptions{Archive: archivePath, OutputDir: outPw, Password: "pw-test"}, nil); err != nil {
+		t.Fatalf("%s 带密码解压失败: %v", archivePath, err)
+	}
+	got, readErr := os.ReadFile(filepath.Join(outPw, entryName))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("%s 解出内容不一致（%d vs %d 字节）", archivePath, len(got), len(want))
+	}
+}
+
 // TestZpackignore .zpackignore 排除规则（gitignore 语义）
 func TestZpackignore(t *testing.T) {
 	srcDir := t.TempDir()

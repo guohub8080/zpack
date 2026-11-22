@@ -35,12 +35,14 @@ func isLossyFormat(format string) bool {
 	return normalizeFormat(format) == "jpg"
 }
 
-// CompressTargetSize 智能目标体积压缩，两种优先级（用户可调）：
+// CompressTargetSize 智能目标体积压缩，四档策略（2026-11-22 用户扩档）：
 //
-//	size（缺省）——质量钉 q=90 不动，二分缩放到刚好装下（"巨大原因是 5000×6000 像素"场景）
-//	quality——保像素优先：全尺寸质量二分到 q≥50 直接用；不够再 q=50 缩放、回拉质量
-//
-// 共同兜底：最小缩放（5%）仍装不下 → 最低缩放下全量程二分（画质降级告知）；仍不行报错
+//	size / size-first（缺省）——先缩尺寸：质量钉 q=90 二分缩放；最小缩放仍装不下
+//	  → 最低缩放下全量程降质兜底（画质降级告知）
+//	size-only——只缩尺寸：质量钉 q=90 绝不降质，只二分缩放；缩到 5% 仍装不下 → 报错
+//	quality / quality-first——先降画质：全尺寸质量二分到 q≥50 直接用；不够再
+//	  q=50 缩放、回拉质量；仍不行 → 最低缩放下全量程二分（降级告知）
+//	quality-only——只降画质：分辨率绝不缩小，全尺寸质量一路二分到 q1；仍装不下 → 报错
 func CompressTargetSize(input, output string, targetBytes int64, priority string, logf func(format string, args ...any)) (*ImageResult, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
@@ -63,10 +65,15 @@ func CompressTargetSize(input, output string, targetBytes int64, priority string
 		return buildTargetResult(input, output, sourceFormat, outputFormat, img, 0, inputInfo.Size(), true), nil
 	}
 
-	if priority == "size" {
+	switch priority {
+	case "size", "size-first":
 		return compressTargetSizeFirst(input, output, sourceFormat, outputFormat, img, targetBytes, logf)
+	case "size-only":
+		return compressTargetSizeOnly(input, output, sourceFormat, outputFormat, img, targetBytes, logf)
+	case "quality-only":
+		return compressTargetQualityOnly(input, output, sourceFormat, outputFormat, img, targetBytes, logf)
 	}
-	// ── quality 优先 ──
+	// ── quality / quality-first 优先 ──
 	// ① 全尺寸质量二分
 	fullResBestQ, fullResBytes := binarySearchQuality(img, outputFormat, targetBytes)
 	if fullResBestQ >= SMART_QUALITY_FLOOR {
@@ -140,6 +147,45 @@ func compressTargetSizeFirst(input, output, sourceFormat, outputFormat string, i
 	}
 	encoded := mustEncode(fitImg, outputFormat, SIZE_PRIORITY_QUALITY)
 	return finishTarget(input, output, sourceFormat, outputFormat, fitImg, SIZE_PRIORITY_QUALITY, encoded, "size-first", fitScale, false)
+}
+
+// compressTargetSizeOnly 只缩尺寸：质量钉 SIZE_PRIORITY_QUALITY 绝不降质，
+// 只二分缩放——最小缩放仍装不下直接报错（不偷偷降画质）。
+func compressTargetSizeOnly(input, output, sourceFormat, outputFormat string, img image.Image, targetBytes int64, logf func(format string, args ...any)) (*ImageResult, error) {
+	logf("size-only：质量钉 q=%d 只缩尺寸，绝不降画质", SIZE_PRIORITY_QUALITY)
+	fitScale := -1
+	var fitImg *image.RGBA
+	lo, hi := SMART_MIN_SCALE_PERCENT, 100
+	for lo <= hi {
+		mid := lo + (hi-lo)/2
+		scaled := scaleImagePercent(img, mid)
+		encoded, encodeErr := encodeImageBytes(scaled, outputFormat, SIZE_PRIORITY_QUALITY)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		if int64(len(encoded)) <= targetBytes {
+			fitScale, fitImg = mid, scaled
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	if fitScale < 0 {
+		return nil, fmt.Errorf("缩至 %d%% @q%d 仍超出目标 %d 字节——「只缩尺寸」不降画质：放宽目标体积或改用「先缩尺寸」", SMART_MIN_SCALE_PERCENT, SIZE_PRIORITY_QUALITY, targetBytes)
+	}
+	encoded := mustEncode(fitImg, outputFormat, SIZE_PRIORITY_QUALITY)
+	return finishTarget(input, output, sourceFormat, outputFormat, fitImg, SIZE_PRIORITY_QUALITY, encoded, "size-first", fitScale, false)
+}
+
+// compressTargetQualityOnly 只降画质：分辨率绝不缩小，全尺寸质量二分到 q1；
+// 仍装不下直接报错（不偷偷缩尺寸）。
+func compressTargetQualityOnly(input, output, sourceFormat, outputFormat string, img image.Image, targetBytes int64, logf func(format string, args ...any)) (*ImageResult, error) {
+	logf("quality-only：分辨率保持原样，画质一路二分到 q%d", TARGET_QUALITY_FLOOR)
+	bestQ, bestBytes := binarySearchQuality(img, outputFormat, targetBytes)
+	if bestQ < 0 {
+		return nil, fmt.Errorf("全尺寸 q=%d 仍超出目标 %d 字节——「只降画质」不缩尺寸：放宽目标体积或改用「先降画质」", TARGET_QUALITY_FLOOR, targetBytes)
+	}
+	return finishTarget(input, output, sourceFormat, outputFormat, img, bestQ, bestBytes, "quality-only", 100, bestQ < SMART_QUALITY_FLOOR)
 }
 
 // binarySearchQuality ≤ 目标的最高质量（-1=全量程不可达）

@@ -20,8 +20,8 @@ import (
 // NewPdfCmd pdf 命令
 func NewPdfCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:                "pdf <merge|extract|info> [参数]",
-		Short:              "PDF 合并/提取页/元信息（纯 Go——pdfcpu 引擎）",
+		Use:                "pdf <merge|extract|resize|rotate-left|rotate-right|rotate-180|info> [参数]",
+		Short:              "PDF 合并/提取页/页面尺寸/旋转/元信息（纯 Go——pdfcpu 引擎）",
 		DisableFlagParsing: true,
 		Run: func(command *cobra.Command, args []string) {
 			helpAwareRun(command, args, runPdf)

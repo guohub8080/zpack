@@ -34,6 +34,8 @@ func runImage(args []string) {
 	subcommand := firstPositional(args)
 	restArgs := restAfterPositional(args, subcommand)
 	switch subcommand {
+	case "new":
+		imageNew(restArgs)
 	case "convert":
 		imageConvert(restArgs)
 	case "compress":
@@ -51,6 +53,58 @@ func runImage(args []string) {
 	default:
 		stdout.ErrorPrint("用法: image convert <输入> <输出.jpg|png|webp> 或 image compress <输入> [--quality N] 或 image info <输入>")
 	}
+}
+
+// imageNew 新建空白占位图：纯色或透明；像素/物理+ppi/纸型三形态
+func imageNew(args []string) {
+	colorSpec := "transparent"
+	ppi := 0
+	quality := image.IMAGE_DEFAULT_QUALITY
+	var positional []string
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		arg := args[argIndex]
+		switch {
+		case arg == "--color":
+			if argIndex+1 >= len(args) {
+				stdout.ErrorPrint("--color 缺少值（transparent/色名/#RRGGBB）")
+			}
+			colorSpec = args[argIndex+1]
+			argIndex++
+		case arg == "--ppi", arg == "--dpi":
+			if argIndex+1 >= len(args) {
+				stdout.ErrorPrint(arg + " 缺少值（如 300）")
+			}
+			if parsed, err := strconv.Atoi(args[argIndex+1]); err == nil && parsed > 0 && parsed <= 2400 {
+				ppi = parsed
+			} else {
+				stdout.ErrorPrint(arg + " 需 1-2400 的整数，收到: " + args[argIndex+1])
+			}
+			argIndex++
+		case arg == "--quality":
+			if argIndex+1 >= len(args) {
+				stdout.ErrorPrint("--quality 缺少值（1-100）")
+			}
+			if parsed, err := strconv.Atoi(args[argIndex+1]); err == nil && parsed > 0 && parsed <= 100 {
+				quality = parsed
+			} else {
+				stdout.ErrorPrint("--quality 需 1-100 的整数，收到: " + args[argIndex+1])
+			}
+			argIndex++
+		case !strings.HasPrefix(arg, "-"):
+			positional = append(positional, arg)
+		default:
+		}
+	}
+	if len(positional) != 2 {
+		stdout.ErrorPrint("用法: image new <输出.png> <尺寸> [--color <transparent|色名|#RRGGBB>] [--ppi 300]\n尺寸三形态：像素 800x600 / 物理 55x90mm（--ppi 换算，缺省 300）/ 纸型 a4|a4l|letter（尾缀 L/P 方向）\n缺省透明；jpg 不支持透明需 --color 指定底色")
+	}
+	absoluteOutput, _ := filepath.Abs(positional[0])
+	result, newErr := image.NewBlank(absoluteOutput, positional[1], colorSpec, ppi, quality)
+	if newErr != nil {
+		os.Remove(absoluteOutput)
+		stdout.ErrorPrint(newErr.Error())
+	}
+	stdout.JSONPrint(result)
 }
 
 func imageConvert(args []string) {
@@ -129,11 +183,15 @@ func imageCompress(args []string) {
 			argIndex++
 		case arg == "--priority":
 			if argIndex+1 >= len(args) {
-				stdout.ErrorPrint("--priority 缺少值（size=缩尺寸优先质量钉 90 / quality=保像素优先）")
+				stdout.ErrorPrint("--priority 缺少值（size-first=先缩尺寸 / size-only=只缩尺寸 / quality-first=先降画质 / quality-only=只降画质）")
+				return
 			}
 			priority = args[argIndex+1]
-			if priority != "size" && priority != "quality" {
-				stdout.ErrorPrint("--priority 需 size 或 quality，收到: " + priority)
+			switch priority {
+			case "size", "size-first", "size-only", "quality", "quality-first", "quality-only":
+			default:
+				stdout.ErrorPrint("--priority 需 size|size-first|size-only|quality|quality-first|quality-only，收到: " + priority)
+				return
 			}
 			argIndex++
 		case arg == "--output":
@@ -149,7 +207,7 @@ func imageCompress(args []string) {
 		}
 	}
 	if len(positional) != 1 {
-		stdout.ErrorPrint("用法: image compress <输入> [--quality N | --target-size 100KB] [--output 路径]\n--quality 手动定质量（缺省 80）；--target-size 自动压到 ≤ 目标（仅 jpg）+ --priority size|quality\n  size（缺省）=缩尺寸优先：质量钉 90 不动，像素换体积（5000×6000 类巨图首选）\n  quality=保像素优先：全尺寸降质到 q50 下限，不够再缩尺寸；与 --quality 互斥")
+		stdout.ErrorPrint("用法: image compress <输入> [--quality N | --target-size 100KB] [--output 路径]\n--quality 手动定质量（缺省 80）；--target-size 自动压到 ≤ 目标（仅 jpg）+ --priority size-first|size-only|quality-first|quality-only\n  size-first（=size 缺省）=先缩尺寸：质量钉 90 缩像素，到极限再降质兜底\n  size-only=只缩尺寸：质量绝不动，缩到 5% 仍超则报错\n  quality-first（=quality）=先降画质：全尺寸降质到 q50 下限，不够再缩尺寸\n  quality-only=只降画质：分辨率绝不动，画质降到底（q1）仍超则报错；与 --quality 互斥")
 	}
 	if targetBytes > 0 && quality > 0 {
 		stdout.ErrorPrint("--target-size 与 --quality 互斥（自动二分 vs 手动定质量）")

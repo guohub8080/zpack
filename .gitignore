@@ -15,8 +15,20 @@ build_cli/poc/transcode
 build_cli/*/src/
 build_cli/*/prefix/
 internal/ffmpegcli/libs/
+internal/sevenzipcli/libs/
 office/libs/
 docs/bandizip-*.md
 docs/unicoverter-reverse.md
 docs/360zip-*.md
 build_cli/windows/fftools-cli/
+ui/right-click/macos/build/
+ui/right-click/macos/xcode/build/
+
+# MyGo GUI（ui/gui/）构建产物
+ui/gui/build/
+ui/gui/dist/
+ui/gui/build/
+
+# realEnvTest 真实环境测试数据（scripts/genenv 算法生成，可随时 --clean 重铸）
+realEnvTest/
+ui/gui/gui

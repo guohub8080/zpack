@@ -26,6 +26,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"os"
 	"strings"
 
@@ -61,9 +62,185 @@ func runCrypto(args []string) {
 		cryptoEncrypt(restArgs)
 	case "decrypt":
 		cryptoDecrypt(restArgs)
+	case "password":
+		cryptoPassword(restArgs)
+	case "uuid":
+		cryptoUUID(restArgs)
 	default:
-		stdout.ErrorPrint("用法: crypto genkey [--bits 2048] 或 crypto encrypt --key-file pub.pem <文本> 或 crypto decrypt --key-file priv.pem <密文>")
+		stdout.ErrorPrint("用法: crypto genkey [--bits 2048] / crypto encrypt|decrypt --key-file <pem> / crypto password [--length 16] [--count 1] / crypto uuid [--count 1]")
 	}
+}
+
+// ─── 随机密码 / UUID（2026-11-22：GUI 随机生成页的引擎面）───
+
+const (
+	CRYPTO_PASSWORD_MIN_LENGTH = 4
+	CRYPTO_PASSWORD_MAX_LENGTH = 128
+	CRYPTO_RANDOM_MAX_COUNT    = 100
+)
+
+// cryptoPasswordBoolFlag 解析布尔 flag：--lower false 与 --lower=false 两式都收；缺省 defaultOn。
+func cryptoPasswordBoolFlag(restArgs []string, flagName string, defaultOn bool) bool {
+	for argIndex, arg := range restArgs {
+		if arg == flagName {
+			// 后随 token 是值；是下一个 flag 或已到尾 → 裸 flag 恒为 true
+			if argIndex+1 < len(restArgs) && !strings.HasPrefix(restArgs[argIndex+1], "-") {
+				return cryptoParseBoolStrict(flagName, restArgs[argIndex+1])
+			}
+			return true
+		}
+		if strings.HasPrefix(arg, flagName+"=") {
+			return cryptoParseBoolStrict(flagName, strings.TrimPrefix(arg, flagName+"="))
+		}
+	}
+	return defaultOn
+}
+
+func cryptoParseBoolStrict(flagName, valueText string) bool {
+	switch strings.ToLower(valueText) {
+	case "false", "0", "no":
+		return false
+	case "true", "1", "yes":
+		return true
+	}
+	stdout.ErrorPrint(fmt.Sprintf("%s 需要 true/false，收到: %s", flagName, valueText))
+	return false
+}
+
+// cryptoPassword 生成随机密码：stdout 纯文本（count>1 逐行），管道友好。
+// 每个启用的字符类保底 1 字符再随机填充+洗牌（crypto/rand）。
+func cryptoPassword(restArgs []string) {
+	length := 16
+	if lengthText, hasLength := cmdutil.FlagValue(restArgs, "--length"); hasLength {
+		var parseOk bool
+		length, parseOk = parseIntStrict(lengthText)
+		if !parseOk || length < CRYPTO_PASSWORD_MIN_LENGTH || length > CRYPTO_PASSWORD_MAX_LENGTH {
+			stdout.ErrorPrint(fmt.Sprintf("--length 需要 %d-%d 整数，收到: %s",
+				CRYPTO_PASSWORD_MIN_LENGTH, CRYPTO_PASSWORD_MAX_LENGTH, lengthText))
+		}
+	}
+	count := 1
+	if countText, hasCount := cmdutil.FlagValue(restArgs, "--count"); hasCount {
+		var parseOk bool
+		count, parseOk = parseIntStrict(countText)
+		if !parseOk || count < 1 || count > CRYPTO_RANDOM_MAX_COUNT {
+			stdout.ErrorPrint(fmt.Sprintf("--count 需要 1-%d 整数，收到: %s", CRYPTO_RANDOM_MAX_COUNT, countText))
+		}
+	}
+	charsets := []struct {
+		name  string
+		chars string
+		on    bool
+	}{
+		{"lower", "abcdefghijklmnopqrstuvwxyz", cryptoPasswordBoolFlag(restArgs, "--lower", true)},
+		{"upper", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", cryptoPasswordBoolFlag(restArgs, "--upper", true)},
+		{"digit", "0123456789", cryptoPasswordBoolFlag(restArgs, "--digit", true)},
+		{"symbol", "!@#$%^&*()-_=+[]{}<>?,.", cryptoPasswordBoolFlag(restArgs, "--symbol", true)},
+	}
+	var combined strings.Builder
+	for _, charset := range charsets {
+		if charset.on {
+			combined.WriteString(charset.chars)
+		}
+	}
+	if combined.Len() == 0 {
+		stdout.ErrorPrint("至少启用一个字符类（--lower/--upper/--digit/--symbol 不能全部为 false）")
+	}
+	lines := make([]string, 0, count)
+	for lineIdx := 0; lineIdx < count; lineIdx++ {
+		password, genErr := cryptoGeneratePassword(length, charsets, combined.String())
+		if genErr != nil {
+			stdout.ErrorPrint("随机源失败: " + genErr.Error())
+		}
+		lines = append(lines, password)
+	}
+	stdout.TextPrint(strings.Join(lines, "\n"))
+}
+
+// cryptoGeneratePassword 保底每类 1 字符 + 随机填充 + Fisher-Yates 洗牌。
+func cryptoGeneratePassword(length int, charsets []struct {
+	name  string
+	chars string
+	on    bool
+}, combined string) (string, error) {
+	runes := make([]rune, 0, length)
+	for _, charset := range charsets {
+		if charset.on {
+			pick, pickErr := cryptoRandRune(charset.chars)
+			if pickErr != nil {
+				return "", pickErr
+			}
+			runes = append(runes, pick)
+		}
+	}
+	for len(runes) < length {
+		pick, pickErr := cryptoRandRune(combined)
+		if pickErr != nil {
+			return "", pickErr
+		}
+		runes = append(runes, pick)
+	}
+	for idx := len(runes) - 1; idx > 0; idx-- {
+		swapIdxBig, swapErr := rand.Int(rand.Reader, big.NewInt(int64(idx+1)))
+		if swapErr != nil {
+			return "", swapErr
+		}
+		swapIdx := int(swapIdxBig.Int64())
+		runes[idx], runes[swapIdx] = runes[swapIdx], runes[idx]
+	}
+	return string(runes[:length]), nil
+}
+
+// cryptoRandRune 从字符集里取一个随机字符（crypto/rand，拒绝采样防模偏）。
+func cryptoRandRune(chars string) (rune, error) {
+	for {
+		idxBig, randErr := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+		if randErr != nil {
+			return 0, randErr
+		}
+		return rune(chars[idxBig.Int64()]), nil
+	}
+}
+
+// cryptoUUID 生成 UUID v4：stdout 纯文本（count>1 逐行）。
+func cryptoUUID(restArgs []string) {
+	count := 1
+	if countText, hasCount := cmdutil.FlagValue(restArgs, "--count"); hasCount {
+		var parseOk bool
+		count, parseOk = parseIntStrict(countText)
+		if !parseOk || count < 1 || count > CRYPTO_RANDOM_MAX_COUNT {
+			stdout.ErrorPrint(fmt.Sprintf("--count 需要 1-%d 整数，收到: %s", CRYPTO_RANDOM_MAX_COUNT, countText))
+		}
+	}
+	upper := cryptoPasswordBoolFlag(restArgs, "--upper", false)
+	noDash := cryptoPasswordBoolFlag(restArgs, "--no-dash", false)
+	lines := make([]string, 0, count)
+	for lineIdx := 0; lineIdx < count; lineIdx++ {
+		id, genErr := cryptoGenerateUUID()
+		if genErr != nil {
+			stdout.ErrorPrint("随机源失败: " + genErr.Error())
+		}
+		if noDash {
+			id = strings.ReplaceAll(id, "-", "")
+		}
+		if upper {
+			id = strings.ToUpper(id)
+		}
+		lines = append(lines, id)
+	}
+	stdout.TextPrint(strings.Join(lines, "\n"))
+}
+
+// cryptoGenerateUUID v4：16 随机字节 + version/variant 位。
+func cryptoGenerateUUID() (string, error) {
+	var bytesRaw [16]byte
+	if _, readErr := io.ReadFull(rand.Reader, bytesRaw[:]); readErr != nil {
+		return "", readErr
+	}
+	bytesRaw[6] = (bytesRaw[6] & 0x0f) | 0x40
+	bytesRaw[8] = (bytesRaw[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x",
+		bytesRaw[0:4], bytesRaw[4:6], bytesRaw[6:8], bytesRaw[8:10], bytesRaw[10:16]), nil
 }
 
 // ─── 密钥生成 ───
@@ -90,10 +267,17 @@ func cryptoGenKey(restArgs []string) {
 		Type:  "PUBLIC KEY",
 		Bytes: marshalPublicKey(&privateKey.PublicKey),
 	})
-	// --output 前缀：密钥落盘（私钥 0600 保护 / 公钥 0644 共享）
+	// --output 前缀：密钥落盘（私钥 0600 保护 / 公钥 0644 共享）。
+	// 已存在即拒绝（2026-11-22 GUI 议题定案）：覆盖旧密钥会让旧公钥加密的
+	// 数据永久无法解开，静默覆盖是数据丢失——换名字或先删除旧文件。
 	if outputPrefix, hasOutput := cmdutil.FlagValue(restArgs, "--output"); hasOutput {
 		privPath := outputPrefix + "_private.pem"
 		pubPath := outputPrefix + "_public.pem"
+		for _, existing := range []string{privPath, pubPath} {
+			if _, statErr := os.Stat(existing); statErr == nil {
+				stdout.ErrorPrint("密钥文件已存在: " + existing)
+			}
+		}
 		if writeErr := os.WriteFile(privPath, privPEM, 0o600); writeErr != nil {
 			stdout.ErrorPrint("无法写入私钥文件: " + writeErr.Error())
 		}

@@ -127,6 +127,8 @@ func Compress(options CompressOptions, logf Logf) (CompressResult, error) {
 		result, compressErr = tarCompress(options, FormatTar, logf)
 	case FormatTarGz, FormatTarXz, FormatTarBz2, FormatTarZst:
 		result, compressErr = tarCompress(options, DetectWriteFormat(options.Output), logf)
+	case Format7z:
+		result, compressErr = sevenzCompress(options, logf)
 	default:
 		result, compressErr = zipCompress(options, logf)
 	}

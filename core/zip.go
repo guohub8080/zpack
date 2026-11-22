@@ -538,8 +538,15 @@ func zipWriteArchive(absoluteOutput string, tasks []compressTask, compressionLev
 	workerCount := min(jobs, ZIP_COMPRESS_MAX_WORKERS)
 	if workerCount <= 1 {
 		// 单工作协程等价于顺序路径：直接流式写，省一层缓冲
+		//（加密条目走流式加密路径——顺序路径不包 AES，曾在此漏明文）
 		for _, task := range tasks {
-			if writeErr := zipWriteSequentialEntry(zipWriter, task, compressionLevel); writeErr != nil {
+			writeEntry := zipWriteSequentialEntry
+			if password != "" {
+				writeEntry = func(zw *zip.Writer, tk compressTask, lvl int) error {
+					return zipWriteEncryptedSequentialEntry(zw, tk, lvl, password, passwordResolver)
+				}
+			}
+			if writeErr := writeEntry(zipWriter, task, compressionLevel); writeErr != nil {
 				return abortArchive(fmt.Errorf("写入文件失败: %s", writeErr.Error()))
 			}
 			progressState.doneFiles.Add(1)
@@ -699,8 +706,14 @@ func zipWriteArchive(absoluteOutput string, tasks []compressTask, compressionLev
 				return abortArchive(fmt.Errorf("写入文件失败: %s", outcome.err.Error()))
 			}
 			if outcome.result.degraded {
-				// 实际超出缓冲上限（collect 后文件变大等）：降级顺序流式写
-				if writeErr := zipWriteSequentialEntry(zipWriter, task, compressionLevel); writeErr != nil {
+				// 实际超出缓冲上限（collect 后文件变大等）：降级顺序流式写。
+				// 加密条目绝不降级明文（血案 m03442：带密码压大文件产出裸奔
+				// 归档零警告）——走临时文件流式 AES 路径，内存有界
+				if password != "" {
+					if writeErr := zipWriteEncryptedSequentialEntry(zipWriter, task, compressionLevel, password, passwordResolver); writeErr != nil {
+						return abortArchive(fmt.Errorf("写入文件失败: %s", writeErr.Error()))
+					}
+				} else if writeErr := zipWriteSequentialEntry(zipWriter, task, compressionLevel); writeErr != nil {
 					return abortArchive(fmt.Errorf("写入文件失败: %s", writeErr.Error()))
 				}
 			} else {

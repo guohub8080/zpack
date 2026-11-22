@@ -19,6 +19,8 @@ const SNIFF_HEADER_LEN = 512
 func DetectWriteFormat(outputPath string) Format {
 	lowerOutput := strings.ToLower(outputPath)
 	switch {
+	case strings.HasSuffix(lowerOutput, ".7z"):
+		return Format7z
 	case strings.HasSuffix(lowerOutput, ".tar"):
 		return FormatTar
 	case strings.HasSuffix(lowerOutput, ".tar.gz"), strings.HasSuffix(lowerOutput, ".tgz"):

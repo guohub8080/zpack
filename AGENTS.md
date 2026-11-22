@@ -6,7 +6,7 @@
 
 - **压缩/解压专项 CLI**：单文件二进制（零运行环境依赖），Mac 上一条命令交叉编译出 Windows exe；stdout 唯一 JSON 结果 + stderr 日志的输出契约天然是 Agent/未来 GUI 的协议。
 - 已交付：`compress` / `extract` 扁平命令（2026-11-02 定案）——**zip + tar/tar.gz 双格式**。zip 侧并行架构（条目级并行 + >16MB 文件 128KB 分块并行 + 魔数 Store 直通 + GBK 文件名修复 + 智能解压 + zip-slip 防护 + 有界内存耐久设计）；tar 侧 PAX 确定性写入 + 符号链接保留 + 魔数识别读取 + 穿越/链接逃逸/设备条目防护。7z/rar 读取为下一里程碑。
-- **北极星（2026-11-02 用户定案）**：单引擎双面孔——同一二进制服务 CLI 与未来 GUI（GUI 是经输出契约调用的薄壳，引擎层零感知）。**读取** zip/rar/7z/tar/tar.gz 百分百（全变体：zip64/分卷/加密带密码/SFX/GBK/符号链接）；**写入** zip/tar.gz（7z/rar 永不写——rar 法律禁止、7z 用户定案只读）；**不做私有格式**（互操作即护城河）。
+- **北极星（2026-11-02 用户定案；2026-11-22 修订）**：单引擎双面孔——同一二进制服务 CLI 与未来 GUI（GUI 是经输出契约调用的薄壳，引擎层零感知）。**读取** zip/rar/7z/tar/tar.gz 百分百（全变体：zip64/分卷/加密带密码/SFX/GBK/符号链接）；**写入** zip/7z/tar.gz（7z 于 2026-11-22 解禁——官方 7-Zip C++ 引擎进程内直调，见「7z 写入直调引擎」节；rar 永不写——法律禁止）；**不做私有格式**（互操作即护城河）。
 - **已决策：命令扁平化**（2026-11-02 用户拍板）：`zpack compress/extract <任意输入>`——写格式由 `--output` 扩展名定（.zip/.tar/.tar.gz/.tgz），读格式靠魔数识别；旧 `zpack zip …` 形态退役。
 - **已决策：格式策略**（2026-11-02 定案，同日修订）：读取格式**尽可能多**，判定标准是**开源实现/公开规格的可得性**而非格式出身——①公开格式（规格公开）尽量做；②私有格式但有许可兼容开源实现（MIT/BSD/公有领域）→ 纳入（alz=unalz BSD、pea=公开规格）；③只有 GPL 实现 → clean-room 重写才可（daa/isz=daa2iso/isz2iso），排末位；④无实现无规格（egg/j2j/k2k/bam）或安全污点格式（ace，CVE-2018-20250）→ 出局；rar 为专有出身例外（事实标准 + nwaples/rardecode MIT）。zpaq 实为开放标准（规格公开 + 参考实现公有领域），归公开格式。批次：A=bz2+zstd+单流gz+.001分卷（✅ 已交付）→ B=xz+lz4+brotli → C=7z+rar → D=iso+asar+uue+z+ar → E=cab/wim(LZX)/arj/lzh(+bh 捆绑评估)/lzip/nsis/zpaq → F=alz→pea→daa/isz（clean-room）。
 
@@ -60,6 +60,7 @@
 | `skill` | 纯文本：SKILL.md 全文（go:embed 内嵌，与二进制版本永不漂移） | `{"error_info":"..."}` |
 | `media convert <输入> <输出>` | `{"is_success":true,"mode":"remux\|audio-only\|full\|audio-only-output","input":"...","output":"...","video":{"action":"copy\|encode\|none","codec":"...","bitrate":N},"audio":{...},"size_bytes":N,"original_size_bytes":N,"ratio":N}` | `{"error_info":"..."}` |
 | `media compress <输入> [--target-size]` | 同上（mode 恒 full）+ `"target_bytes":N`；缺省目标=原始 50%；低于压缩下限（原始10%+音频）报错 | 同上 |
+| `image new <输出> <尺寸> [--color] [--ppi]` | `{"is_success":true,"width":N,"height":N,"target_format":"png","size_bytes":N,...}`（**空白占位图**：缺省全透明；`--color` 色名/#RRGGBB[AA]；尺寸三形态=`800x600` 像素 / `55x90mm|cm|in`+`--ppi`（缺省 300）/ 纸型 `a4|a4l|letter…`（尾缀 L/P 方向，pt→ppi 换算）；全格式 jpg/png/webp/bmp/tiff/gif；**透明按编码器真实 alpha 能力**：png/webp/tiff 保真（webp 透明像素级验证过），jpg/bmp/gif 会丢 → 明确报错引导；无扩展名缺省 .png；纯 Go） | `{"error_info":"..."}` |
 | `image compress <输入> [--target-size 100KB] [--priority size\|quality] [--output]` | 同 compress + `"strategy":"size-first","quality":90,"scale_percent":68,"target_bytes":N`（**双优先级**（2026-11-08 用户定案）：`size`（缺省）=质量钉 90 视觉无损档、二分缩放到刚好装下（5000×6000 类巨图主因是像素多）；`quality`=保像素优先（全尺寸降质至 q50 下限，不够再缩+回拉）；仅 jpg——webp=纯 Go 无损 VP8L 质量无效，png/bmp/tiff/gif 无损；源已达标 → 直拷贝 + `"already_fit":true`；缩至 5%+q1 仍超 → 报错引导；与 `--quality` 互斥） | `{"error_info":"..."}` |
 | `image info <输入>` | `{"format":"jpeg","width":N,"height":N,"size_bytes":N,"color_model":"ycbcr","orientation":6,"display_width":N,"display_height":N}`（orientation/display 仅 EXIF≠1 时出现） | `{"error_info":"..."}` |
 | `image rotate-left\|rotate-right\|rotate-180\|mirror\|flip <输入> <输出>` | `{"is_success":true,"input":"...","output":"...","source_format":"png","target_format":"png","width":N,"height":N,"size_bytes":N,...}`（纯像素重排无损，ffmpeg 像素级交叉验证） | `{"error_info":"..."}` |
@@ -75,6 +76,8 @@
 | `ffmpeg <原版任意参数...>` | **契约唯一例外**：透明代理（进程内直调——ffmpeg CLI 的 main 符号改名后静态链入，`zpack ffmpeg` 即普通 C 函数调用，零释放零子进程，原理见「ffmpeg CLI 进程内直调」节）——stdout/stderr/exit code 均为 ffmpeg 原生语义（stdout 可为二进制媒体流，`pipe:1` 场景必需），不走 JSON 信封；纯构建报「需完整版」 | — |
 | `audio convert <输入> <输出> [--bitrate] [--sample-rate] [--mono]` | `{"is_success":true,"mode":"audio-only-output","audio":{"action":"encode","codec":"...","bitrate":N},"size_bytes":N,"ratio":N,"bitrate":N,"sample_rate":N,"mono":true}` | `{"error_info":"..."}` |
 | `audio compress <输入> [--bitrate] [--mono]` | 同上 + `"original_bitrate":N`；缺省目标=原始码率 50%（下限 32k）；目标≥原始明确拒绝 | 同上 |
+| `burn devices` | `{"is_success":true,"devices":[{"index":0,"path":"/dev/sr0","vendor":"...","product":"...","media":"CD-R","status":"blank"}]}`（无光驱=空数组也算成功） | `{"error_info":"..."}` |
+| `burn <镜像.iso\|目录\|文件...> [--device N] [--speed N] [--volid 卷标] [--mode multi\|mastered\|live] [--close] [--blank] [--no-eject]` | `{"is_success":true,"image":"<绝对路径>","size_bytes":N,"mode":"multi","close":false,"blank":false}` | 同上 |
 | `skill --install [目录]` | `{"is_success":true,"skill":"zpack","installed":["<绝对路径>"],"size_bytes":N}`（无目录参数=探测 `~/.claude/skills`/`~/.agents/skills` 等全部命中处） | 同上 |
 
 ### stderr 过程日志（可忽略，不影响结果判断）
@@ -113,7 +116,7 @@ zpack compress 目录/ --output out.zip > /dev/null 2>&1 && echo "OK" || echo "F
 ## 命令规格（2026-11-02 扁平化定案：无格式子命令）
 
 **`zpack compress <目录|文件...> [--output out.zip|out.tar|out.tar.gz] [--exclude 名称]... [--level 0-9] [--jobs N]`**
-- **写格式由 `--output` 扩展名决定**：`.tar` → tar、`.tar.gz`/`.tgz` → tar.gz、其余（含缺省 `CWD/<首输入名>.zip`）一律 zip；已存在则覆盖；**`--volume-size <尺寸|模板>`** 分卷创建（100MB/1GB/64KB/65536 人读格式；**模板**（2026-11-04，大小写归一）：`gmail`25MB／`cd650`650MB／`cd`=`vcd`700MB／`fat32`4GiB-1／`dvd`=`dvd5`4.7GB／`dvd9`8.5GB／`bd`=`bd25`25GB／`bd50`50GB——介质标称容量 **SI 十进制精确字节**，与数字后缀的二进制 1024 基并存；格式无关字节切分 `.001/.002/...`，cat 即还原；**整档 ≤ 单卷大小时不切分——保持原文件名，不产孤零零的 .001**；下限 64KB=65536；tar/zip/tar.gz 通吃）
+- **写格式由 `--output` 扩展名决定**：`.tar` → tar、`.tar.gz`/`.tgz` → tar.gz、`.7z` → 7z（官方 C++ 直调引擎）、其余（含缺省 `CWD/<首输入名>.zip`）一律 zip；已存在则覆盖；**`--volume-size <尺寸|模板>`** 分卷创建（100MB/1GB/64KB/65536 人读格式；**模板**（2026-11-04，大小写归一）：`gmail`25MB／`cd650`650MB／`cd`=`vcd`700MB／`fat32`4GiB-1／`dvd`=`dvd5`4.7GB／`dvd9`8.5GB／`bd`=`bd25`25GB／`bd50`50GB——介质标称容量 **SI 十进制精确字节**，与数字后缀的二进制 1024 基并存；格式无关字节切分 `.001/.002/...`，cat 即还原；**整档 ≤ 单卷大小时不切分——保持原文件名，不产孤零零的 .001**；下限 64KB=65536；tar/zip/tar.gz 通吃）
 - **`zpack compress <目录|文件...> --output out.zip --password <值>`** 加密 zip 写入（WinZip AES-256 AE-2，零第三方依赖——PBKDF2/AES-CTR/HMAC 反向使用读取侧原语；`--password-table` 密码表支持逐文件密码；已知限制：p7zip 17.05 旧版不识别，自产自解+主流新版 7-Zip 待验证）
 - **`.zpackignore`**（gitignore 语义）：输入目录根/CWD 的 `.zpackignore` 自动生效——glob 模式、`#` 注释、`!` 反选、`/dir/` 目录限定、`/root` 根限定；`.zpackignore` 自身始终排除
 - 通用：默认排除系统垃圾（`.DS_Store`/`__MACOSX`/`Thumbs.db`/`desktop.ini`/`._` 前缀）；`--exclude` 按名精确匹配；目录以目录名为包内根前缀、多文件平铺进包根；中途失败删半成品；空目录不保留；非法 UTF-8 文件名报错；**`--temp-dir <目录>`**（2026-11-04，compress/extract/convert/bench 四命令通用）：临时落点指定（zip 分块溢写/convert 中转/bench 语料/cab 大文件夹溢写），缺省系统临时目录（Windows 上 %TEMP% 几乎总在 C: 盘——大转换指定到目标盘规避系统盘空间紧张）；指定目录不存在自动 MkdirAll；用后即清（只删自己的子目录，不动用户基目录）
@@ -122,7 +125,7 @@ zpack compress 目录/ --output out.zip > /dev/null 2>&1 && echo "OK" || echo "F
 - 输出：`{"is_success":true,"archive":<绝对路径>,"file_count":N,"size_bytes":N}`（字段 2026-11-02 由 `zip` 更名 `archive`，多格式语义）
 
 **`zpack extract <归档> [--output 目录] [--jobs N] [--force]`**
-- **读格式靠魔数识别不靠扩展名**：zip（PK 前缀 + SFX 兜底——EOCD 尾部定位）/ tar 四压缩壳 tar.gz/tar.xz/tar.bz2/tar.zst（压缩流魔数 + 内层 ustar 佐证）/ tar（ustar@257，覆盖 ustar/PAX/GNU 三系）/ **gzip·bzip2·zstd·xz·lz4·lzip 单流 + brotli（.br 扩展名门控）+ .Z（compress LZW，libarchive 公开算法移植）+ uuencode/xxencode（begin 头行嗅探，.xxe 扩展名区分；内嵌文件名优先，.uue/.xxe 裸体流不支持）**（非容器，解出为单文件，名=基名去压缩扩展名或内嵌名；跳过/覆盖语义同容器）/ **`.001` 顺序分卷**（首卷自动拼段 `.002/.003…` 为逻辑单文件后按内层魔数分发——zip 分卷即通；内层非归档则拼接还原单文件）；**7z 读取**（bodgit/sevenzip，随机访问，加密档案明确报暂不支持）；**rar 读取**（nwaples/rardecode v1.1.3，自家多卷命名自动续卷，创建法律禁止，v1.1.3 头无链接标记→rar 符号链接按普通文件落地）；**wim 读取**（nradchenko/go-wim，LZX 按需解码，多镜像按 N-镜像名/ 平铺；局限：LZMS/ESD、XPRESS、重解析点不支持）；**cab 读取**（MSCF + 存储柜直拷 + MSZIP 逐块独立 deflate 配 32K 跨块预置字典 + LZX ChunkDecoder 含 Intel E8 翻译——LZX+E8 已 7z 字节级交叉验证；Quantum 明确报暂不支持、跨柜多卷暂不支持）；**ar 读取**（GNU name///长名表//与 BSD #1/len 双命名系，纯 ReadAt 定位）；**asar 读取**（Electron 双 pickle 头 + JSON 目录，.asar 扩展名门控，unpacked 条目读兄弟目录）；**iso9660 读取**（kdomanski/iso9660，Rock Ridge 名生效，Joliet 名暂按基础层读——局限）；伪头/损坏明确报「无法读取 <格式> 归档」；无法识别报错（分卷源则回退还原）
+- **读格式靠魔数识别不靠扩展名**：zip（PK 前缀 + SFX 兜底——EOCD 尾部定位）/ tar 四压缩壳 tar.gz/tar.xz/tar.bz2/tar.zst（压缩流魔数 + 内层 ustar 佐证）/ tar（ustar@257，覆盖 ustar/PAX/GNU 三系）/ **gzip·bzip2·zstd·xz·lz4·lzip 单流 + brotli（.br 扩展名门控）+ .Z（compress LZW，libarchive 公开算法移植）+ uuencode/xxencode（begin 头行嗅探，.xxe 扩展名区分；内嵌文件名优先，.uue/.xxe 裸体流不支持）**（非容器，解出为单文件，名=基名去压缩扩展名或内嵌名；跳过/覆盖语义同容器）/ **`.001` 顺序分卷**（首卷自动拼段 `.002/.003…` 为逻辑单文件后按内层魔数分发——zip 分卷即通；内层非归档则拼接还原单文件）；**7z 读取**（bodgit/sevenzip，随机访问，加密读取经 `--password`（`NewReaderWithPassword`）——连 mhe 加密头都解）；**rar 读取**（nwaples/rardecode v1.1.3，自家多卷命名自动续卷，创建法律禁止，v1.1.3 头无链接标记→rar 符号链接按普通文件落地）；**wim 读取**（nradchenko/go-wim，LZX 按需解码，多镜像按 N-镜像名/ 平铺；局限：LZMS/ESD、XPRESS、重解析点不支持）；**cab 读取**（MSCF + 存储柜直拷 + MSZIP 逐块独立 deflate 配 32K 跨块预置字典 + LZX ChunkDecoder 含 Intel E8 翻译——LZX+E8 已 7z 字节级交叉验证；Quantum 明确报暂不支持、跨柜多卷暂不支持）；**ar 读取**（GNU name///长名表//与 BSD #1/len 双命名系，纯 ReadAt 定位）；**asar 读取**（Electron 双 pickle 头 + JSON 目录，.asar 扩展名门控，unpacked 条目读兄弟目录）；**iso9660 读取**（kdomanski/iso9660，Rock Ridge 名生效，Joliet 名暂按基础层读——局限）；伪头/损坏明确报「无法读取 <格式> 归档」；无法识别报错（分卷源则回退还原）
 - **`--password-table <文件>`**（边角功能，2026-11-03）：密码映射文件，每行 `匹配模式=密码`（精确文件名或 glob，`*=default` 兜底，`#` 注释）；**zip 逐文件独立生效**（随机访问+桥接解码器天然支持），rar/7z 取 `*` 通配命中作整档单密码（顺序流架构限制——逐文件多密码需多遍扫描，暂不做）；优先于 `--password`
 - 通用：`--output` 显式指定直接解进去；缺省智能解压（unar 语义）：单根直落当前目录、散装包一层以归档基名（`.tar.gz`/`.tgz` 剥复合后缀）命名的根目录（**当前目录最多出现一个新目录**）；`--force` 覆盖、**缺省跳过**已存在（O_EXCL 原子探测 + `skipped` 计数，保护已改动文件）；GBK 文件名修复（非 EFS 且非 UTF-8 → GBK 尽力解码，逐条 stderr 日志）；路径穿越防护（反斜杠归一后绝对路径/盘符/`..` 段拒绝）；重复条目名拒绝；校验自动
 - zip 专属：**加密读取**（WinZip AES + ZipCrypto，`--password` 值——零第三方依赖自实现 PBKDF2/AES-CTR/HMAC）；zip64 自动；空目录条目照建；`--jobs` 并行解压（缺省 `max(1, 核数/2)`、硬上限 32、≤文件数）
@@ -171,6 +174,7 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o bin/zpack.e
 go test ./...          # 单测（表驱动；纯逻辑函数才测，run* 函数直接 os.Exit 不测）
 go vet ./...           # + GOOS=windows / GOOS=linux go vet ./... 三平台编译验证
 bash build_cli/mac/build.sh   # mac 完整版产线：自动触发 ffmpeg_static.sh（首次源码级全静态 ~25 分钟，prefix 幂等）→ 静态链接 go build（ffmpeg CLI 对象进程内直调，~48MB 单文件）→ 校验零 brew 动态依赖
+go run ./scripts/genenv       # realEnvTest 真实体感数据一键生成（≈3.4GB 算法生成可复现；--fast/--full/--clean；见 scripts/genenv/README.md——门禁测确定性小样本，realEnvTest 测进度条/媒体/加密分卷的真实体感；目录 gitignore 不入库）
 bash verify/verify.sh        # 行为门禁：只测 bin/zpack（纯 Go 产物），确定性输出全字节比对（预期 226/226）
 bash verify/verify-media.sh  # 媒体门禁：需产线完整版 bin/zpack（128 用例：转码矩阵/压缩公式/几何变换/bake/HDR/EXIF/audio/ffmpeg 直调），夹具用系统 ffmpeg 生成
 bash verify/verify-image.sh  # 图片门禁：纯 Go 即可（65 用例：格式互转/物理尺寸/变换 ffmpeg 像素级交叉/merge/EXIF 定向）
@@ -178,7 +182,12 @@ bash verify/verify-image.sh  # 图片门禁：纯 Go 即可（65 用例：格式
 
 ### 双层开发节奏（cgo 早已按 build tag 分层——纯功能开发用纯循环）
 
-**纯 Go 循环（默认——pdf/hash/压缩/图片标准格式等纯功能的日常开发）**：
+> **产物定案（2026-11-22 用户拍板：无「纯 Go 心结」，一切以功能好用为基础）**：
+> `bin/zpack` 与装机产物**恒为完整版**（`build_cli` 产线 CGO 构建——media/audio/HDR/HEIC/ffmpeg 直调全可用）；
+> 纯 Go 构建只是**开发期快速编译循环**的工具，不得作为交付/装机产物（纯 Go 下 media 族报「需完整版」——用户会当场撞墙）。
+> 每轮改动收尾时若动过引擎代码：跑产线重铸 bin/zpack + 刷新两装机位（/Applications/zpack.app 与 zpack Finder Menu.app 各自 Resources/zpack）。
+
+**纯 Go 循环（开发期快速编译——pdf/hash/压缩/图片标准格式等纯功能的日常迭代）**：
 ```bash
 CGO_ENABLED=0 go build -o bin/zpack-dev ./cmd/zpack   # 热缓存 ~1s / 冷 ~10s
 CGO_ENABLED=0 go test ./...                            # ~4s
@@ -219,6 +228,8 @@ bin/zpack-dev <命令>                                   # media/HDR/HEIC/ffmpeg
 14. **解码循环**：单包直收对 libjxl 不够（首包不吐帧 EAGAIN）——收帧-读包循环 + `SendPacket(nil)` EOF 冲洗；帧跨函数传递用 `Ref()` 克隆（内部帧 free 后调用方仍有效）
 
 **office_oxide 静态产线（2026-11-08）**：`build_cli/mac/office_static.sh`——v0.1.16 @ cargo（需 brew rust），crate-type 自带 staticlib → `office/libs/liboffice_oxide.a`（44MB，链接按需取件实际增重 ~12MB）+ 头文件；**克隆后必须清除 examples/cmd 与游离 *.go**（污染宿主模块 `go build ./...` 包图——踩过）。作者 Yury F.（pdf_oxide 1179⭐ 同作者）；许可 MIT/Apache-2.0。手搓 cgo 薄壳（SRCDIR libs 模式，同 ffmpegcli），不用其官方 Go 包（env-var 链接不满足裸构建自含）。构建产线入口 `build.sh` 已串接（office/libs 缺失自动触发）。
+
+**7z 写入直调引擎（2026-11-22 用户拍板「全量接入官方 C」）**：`build_cli/mac/sevenzip_static.sh`——ip7z/7zip tag 25.01 Alone2 bundle（全格式读+写引擎）铸 `internal/sevenzipcli/libs/libzpack_7zcli.a`（~3.7MB，311 对象）；许可=7-Zip LGPL + unRAR 特许（**Rar*.o 归档阶段剥除，unRAR 限制代码不入产物**）。直调形态同 ffmpeg（main 改名 `extern "C" zpack_7z_main` 进程内调用），差异=**7z 不 exit 正常返回退出码**。接线：`core/sevenz.go` sevenzCompress（@listfile+`-scsUTF-8 -spd` 清单进名、快路径 chdir 基目录保树/staging 硬链接克隆兜底、chdir 全程 mutex、已存在先删、退出码 ≥2=错误 1=警告容忍、分卷走通用切分器）；`.7z` 经 DetectWriteFormat 进 compress。**产线四坑**：①注册靠静态 ctor——普通 .a 按需拉取拉不到注册对象（E_NOTIMPL），`ld -r` 全对象合并单一可重定位对象再 ar 单成员归档（=whole-archive 语义；cgo 拒绝带路径的 -Wl,-force_load）；②DISABLE_RAR 只被 Format7zF 的 Arc_gcc.mak 认，Alone2+cmpl_*.mak 无视；③USE_ASM=1 撞 `and` 宏 × -Wc++-keyword（clang 把 .S 当 C++）+ var_*.mak 的 -Weverything 撞 C 代码——`USE_ASM= CFLAGS_WARN="-Wno-everything"` 双覆盖；④main 改名后可执行链接必败（预期，只要 .o）。已知限制：`--jobs`/`--password-table`/注释对 7z 忽略（logf 提示）；Windows 产线待铺（M2）。互操作：homebrew 7zz 26.05 交叉读 ✓；自家 extract（bodgit）连 mhe 加密头都解 ✓。
 
 **✅ Windows 首实测（2026-11-08，Win11 26200 x64 + Git Bash + Go 1.27.3 windows/amd64）**：纯 Go 构建通过（`CGO_ENABLED=0 go build` → 16.99MB/-s -w）；`go vet` 三平台（windows/linux/darwin）全过；`go test ./...` 全绿。**修复 7 个 Windows 特有潜伏 bug（mac 上全部无症状）**：
 1. **tar 读侧句柄泄漏**（`core/tar.go` openTarStream）：底层流开了只关解压层不关本体——Windows 删被占文件失败暴露（TempDir 清理报「being used by another process」）；closeChain 链式关闭（解压层→底层流）。
@@ -283,11 +294,36 @@ docs/                 ← 研究资料目录（本地私藏——逆向研究文
 ## 路线图（优先级序，2026-11-02 修订）
 
 1. **tar/tar.gz 全链**（进行中）：标准库 `archive/tar`+`compress/gzip` 零新依赖；写（compress 按扩展名）+ 读（extract 魔数：gzip `1F 8B` / ustar@257）+ CLI 扁平化改造一次做
-2. ~~`extract` 通吃 7z/rar~~ **✅ 已交付（2026-11-02 批次 C）**：bodgit/sevenzip v1.6.5（7z 随机访问读取，**文件级并行解出**；**加密读取**（`NewReaderWithPassword`，`--password`））+ nwaples/rardecode v1.1.3（RAR 1.0-5.0 读取，自家多卷命名自动续卷；加密在读取时浮出并明示；v1.1.3 头无链接标记→符号链接按普通文件落地；**串行解出**——rar 引擎无并行机制惯例；**加密读取**（密码传入 `OpenReader`；部分加密档案预扫降级+逐文件密码错误跳过——混合密码已知限制））。夹具入库 `core/testdata/`（7z 中文路径/RAR4/RAR5/多卷）。遗留：无。~~7z 创建后置评估~~ **已定案（2026-11-03 用户拍板）：7z 只读不写**——写面恒为 zip + tar 系，与 rar 同为读侧格式。~~解出并行化~~ ✅ 已交付（2026-11-03：7z 文件级并行 + 全路径 file_count 语义统一为排除 skipped）
+2. ~~`extract` 通吃 7z/rar~~ **✅ 已交付（2026-11-02 批次 C）**：bodgit/sevenzip v1.6.5（7z 随机访问读取，**文件级并行解出**；**加密读取**（`NewReaderWithPassword`，`--password`））+ nwaples/rardecode v1.1.3（RAR 1.0-5.0 读取，自家多卷命名自动续卷；加密在读取时浮出并明示；v1.1.3 头无链接标记→符号链接按普通文件落地；**串行解出**——rar 引擎无并行机制惯例；**加密读取**（密码传入 `OpenReader`；部分加密档案预扫降级+逐文件密码错误跳过——混合密码已知限制））。夹具入库 `core/testdata/`（7z 中文路径/RAR4/RAR5/多卷）。遗留：无。~~7z 只读不写（2026-11-03 旧定案）~~ **已解禁（2026-11-22 用户拍板）：7z 全量接入官方 C++**（7-Zip 25.01 Alone2 进程内直调，见「7z 写入直调引擎」节）；rar 仍永不写（法律）。~~解出并行化~~ ✅ 已交付（2026-11-03：7z 文件级并行 + 全路径 file_count 语义统一为排除 skipped）
 3. ~~读取硬化~~ **①加密读取已交付（2026-11-03）**：zip 加密读取全通（WinZip AES-128/192/256 AE-1/AE-2 + ZipCrypto——零第三方依赖，PBKDF2-HMAC-SHA1×1000/AES-CTR/10B HMAC 全自实现，`--password` 旗标）；7z 加密读取（`NewReaderWithPassword`）；rar 加密读取（密码传入 `OpenReader`）；部分加密降级（混合密码场景预扫降级+逐文件密码错误跳过）。遗留：`.z01` 分卷/v7 tar/sparse/fuzz 语料
 4. `--exclude` 支持 glob（如 `*.bak` 模式）
 5. `--codec zlib` 档（病态超重复语料比值敏感场景，zlib 逐块比 klauspost 省 ~23%）
-6. **UI 面**（引擎稳定后，见 ui/doc.go）：GUI 壳（`ui/gui/`，壳技术另议）+ **右键菜单**（`ui/right-click/`：macOS Finder Services/FinderSync、Windows Explorer 注册表菜单、Linux .desktop/nautilus 脚本）——全部是"启动器"，经 stdout JSON 契约驱动 CLI 二进制；GUI 二进制届时新增 `cmd/zpack-ui`
+6. **UI 面**（引擎稳定后，见 ui/doc.go）：GUI 壳（`ui/gui/`，壳技术另议——asuka/mygo/nsgo 调研完毕待原型验证）+ **右键菜单 mac 侧已交付**（2026-11-19，见下）+ Windows Explorer/Linux 待铺——全部是"启动器"，经 stdout JSON 契约驱动 CLI 二进制；GUI 二进制届时新增 `cmd/zpack-ui`
+
+   **GUI 交互铁律（2026-11-21 用户定案，所有可点元素无例外）**：
+   - **凡可点击必带 hover 特效 + 按下反馈**——hover 变色/加深/放大任一，Pressed 有"被按下去"的感觉（下沉/缩放/变色任一）；静止态可隐藏（如行 hover 浮现的操作钮），但浮现后同样要完整反馈。无声无息的可点元素= bug。**实心彩色控件例外**（如红底徽章钮，f55ac32）：底色反馈会被本体吞掉，hover 反馈可以「显著放大」代偿（用户定案 2026-11-21）。
+   - **符号（减号/叉/对勾/箭头等）一律 SVG**（mygo `icon()` 管线，16×16 描边 path），禁止特殊 Unicode 字形当图标——"✕"曾因字体缺字渲染成空方块，用户以为删除功能不存在；任务状态 ✓/✗ 字形同样已换 iconCheck/iconCross（用户 2026-11-21 定案）。
+   - **样式覆盖后自查反馈连带**：剥掉组件自带底色/边框（如把 ui.Select 融入连体字段）会把 hover 底色一起盖掉——覆盖后必须逐帧条件回填 hover/Pressed 反馈并补 `Cursor(ui.CursorPointer)`（2026-11-21 违反后补的防呆条目）。
+   - **`iconRaw`（自带 fill 的固定色图标）必须配 `ui.Image` 渲染；`ui.Icon` 是 currentColor 单色遮罩管线**——把 iconRaw 喂给 `ui.Icon` 会把固定色烧成黑色（哈希页/归档清单行的 iconFile 两次踩坑，2026-11-22）。判别法：定义处走 `icon()`（stroke=currentColor）→ `ui.Icon`+TextColor；走 `iconRaw()`（写死 fill）→ `ui.Image`，无 TextColor。新建页面清单行复制现成行的图标调用时，先看它用的哪条管线。
+   - **光标链断点（2026-11-22 实测定案）**：mygo `updateCursor` 沿 hover 链 innermost-first 找**首个设了 cursor 的节点**，遇 `flagClickable` 且未设 cursor 的节点直接 break（runtime.go:1946）——官方可点组件（Radio/Checkbox/Switch/Select 触发器）全部 `flagClickable` 但不设 cursor，**放在 ButtonBase 里会把外层 Pointer 挡成箭头**。整框统一手型的正解=给这些组件的返回值链式补 `.Cursor(ui.CursorPointer)`（压缩策略 radio 实证：圆点区箭头、字区小手的割裂感即此因）。
+   - **多行控件行的 label 对齐用头渲实测，不猜（2026-11-22 定案）**：`openSettingRowTop`（AlignItems(Start) 版 openSettingRow）里 label 列与控件区第一个元素的字带天然差一个「控件框 Padding top」（如 ButtonBase Padding(5,5) → label 偏上 5px）——修法=label 列 `.Padding(5, 0, 0, 0)` 补偿同值；`AlignItems(ui.Baseline)` 对「无直系文本的控件框」解析不稳（实测偏下 3.5px），弃用。验证管线：临时 go test `ui.NewTester(页面闭包,w,h)`+`png.Encode(tester.Image())` 落 PNG→PIL 数字带中心差（判定 ≤1px 为齐；注意 headless 渲染 scale=1 无 Retina，DIP=像素）。先例：压缩策略四 radio 行（title 心 vs label 心 +0.5px 达标）。
+   - mygo 细节：`Cursor(ui.CursorPointer)` 不随 ButtonBase 自动给，须手动；动画 `Animate(key,target,d)`/`AnimateColor`（ui.Snappy 预设够用），条件调用即帧内生效，ReduceMotion 框架自动直跳。
+
+   **右键菜单 macOS 双轨交付（ui/right-click/macos/）**：
+   - **Quick Action 轨（装机可用，免签名）**：`quickaction.sh` → `~/Library/Services/` 三服务（zpack 压缩/解压/测试，Finder 右键→快速操作）。核心工程：document.wflow 用**真样例模板克隆**（plistlib 改参 `COMMAND_STRING`/`inputMethod=1`——现代 RunShellScriptAction 认 COMMAND_STRING，手写 `source`+`inputAsArguments` 是不执行的老参数集）；heredoc 转义纪律（\$ 运行期转义、引号裸写、严禁反斜杠引号）与解压补 `cd`（智能解压落服务进程 CWD 而非归档目录）两个坑已固化
+   - **FinderSync 轨（✅ 已装机全链可用，2026-11-21）**：`build-xcode.sh` → `/Applications/zpack Finder Menu.app`（2026-11-21 宿主让位改名——`/Applications/zpack.app` 归 GUI 本体正名；扩展经 pluginkit -a 重登记。Xcode 工程 `xcode/`：Swift appex + SwiftUI 宿主壳 + 内嵌 zpack 引擎）。一级「zpack ▸」菜单（压缩为 ZIP/TAR.GZ、解压到此处、测试归档——按选中物魔数动态出项，归档判定=内嵌 zpack list 退出码）；**三层图标体系（2026-11-21 用户两轮定案：①双色 Z（蓝 #376DB5+青 #72C3A0）是品牌资产必须保留——首版重绘误改纯蓝已被否；②「不要渐变」指底板渐变/阴影 → 底板纯平浅色 #F5F8FB；③「显大一圈」根因=旧主图 squircle 顶满 1024 画布 → 修复=内容 824/1024=80.5% 四周透明边距（Apple 模板同款；NSWorkspace.icon 渲染实测不透明占比 66%）**：app 本体=squircle 浅底+双色 Z（`zpack.icns`，源=assets/zpack-app-icon-1024.png，GUI 侧 ui/gui/resources/icon.png 同图同源，mygo pngToICNS 自动派生）、右键一级菜单=SVG 造型透明底双色（`zpack-menu.icns`，`isTemplate=false` 保彩色；源=assets/zpack-icon.svg+.1024.png）、子菜单纯文字。图标重生成器=/tmp/regen_icons2.py 已用即弃（git 取回原双色满幅图→饱和掩膜裁 Z 层保双色→LANCZOS 等比贴入超采样 squircle→iconutil 铸 icns）；全新 xcodebuild 产物 appex 无 Resources 目录，build-xcode.sh cp 前已 mkdir -p
+   - **FinderSync 通信架构定案（任务文件通道——血泪实测三连败后的唯一全通解）**：appex（沙箱+硬化）只管菜单构建与选中分类；动作=①任务 JSON 写 appex 自家容器（`~/Library/Containers/<appex-id>/Data/zpack-job.json`——沙箱内写自家=永远合法）②`NSWorkspace.openApplication` 拉起宿主（非沙箱，不带参数）③宿主轮询 5 秒取单即删（防重复执行）→跑内嵌引擎→原生弹窗→一单一命退出；裸启动 5 秒无单即退（防吞下一单）。**弹窗交互规范（Windows 侧将来同款）**：确定=默认钮、**回车即确认**、按钮标题带 **5 秒倒计时**（`确定 (5)…(1)`，不管它就自动确认关窗——Timer 必须挂 `modalPanel` RunLoop 模式，模态期间 default 模式不跑）；打开文件夹=次要钮无快捷键防误触；超时（stopModal）与手动确认同归；**弹窗聚焦定案**：①启动时（didFinishLaunching）即 `NSApp.setActivationPolicy(.regular)`——accessory/LSUIElement 临到弹窗才升，窗口服务器激活注册来不及；②弹窗时 `activate(ignoringOtherApps:)` + `makeKeyAndOrderFront` + 浮层 level；验证法=弹窗期间 `osascript` 查 frontmost 进程名（肉眼不可靠）。**NSAlert 双 primary 陷阱**：先加的钮=右侧+自动默认——次要钮先加会被默认化，再给另一钮设 `\r` → 两钮全 primary；正确姿势=确定先加（唯一 `\r`），打开文件夹后加且 `keyEquivalent="\r"` 清空；**压缩命名=去扩展名**（照片.jpg→照片.zip，绝不 .jpg.zip）+ **同名不覆盖自动序号**（照片.zip 已在→照片 2.zip→照片 3.zip——CLI 契约仍覆盖，仅 Finder 面走序号保护）
+   - - **GUI 组件先查再造（2026-11-21 用户定案，震怒教训）**：ui/gui 任何交互行为动手前必查 `ui/gui/MYGO-COMPONENTS.md`（mygo v0.10.0 全组件清单+343 Element 方法速查+使用审计）——清单拖拽排序曾手搓 8 轮仍变高行错位，框架 `ui.List`+`ListState.Reorder` 开箱即得（0e9eb02 退役 217 行手搓）；深度定制须注明「机件合规」，纯手搓须在清单记弃用理由。
+
+**FinderSync 陷阱清单（改右键/签名/图标前先读，全部实测踩过）**：
+     - **死路三条（2026-11-21 逐条实测否决，勿再走）**：①沙箱 appex 自己 spawn zpack——写用户目录被拒，且 NSAlert 在 appex 进程弹不出（扩展无 UI 权）；②`NSWorkspace.OpenConfiguration.arguments` 传任务参数——**从沙箱扩展发起的 LS 启动会静默丢参数，回调还谎报成功**（Terminal 直跑同 API 则正常）；③自定义 URL scheme（CFBundleURLTypes+GURL AppleEvent）——**本机 macOS 26 上 GURL 事件冷/热启动均不送达**（最小纯 AppKit app+开发证书+`onOpenURL`/`setEventHandler`/`currentAppleEvent` 三接收路径全空；LS 拉起 app 本身正常，事件投递层整层哑）。结论：扩展→宿主只信文件读写+进程启动两个原语
+     - **DerivedData 假注册=右键静默消失元凶**：xcodebuild 不带 `-derivedDataPath` 走默认 DerivedData，Xcode 构建完自动注册那里的 appex——与 /Applications 注册同 ID 打架，pluginkit 加载假路径即哑。部署铁律（已固化 build-xcode.sh）：`pluginkit -r` 拔全部历史路径（含 DerivedData）→ 装 /Applications → 只注册真身
+     - **appex 手动 codesign 必带 `--options runtime`**（裸签抹掉 Hardened Runtime=macOS 26 pluginkit 拒载）；签名顺序先 appex 后 app 外壳
+     - **选中项快照**：`selectedItemURLs()` 在动作触发时（菜单已关）可能失效——`menu(for:)` 里快照存实例变量，动作读快照
+     - **宿主一单一命**：干完弹窗退出；裸启动即退。常驻实例会把下次 LS 启动退化成 activate——参数/事件/任务文件轮询窗口全错过
+     - qlmanage 渲 SVG 必拍平白底——透明底用 Chrome headless `--default-background-color=00000000`；icns=PIL iconset 十件套+`iconutil -c icns`
+     - appex 也要 main（NSApplicationMain）；bin/zpack 自定义图标资源叉须 `xattr -cr` 清否则 codesign 拒签；扩展注册走 pluginkit 与宿主进程无关（勿裸 open 宿主）
+     - 诊断利器：appex 写文件探针到自家容器（统一日志在 appex 里常不可靠）；宿主非沙箱可写 /tmp
 7. ~~**剥离完成 SOP**~~ ✅ **已完成**：exkit 侧已删除 `zip` 命令与 verify 对应段、klauspost+x/text 依赖已退场、AGENTS.md/README 已指向 zpack（exkit 提交 04b8464，门禁 170→171）
 
 ## 环境事实

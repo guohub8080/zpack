@@ -603,6 +603,14 @@ open('$cr_dir/pub.pem', 'w').write(r['public_key'])
 open('$cr_dir/priv.pem', 'w').write(r['private_key'])
 " 2>/dev/null
 [ -s "$cr_dir/pub.pem" ] && [ -s "$cr_dir/priv.pem" ]; assert_equal "crypto genkey 密钥产出" 0 "$?"
+# genkey 覆盖守卫：已存在即拒绝，旧文件原封不动（2026-11-22）
+printf 'SENTINEL-OLD-KEY' > "$cr_dir/kp_private.pem"
+printf 'SENTINEL-OLD-PUB' > "$cr_dir/kp_public.pem"
+cr_dup=$("$NEW_CLI" crypto genkey --bits 2048 --output "$cr_dir/kp" 2>/dev/null); cr_dup_exit=$?
+assert_equal "crypto genkey 已存在拒绝 exit" 1 "$cr_dup_exit"
+echo "$cr_dup" | grep -q "密钥文件已存在"; assert_equal "crypto genkey 已存在拒绝 error_info" 0 "$?"
+assert_equal "crypto genkey 已存在旧私钥未被覆盖" "SENTINEL-OLD-KEY" "$(cat "$cr_dir/kp_private.pem")"
+assert_equal "crypto genkey 已存在旧公钥未被覆盖" "SENTINEL-OLD-PUB" "$(cat "$cr_dir/kp_public.pem")"
 CR_ENC=$("$NEW_CLI" crypto encrypt --key-file "$cr_dir/pub.pem" "你好secret" 2>/dev/null)
 CR_DEC=$("$NEW_CLI" crypto decrypt --key-file "$cr_dir/priv.pem" "$CR_ENC" 2>/dev/null)
 assert_equal "crypto 短文本加密解密" "你好secret" "$CR_DEC"
@@ -612,6 +620,33 @@ head -c 5000 /dev/urandom > "$cr_dir/big.bin"
 cmp -s "$cr_dir/big.bin" "$cr_dir/big.out"; assert_equal "crypto 混合加密 5KB 往返" 0 "$?"
 new_out=$("$NEW_CLI" crypto encrypt --key-file "$cr_dir/priv.pem" "wrong" 2>/dev/null); new_exit=$?
 assert_equal "crypto 错误密钥 exit" 1 "$new_exit"
+# crypto password / uuid（2026-11-22 随机生成页引擎面）
+cr_pw=$("$NEW_CLI" crypto password --length 24 2>/dev/null); cr_pw_exit=$?
+assert_equal "crypto password exit" 0 "$cr_pw_exit"
+assert_equal "crypto password 长度" 24 "${#cr_pw}"
+cr_pws=$("$NEW_CLI" crypto password --length 16 --count 3 2>/dev/null)
+assert_equal "crypto password count 行数" 3 "$(printf '%s\n' "$cr_pws" | wc -l | tr -d ' ')"
+cr_pw_nosym=$("$NEW_CLI" crypto password --length 64 --symbol=false 2>/dev/null)
+if printf '%s' "$cr_pw_nosym" | grep -qE "[!@#$%^&*()_=+\[\]{}<>?,.]"; then report_fail "crypto password --symbol=false 排除符号" "无符号" "含符号"; else report_pass; fi
+cr_pw_noupper=$("$NEW_CLI" crypto password --length 64 --upper false 2>/dev/null)
+if printf '%s' "$cr_pw_noupper" | grep -qE "[A-Z]"; then report_fail "crypto password --upper false 排除大写" "无大写" "含大写"; else report_pass; fi
+cr_pw_allfalse=$("$NEW_CLI" crypto password --lower=false --upper=false --digit=false --symbol=false 2>/dev/null); cr_pw_af_exit=$?
+assert_equal "crypto password 全关 exit" 1 "$cr_pw_af_exit"
+echo "$cr_pw_allfalse" | grep -q "至少启用一个字符类"; assert_equal "crypto password 全关 error_info" 0 "$?"
+cr_pw_short=$("$NEW_CLI" crypto password --length 3 2>/dev/null); cr_pw_short_exit=$?
+assert_equal "crypto password 长度越界 exit" 1 "$cr_pw_short_exit"
+cr_uuid=$("$NEW_CLI" crypto uuid 2>/dev/null); cr_uuid_exit=$?
+assert_equal "crypto uuid exit" 0 "$cr_uuid_exit"
+if printf '%s' "$cr_uuid" | grep -qE "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"; then report_pass; else report_fail "crypto uuid v4 格式" "v4 小写" "$cr_uuid"; fi
+cr_uuids=$("$NEW_CLI" crypto uuid --count 5 --upper 2>/dev/null)
+assert_equal "crypto uuid count 行数" 5 "$(printf '%s\n' "$cr_uuids" | wc -l | tr -d ' ')"
+if printf '%s\n' "$cr_uuids" | grep -qvE "^[0-9A-F-]+$"; then report_fail "crypto uuid --upper 大写" "全大写" "含小写"; else report_pass; fi
+cr_uuid_nd=$("$NEW_CLI" crypto uuid --no-dash 2>/dev/null); cr_uuid_nd_exit=$?
+assert_equal "crypto uuid --no-dash exit" 0 "$cr_uuid_nd_exit"
+assert_equal "crypto uuid --no-dash 长度 32" 32 "${#cr_uuid_nd}"
+if printf '%s' "$cr_uuid_nd" | grep -q "-"; then report_fail "crypto uuid --no-dash 无连字符" "无-" "含-"; else report_pass; fi
+cr_uuid_ndu=$("$NEW_CLI" crypto uuid --no-dash --upper 2>/dev/null)
+if printf '%s' "$cr_uuid_ndu" | grep -qvE "^[0-9A-F]+$"; then report_fail "crypto uuid --no-dash --upper" "32 大写hex" "$cr_uuid_ndu"; else report_pass; fi
 rm -rf "$cr_dir"
 # list / test / info 命令
 li_src="/tmp/zpack-verify-li-$$"
@@ -644,6 +679,26 @@ if echo "$new_out" | grep -q '"all_ok":true'; then report_pass; else report_fail
 "$NEW_CLI" compress "$li_src" --output "/tmp/zpack-verify-li-enc.zip" --password PW >/dev/null 2>&1
 new_out=$("$NEW_CLI" info "/tmp/zpack-verify-li-enc.zip" 2>/dev/null)
 if echo "$new_out" | grep -q '"encrypted":true'; then report_pass; else report_fail "info 加密标记" "true" "$new_out"; fi
+
+# 加密大条目真加密（血案回归：>256KB 缓冲上限曾降级明文顺序写，产物裸奔零警告）
+enc_big_src="/tmp/zpack-verify-encbig-$$"
+mkdir -p "$enc_big_src"
+head -c 300000 /dev/urandom > "$enc_big_src/big.txt"  # 随机不可压：保证压缩后仍超单卷（tr 零字节会压到 700B 触发不切分）
+"$NEW_CLI" compress "$enc_big_src/big.txt" --output "/tmp/zpack-verify-encbig.zip" --password PW >/dev/null 2>&1  # 压文件本体：目录输入会以目录名包一层根
+enc_no_pw_dir="/tmp/zpack-verify-encbig-nopw"
+"$NEW_CLI" extract "/tmp/zpack-verify-encbig.zip" --output "$enc_no_pw_dir" >/dev/null 2>&1
+enc_no_pw_exit=$?
+assert_equal "加密大条目无密码解压拒绝" 1 "$enc_no_pw_exit"
+"$NEW_CLI" extract "/tmp/zpack-verify-encbig.zip" --output "/tmp/zpack-verify-encbig-pw" --password PW >/dev/null 2>&1
+assert_equal "加密大条目带密码解压 exit" 0 "$?"
+cmp -s "/tmp/zpack-verify-encbig-pw/big.txt" "$enc_big_src/big.txt"; assert_equal "加密大条目往返一致" 0 "$?"
+# 分卷+密码组合（血案触发现场）
+"$NEW_CLI" compress "$enc_big_src/big.txt" --output "/tmp/zpack-verify-encspan.zip" --password PW --volume-size 150KB >/dev/null 2>&1
+"$NEW_CLI" extract "/tmp/zpack-verify-encspan.zip.001" --output "/tmp/zpack-verify-encspan-x" >/dev/null 2>&1
+assert_equal "加密分卷无密码解压拒绝" 1 "$?"
+"$NEW_CLI" extract "/tmp/zpack-verify-encspan.zip.001" --output "/tmp/zpack-verify-encspan-ok" --password PW >/dev/null 2>&1
+assert_equal "加密分卷带密码解压 exit" 0 "$?"
+rm -rf "$enc_big_src" /tmp/zpack-verify-encbig* /tmp/zpack-verify-encspan*
 
 # rar
 new_out=$("$NEW_CLI" info "$FIXTURE_DIR/rar/single-rar4.rar" 2>/dev/null)
@@ -1000,6 +1055,68 @@ echo "$envelope" | "$NEW_CLI" json get data.entries.9.name >/dev/null 2>&1; asse
 echo 'garbage' | "$NEW_CLI" json ok >/dev/null 2>&1; assert_equal "json 非法输入 exit" 1 "$?"
 "$NEW_CLI" json get >/dev/null 2>&1; assert_equal "json get 缺路径 exit" 1 "$?"
 "$NEW_CLI" json --help >/dev/null 2>&1; assert_equal "json --help exit" 0 "$?"
+
+# ── burn 光盘刻录（无光驱机器=空设备表也算契约正确）──
+"$NEW_CLI" burn devices >/dev/null 2>&1; assert_equal "burn devices exit" 0 "$?"
+burn_dev_json=$("$NEW_CLI" burn devices 2>/dev/null)
+assert_equal "burn devices 信封" "true" "$(echo "$burn_dev_json" | "$NEW_CLI" json get is_success 2>/dev/null)"
+echo "$burn_dev_json" | "$NEW_CLI" json get data.devices >/dev/null 2>&1; assert_equal "burn devices devices 字段 exit" 0 "$?"
+"$NEW_CLI" burn /nonexistent-path.iso >/dev/null 2>&1; assert_equal "burn 输入不存在 exit" 1 "$?"
+echo "$("$NEW_CLI" burn /nonexistent-path.iso 2>/dev/null)" | grep -q "输入不存在" && report_pass || report_fail "burn 输入不存在 error_info" "输入不存在" "缺失"
+"$NEW_CLI" burn /tmp --mode live >/dev/null 2>&1; assert_equal "burn live 非 Windows 拒绝 exit" 1 "$?"
+"$NEW_CLI" burn --help >/dev/null 2>&1; assert_equal "burn --help exit" 0 "$?"
+
+# ── burn 多输入（2026-11-22 用户定案：任意数量文件/文件夹）──
+burn_multi_a=$(mktemp /tmp/zpack-burn-ma.XXXXXX); printf 'ma' >"${burn_multi_a}"
+burn_multi_b=$(mktemp /tmp/zpack-burn-mb.XXXXXX); printf 'mb' >"${burn_multi_b}"
+burn_iso_tmp=/tmp/zpack-burn-fake.iso; printf 'PK-fake-not-iso' >"${burn_iso_tmp}"
+"$NEW_CLI" burn "${burn_multi_a}" "${burn_multi_b}" >/dev/null 2>&1
+assert_equal "burn 多文件 exit(无光驱=1)" 1 "$?"
+burn_multi_json=$("$NEW_CLI" burn "${burn_multi_a}" "${burn_multi_b}" 2>/dev/null)
+echo "${burn_multi_json}" | "$NEW_CLI" json get error_info >/dev/null 2>&1
+assert_equal "burn 多文件失败也带回 error_info exit" 0 "$?"
+"$NEW_CLI" burn "${burn_iso_tmp}" "${burn_multi_a}" >/dev/null 2>&1
+assert_equal "burn 镜像混排拒绝 exit" 1 "$?"
+echo "$("$NEW_CLI" burn "${burn_iso_tmp}" "${burn_multi_a}" 2>/dev/null)" | grep -q "只能单独刻录" && report_pass || report_fail "burn 镜像混排 error_info" "只能单独刻录" "缺失"
+rm -f "${burn_multi_a}" "${burn_multi_b}" "${burn_iso_tmp}"
+
+# ── 7z 写入（2026-11-22 用户拍板：全量接入官方 C；bin/zpack 恒为完整版故不设能力门控）──
+sevenz_w_src="/tmp/zpack-verify-7zw-src-$$"
+mkdir -p "$sevenz_w_src/资料 目录"
+printf '7z 写入门禁载荷' > "$sevenz_w_src/a.txt"
+printf '中文与空格路径' > "$sevenz_w_src/资料 目录/报 告.md"
+head -c 200000 /dev/urandom > "$sevenz_w_src/资料 目录/rand.bin"
+sevenz_w_out="/tmp/zpack-verify-7zw-$$"
+new_out=$("$NEW_CLI" compress "$sevenz_w_src" --output "$sevenz_w_out.7z" 2>/dev/null); new_exit=$?
+assert_equal "7z write 目录 exit" 0 "$new_exit"
+assert_equal "7z write file_count" 3 "$(echo "$new_out" | "$NEW_CLI" json get data.file_count 2>/dev/null)"
+assert_equal "7z write format 自识别" "7z" "$("$NEW_CLI" list "$sevenz_w_out.7z" 2>/dev/null | "$NEW_CLI" json get data.format 2>/dev/null)"
+sevenz_w_dest="/tmp/zpack-verify-7zw-dest-$$"
+"$NEW_CLI" extract "$sevenz_w_out.7z" --output "$sevenz_w_dest" >/dev/null 2>&1
+assert_equal "7z write 回环内容" "中文与空格路径" "$(cat "$sevenz_w_dest/$(basename "$sevenz_w_src")/资料 目录/报 告.md" 2>/dev/null)"
+# 密码 + header 加密（文件名也加密）
+new_out=$("$NEW_CLI" compress "$sevenz_w_src" --output "$sevenz_w_out-enc.7z" --password gate1234 2>/dev/null); new_exit=$?
+assert_equal "7z write 加密 exit" 0 "$new_exit"
+sevenz_w_edest="/tmp/zpack-verify-7zw-edest-$$"
+"$NEW_CLI" extract "$sevenz_w_out-enc.7z" --output "$sevenz_w_edest" --password gate1234 >/dev/null 2>&1
+assert_equal "7z write 加密回环 exit" 0 "$?"
+assert_equal "7z write 加密回环内容" "7z 写入门禁载荷" "$(cat "$sevenz_w_edest/$(basename "$sevenz_w_src")/a.txt" 2>/dev/null)"
+"$NEW_CLI" extract "$sevenz_w_out-enc.7z" --output "$sevenz_w_edest-wrong" --password nope >/dev/null 2>&1
+assert_equal "7z write 错密码 exit" 1 "$?"
+# 散装多根（staging 兜底路径）
+new_out=$("$NEW_CLI" compress "$sevenz_w_src/a.txt" "$sevenz_w_src/资料 目录/报 告.md" --output "$sevenz_w_out-scat.7z" 2>/dev/null); new_exit=$?
+assert_equal "7z write 散装 exit" 0 "$new_exit"
+assert_equal "7z write 散装 file_count" 2 "$(echo "$new_out" | "$NEW_CLI" json get data.file_count 2>/dev/null)"
+# 分卷（通用字节切分器路径）
+new_out=$("$NEW_CLI" compress "$sevenz_w_src" --output "$sevenz_w_out-vol.7z" --volume-size 100KB 2>/dev/null); new_exit=$?
+assert_equal "7z write 分卷 exit" 0 "$new_exit"
+assert_equal "7z write 分卷首卷存在" "1" "$([ -f "$sevenz_w_out-vol.7z.001" ] && echo 1 || echo 0)"
+# 空输入明确报错
+sevenz_w_empty="/tmp/zpack-verify-7zw-empty-$$"; mkdir -p "$sevenz_w_empty"
+"$NEW_CLI" compress "$sevenz_w_empty" --output "$sevenz_w_out-empty.7z" >/dev/null 2>&1
+assert_equal "7z write 空输入 exit" 1 "$?"
+echo "$("$NEW_CLI" compress "$sevenz_w_empty" --output "$sevenz_w_out-empty2.7z" 2>/dev/null)" | grep -q "没有可压缩的文件" && report_pass || report_fail "7z write 空输入 error_info" "没有可压缩的文件" "缺失"
+rm -rf "$sevenz_w_src" "$sevenz_w_out"*.7z* "$sevenz_w_dest" "$sevenz_w_edest" "$sevenz_w_edest-wrong" "$sevenz_w_empty"
 
 # ---------- 汇总 ----------
 echo

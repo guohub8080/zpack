@@ -17,9 +17,12 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"io"
+	"os"
+	"path/filepath"
+	"unicode/utf8"
 
 	kflate "github.com/klauspost/compress/flate"
-	"io"
 )
 
 // 加密方案标识（识别层对外的 scheme 名）
@@ -482,6 +485,128 @@ func zipEncryptEntryForWrite(compressedData []byte, password string, originalSiz
 	binary.LittleEndian.PutUint16(extraField[9:11], 8)
 
 	return encryptedData, extraField, int64(len(encryptedData)), nil
+}
+
+// zipWriteEncryptedSequentialEntry 加密大条目流式路径：deflate 先落临时文件
+// （内存有界，128KB 块循环），再流式包 WinZip AES-2（salt+verify → CTR 密文 →
+// 10B HMAC 尾）。修复血案 m03442：加密条目超出 256KB 缓冲上限后曾降级明文顺序
+// 写——用户带密码压 2.6MB 文件产出裸奔归档且零警告。本路径后加密条目任何尺寸
+// 都不再回退明文。
+func zipWriteEncryptedSequentialEntry(zipWriter *zip.Writer, task compressTask, compressionLevel int, password string, passwordResolver func(string) (string, bool)) error {
+	if !utf8.ValidString(task.entryName) {
+		return fmt.Errorf("文件名不是有效 UTF-8，无法安全写入 zip: %q", task.entryName)
+	}
+	entryPassword := password
+	if passwordResolver != nil {
+		if resolved, hit := passwordResolver(task.entryName); hit {
+			entryPassword = resolved
+		}
+	}
+	if entryPassword == "" { // 密码表可对个别文件给出空：按明文条目写
+		return zipWriteSequentialEntry(zipWriter, task, compressionLevel)
+	}
+
+	sourceFile, openErr := os.Open(task.sourcePath)
+	if openErr != nil {
+		return openErr
+	}
+	defer sourceFile.Close()
+
+	spillFile, spillErr := os.CreateTemp("", "zpack-enc-spill-*")
+	if spillErr != nil {
+		return spillErr
+	}
+	defer os.Remove(spillFile.Name())
+	defer spillFile.Close()
+
+	flateWriter, flateErr := kflate.NewWriter(spillFile, compressionLevel)
+	if flateErr != nil {
+		return flateErr
+	}
+	if _, copyErr := io.Copy(flateWriter, sourceFile); copyErr != nil {
+		flateWriter.Close()
+		return copyErr
+	}
+	if closeErr := flateWriter.Close(); closeErr != nil {
+		return closeErr
+	}
+	compressedSize, seekErr := spillFile.Seek(0, io.SeekEnd)
+	if seekErr != nil {
+		return seekErr
+	}
+	if _, seekErr := spillFile.Seek(0, io.SeekStart); seekErr != nil {
+		return seekErr
+	}
+
+	salt := make([]byte, 16) // AES-256：salt 16B
+	if _, saltErr := io.ReadFull(cryptoRand, salt); saltErr != nil {
+		return saltErr
+	}
+	keys, keyErr := deriveZipAESKeys(entryPassword, salt, 3)
+	if keyErr != nil {
+		return keyErr
+	}
+	stream, streamErr := newAESCTR(keys.encKey)
+	if streamErr != nil {
+		return streamErr
+	}
+	mac := hmac.New(sha1.New, keys.macKey)
+
+	entryHeader, headerErr := zip.FileInfoHeader(task.fileInfo)
+	if headerErr != nil {
+		return headerErr
+	}
+	entryHeader.Name = filepath.ToSlash(task.entryName)
+	entryHeader.Method = 99
+	entryHeader.CRC32 = 0 // AE-2 用 HMAC 替代 CRC
+	entryHeader.CompressedSize64 = uint64(compressedSize + int64(len(salt)) + int64(len(keys.verify)) + ZIP_AES_HMAC_LEN)
+	entryHeader.UncompressedSize64 = uint64(task.fileInfo.Size())
+	extraField := make([]byte, 11) // 0x9901：version=2(AE-2)+'AE'+strength=3+真实 method=8(deflate)
+	binary.LittleEndian.PutUint16(extraField[0:2], 0x9901)
+	binary.LittleEndian.PutUint16(extraField[2:4], 7)
+	binary.LittleEndian.PutUint16(extraField[4:6], 2)
+	extraField[6] = 'A'
+	extraField[7] = 'E'
+	extraField[8] = 3
+	binary.LittleEndian.PutUint16(extraField[9:11], 8)
+	entryHeader.Extra = extraField
+	entryHeader.SetMode(task.fileInfo.Mode().Perm())
+	entryHeader.Flags |= 0x800     // 显式 EFS（bit 11）
+	entryHeader.Flags |= 0x1       // 加密位
+	entryHeader.ReaderVersion = 51 // WinZip AES 要求 5.1（7-Zip 严格校验）
+
+	entryWriter, entryErr := zipWriter.CreateRaw(entryHeader)
+	if entryErr != nil {
+		return entryErr
+	}
+	if _, writeErr := entryWriter.Write(salt); writeErr != nil {
+		return writeErr
+	}
+	if _, writeErr := entryWriter.Write(keys.verify); writeErr != nil {
+		return writeErr
+	}
+	plainChunk := make([]byte, 128<<10)
+	cipherChunk := make([]byte, 128<<10)
+	for {
+		readLen, readErr := io.ReadFull(spillFile, plainChunk)
+		if readLen > 0 {
+			stream.XORKeyStream(cipherChunk[:readLen], plainChunk[:readLen])
+			if _, writeErr := entryWriter.Write(cipherChunk[:readLen]); writeErr != nil {
+				return writeErr
+			}
+			mac.Write(cipherChunk[:readLen])
+		}
+		if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+	if _, writeErr := entryWriter.Write(mac.Sum(nil)[:ZIP_AES_HMAC_LEN]); writeErr != nil {
+		return writeErr
+	}
+	return nil
 }
 
 // cryptoRand 加密随机源（标准库 crypto/rand）

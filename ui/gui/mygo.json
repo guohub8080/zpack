@@ -1,0 +1,12 @@
+{
+  "name": "zpack",
+  "identifier": "top.guohub.zpack-gui",
+  "version": "0.1.0",
+  "out": "build",
+  "ios": {
+    "minimumSystemVersion": "17.0"
+  },
+  "android": {
+    "minSdk": 26
+  }
+}

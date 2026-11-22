@@ -62,6 +62,7 @@ func Execute(version string) {
 		NewPdfCmd(),
 		NewOfficeCmd(),
 		NewJSONCmd(),
+		NewBurnCmd(),
 	)
 	if executeErr := rootCommand.Execute(); executeErr != nil {
 		os.Exit(1)

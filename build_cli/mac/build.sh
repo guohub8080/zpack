@@ -8,6 +8,7 @@ PREFIX="$ROOT/prefix"
 
 [ -f "$PREFIX/bin/ffmpeg" ] || bash "$ROOT/ffmpeg_static.sh"
 [ -f "$ROOT/office/libs/liboffice_oxide.a" ] || bash "$ROOT/office_static.sh"
+[ -f "$ROOT/../../internal/sevenzipcli/libs/libzpack_7zcli.a" ] || bash "$ROOT/sevenzip_static.sh"
 
 echo "── 静态链接构建 ──"
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
