@@ -261,7 +261,7 @@ bin/zpack-dev <命令>                                   # media/HDR/HEIC/ffmpeg
 20. **Rust staticlib 不自带链接指令**：liboffice_oxide.a 的 Rust std 要消费者补 `-lntdll -luserenv -lws2_32 -lbcrypt -lcrypt32`（Nt*/GetUserProfileDirectoryW 等）；`-ldl` 是 unix 概念，MinGW 无此库——office 链接旗标拆 `linkflags_windows.go`/`linkflags_other.go`。
 21. **GNU sed BRE 的 `\(..\|..\)` 组合在 MSYS2 失配**：`\([ "]\|$\)` 写法静默不替换——拆成朴素两条（`s| -lz | path |g` + `s| -lz$| path|`）。
 22. **MSYS2 产线环境变量全靠手工**：`bash -lc` 不继承 LocalAppData/APPDATA（go 找不到 GOCACHE/GOENV）——显式 export；GOPROXY 同理（proxy.golang.org 不可达）。
-23. **网络**：ffmpeg.org/GitHub 直连龟速（~60KB/s），走本机代理（`export https_proxy=http://127.0.0.1:7897`）16s 下完 12MB tarball；tuna/ustc 无 ffmpeg releases 镜像。
+23. **网络**：ffmpeg.org/GitHub 直连龟速（~60KB/s），走本机代理 16s 下完 12MB tarball；tuna/ustc 无 ffmpeg releases 镜像。**代理按机器区分（2026-11-22 实测）**：mac 开发机=`http://127.0.0.1:7890`（7897 不通），Windows 实测机=`http://127.0.0.1:7897`——git 网络操作失败重试时先挂对端口号再裸连。
 24. **目录被残留进程 CWD 占住删不掉**（Windows 特有，`Device or resource busy`）：rm 前确认无 shell 驻留；脚本兜底「内容并入 + dotfiles 单独 mv」（glob `*` 不含 dotfiles，rmdir 会因残留物失败）。
 25. **pacman -Syu 会自杀**：升级 msys2-runtime/bash 时杀掉自身终端，后续安装静默丢失——先跑 -Syu（等它自杀）再单独跑 -S 包列表。
 26. **prefix 缓存与补丁的耦合**：pc 后处理只在 make install 分支跑——补丁/后处理更新时 prefix 命中会跳过，须手动重放或清 prefix；cgo 侧 `-L` 目录里库文件内容变化不触发 go 重链（mac #7 同款），build 脚本恒 `go clean -cache`。
