@@ -67,6 +67,32 @@ else echo "✓ libjxl（缓存跳过）"; fi
 echo "═══ 2/8 libaom v3.11.0 ═══"
 if [ ! -f "$PREFIX/lib/libaom.a" ]; then
   fetch aom https://aomedia.googlesource.com/aom v3.11.0
+  # 陷阱 #34（2026-11-22 落地修复）：MSYS2 nasm 3.02-1 帮助文本不再含 "-Ox" 字样，
+  # test_nasm() 帮助文本字符串探测必败。换成真实能力探测——拿 -Ox 实编最小汇编，
+  # 编得过=多遍优化可用（能力不撒谎，帮助文本会撒谎）；探不过仍 FATAL_ERROR 原样报。
+  # 行号守卫先行：v3.11.0 的 if(-Ox)@218 / endif@221 对不上即中止（上游漂移要人眼过）。
+  aom_cmake=aom/build/cmake/aom_optimization.cmake
+  [ "$(sed -n '218p' "$aom_cmake" | tr -d '\r')" = '  if(NOT "${nasm_helptext}" MATCHES "-Ox")' ] \
+    || { echo "✗ libaom test_nasm 结构与陷阱 #34 补丁假设不符"; exit 1; }
+  [ "$(sed -n '221p' "$aom_cmake" | tr -d '\r')" = '  endif()' ] \
+    || { echo "✗ libaom test_nasm 结构与陷阱 #34 补丁假设不符"; exit 1; }
+  cat > nasm-patch.txt <<'ZPACK_EOF'
+  # zpack patch (build_cli/windows trap #34): nasm 3.x help text dropped the
+  # literal "-Ox" - probe real capability by assembling a minimal file with -Ox.
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/nasm_probe.asm" "bits 64\ndd 1\n")
+  execute_process(COMMAND ${CMAKE_ASM_NASM_COMPILER} -Ox -f win64
+                          -o "${CMAKE_CURRENT_BINARY_DIR}/nasm_probe.obj"
+                          "${CMAKE_CURRENT_BINARY_DIR}/nasm_probe.asm"
+                  RESULT_VARIABLE nasm_probe_result OUTPUT_QUIET ERROR_QUIET)
+  if(NOT nasm_probe_result EQUAL 0)
+    message(
+      FATAL_ERROR "Unsupported nasm: multipass optimization not supported.")
+  endif()
+ZPACK_EOF
+  sed -n '1,217p' "$aom_cmake" > aom_opt_patched.cmake
+  cat nasm-patch.txt >> aom_opt_patched.cmake
+  sed -n '222,$p' "$aom_cmake" >> aom_opt_patched.cmake
+  mv aom_opt_patched.cmake "$aom_cmake"
   cmake -S aom -B aom-build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
     -DENABLE_TESTS=0 -DENABLE_EXAMPLES=0 -DENABLE_DOCS=0 -DENABLE_TOOLS=0 \
@@ -139,9 +165,36 @@ if [ ! -f "$PREFIX/lib/libvpx.a" ]; then
 else echo "✓ libvpx（缓存跳过）"; fi
 
 echo "═══ 8/8 FFmpeg n9.0（库 + fftools 直调库）═══"
-FFMPEG_TARBALL="https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz"
+# 多源回退（Windows 陷阱 #35）：ffmpeg.org 经部分代理节点 TLS 中断（curl exit 35）、
+# body 传输可能停滞——逐源尝试，tar 完整性校验通过才算数；GitHub tag 归档目录名
+# FFmpeg-n9.0 与官方 tarball 不同，strip-components=1 已抹平。
+FFMPEG_TARBALLS=(
+  "https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz"
+  "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n9.0.tar.gz"
+)
 if [ ! -f "$PREFIX/lib/libavcodec.a" ] || [ ! -f "$PREFIX/lib/libzpack_ffmpeg_cli.a" ]; then
-  fetch ffmpeg "$FFMPEG_TARBALL"
+  # 本地种子优先（ZPACK_FFMPEG_SEED 指向现成 tarball）：代理把归档下载通道堵死时，
+  # 用 git 协议通道（同产线其余配料同路，实测畅通）clone 后打包旁路注入。
+  ffmpeg_fetched=""
+  if [ -n "${ZPACK_FFMPEG_SEED:-}" ] && [ -s "$ZPACK_FFMPEG_SEED" ]; then
+    echo "使用本地种子: $ZPACK_FFMPEG_SEED"
+    seed_tar="$(cygpath -u "$ZPACK_FFMPEG_SEED")"
+    mkdir -p ffmpeg && tar -xf "$seed_tar" -C ffmpeg --strip-components=1 && ffmpeg_fetched=1
+  fi
+  if [ -z "$ffmpeg_fetched" ]; then
+
+  for src in "${FFMPEG_TARBALLS[@]}"; do
+    echo "尝试下载: $src"
+    if curl -sL --retry 2 --connect-timeout 20 --max-time 600 -o src.tar.xz "$src" \
+       && tar -tzf src.tar.xz >/dev/null 2>&1 \
+       && mkdir -p ffmpeg && tar -xf src.tar.xz -C ffmpeg --strip-components=1; then
+      ffmpeg_fetched=1
+      break
+    fi
+    rm -f src.tar.xz
+  done
+  fi
+  [ -n "$ffmpeg_fetched" ] || { echo "ffmpeg 全源下载失败" >&2; exit 1; }
   # ⚠️ 进程内直调补丁（版本无关；Windows 陷阱 #17）：cmdutils.c 的 prepare_app_arguments
   # 在 _WIN32 下用 GetCommandLineW() 重取宿主命令行——直调拿到的是 zpack.exe 的参数。
   sed -i 's|prepare_app_arguments(&argc, &argv);|/* zpack: 直调禁用 Win32 argv 重取 */|g' \

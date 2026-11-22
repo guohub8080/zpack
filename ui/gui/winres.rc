@@ -1,0 +1,5 @@
+// Windows exe 资源（windres 编译为 resource_windows_amd64.syso；仅 windows/amd64
+// 构建消费，mac/linux 构建零影响）。资源 ID 1 = mygo 窗口类图标
+// （internal/windows/app.go registerClasses 从 exe 资源 1 LoadIconW）+ Explorer
+// 文件图标 + 任务栏钉选图标。
+1 ICON "resources/icon-windows.ico"

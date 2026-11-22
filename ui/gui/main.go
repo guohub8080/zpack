@@ -12,8 +12,11 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	_ "embed"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -64,6 +67,59 @@ var brandZ = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" vie
 //go:embed resources/icon.png
 var iconPNG []byte
 
+// iconWindowsPNG 是 Windows 专属全出血图标（resources/icon-windows.png，
+// 由 assets/zpack-app-icon-1024.png 裁掉 mac 式透明边距后满幅重排）。
+// Windows 任务栏/标题图标惯例撑满画布——mac 的 81% 内容留白版在任务栏
+// 明显小一圈（用户 2026-11-22 反馈）；mac/Linux 保持 iconPNG 不变。
+//
+//go:embed resources/icon-windows.png
+var iconWindowsPNG []byte
+
+// fontMiSansVF 是三平台默认字体 MiSans 可变字体（resources/fonts/MiSans-VF.ttf.gz，
+// gzip -9 压缩嵌入：20.1MB→14.4MB，启动解压注册）。wght 轴 Thin(100)–Bold(700)——
+// mygo 内置控件的 500/600 中间字重（tabs/sidebar/table/toast 等）是真实例而非回退；
+// 800/900 取最近实例 Bold（MiSans VF 命名实例上限，实测探针验证 2026-11-22）。
+// 经 ui.RegisterFont 注册为 fontMiSansFamily 族，brandTheme 把 ui.Theme.Font 指向它
+// ——全局默认字体一处生效；显式 Font 等宽调用点已切 JetBrains Mono（fontMonoFamily，系统 monospace 兜底）。
+// 许可：小米 MiSans 免费商用（resources/fonts/README.md）。
+//
+//go:embed resources/fonts/MiSans-VF.ttf.gz
+var fontMiSansVF []byte
+
+// fontJetBrainsMono 是英文/数字展示位（尺寸/哈希/百分比/随机密码等等宽场景）的
+// JetBrains Mono 可变字体（resources/fonts/JetBrainsMono-VF.ttf，303KB 裸嵌——
+// wght 100–800 标准 CSS 阶梯无需手术）。OFL 1.1 许可随库
+// （resources/fonts/JetBrainsMono-OFL.txt），免费商用允许内嵌。
+//
+//go:embed resources/fonts/JetBrainsMono-VF.ttf
+var fontJetBrainsMono []byte
+
+// fontMonoFamily 是 JetBrains Mono 的注册族名（等宽调用点 Font 列表首选，
+// 逗号列表次选系统 monospace 兜底）。
+const fontMonoFamily = "JetBrains Mono"
+
+// fontMiSansFamily 是 MiSans 可变字体的注册族名（brandTheme 的 ui.Theme.Font 与其一致）。
+const fontMiSansFamily = "MiSans"
+
+// registerMiSans 解压并注册内嵌 MiSans 可变字体（main 启动期一次，先于窗口创建）。
+// 失败不阻断启动——回退系统默认字体，仅日志。
+func registerMiSans() {
+	gzr, err := gzip.NewReader(bytes.NewReader(fontMiSansVF))
+	if err == nil {
+		var ttf []byte
+		ttf, err = io.ReadAll(gzr)
+		if err == nil {
+			err = ui.RegisterFont(ttf, fontMiSansFamily)
+		}
+	}
+	if err != nil {
+		log.Printf("MiSans 字体注册失败（回退系统字体）: %v", err)
+	}
+	if err := ui.RegisterFont(fontJetBrainsMono, fontMonoFamily); err != nil {
+		log.Printf("JetBrains Mono 字体注册失败（回退系统 monospace）: %v", err)
+	}
+}
+
 // brandTheme 在系统浅/暗主题上落品牌色：accent=品牌蓝三态、success=品牌绿、
 // 表面冷调偏蓝（贴品牌色温，去掉中性灰模板感）。
 func brandTheme(c *ui.Context) *ui.Theme {
@@ -93,6 +149,7 @@ func brandTheme(c *ui.Context) *ui.Theme {
 		theme.Success = ui.Hex("#4FAF87")
 	}
 	theme.Radius = 8
+	theme.Font = fontMiSansFamily // 全局默认字体：MiSans（三平台统一品牌渲染）
 	return &theme
 }
 
@@ -181,9 +238,14 @@ const (
 
 // app 是窗口状态（view 每帧从它重建界面）。
 type app struct {
-	win     *mygo.Window
-	page    string
-	service *Service
+	win       *mygo.Window
+	page      string
+	service   *Service
+	themeMode int // 外观态：themeModeSystem/Light/Dark（gui-settings.json 持久化，见 appearance.go）
+
+	// 用户反馈（异步 toast 队列——帧外 goroutine/回调入队，pane 帧首 drain，见 sniff.go）
+	pendingToasts []string
+	toastMu       sync.Mutex
 
 	// 压缩台状态
 	inputs        []string             // 已选输入路径
@@ -479,7 +541,7 @@ func (a *app) sidebar(c *ui.Context, bar ui.TitleBar, controlsLeft bool) {
 // navSectionHeader 侧栏分区标题（小号弱化文字，与导航项左对齐；顶部 8——品牌行下收紧）
 func (a *app) navSectionHeader(c *ui.Context, title string) {
 	t := c.Theme()
-	ui.Text(c, title).FontSize(11).TextColor(t.TextMuted).Margin(8, 0, 2, 10)
+	ui.Text(c, title).FontSize(12).TextColor(t.TextMuted).Margin(8, 0, 2, 10)
 }
 
 // navItem 侧栏导航项（选中=深蓝胶囊+白字白图标——用户定案 v3 调优，覆盖先前浅色胶囊）
@@ -514,7 +576,7 @@ func (a *app) navItem(c *ui.Context, id string, svg *ui.SVG, label string, page 
 		ui.Text(c, label).FontSize(13).Grow(1).SingleLine().TextColor(labelColor)
 		if badge > 0 {
 			ui.Box(c).Padding(0, 6).Radius(999).Background(pillBg).Shrink(0).Children(func() {
-				ui.Text(c, itoa(badge)).FontSize(10).TextColor(pillFg).SingleLine()
+				ui.Text(c, itoa(badge)).FontSize(11).TextColor(pillFg).SingleLine()
 			})
 		}
 	})
@@ -526,6 +588,7 @@ func (a *app) navItem(c *ui.Context, id string, svg *ui.SVG, label string, page 
 // ── 内容区：顶部让位拖拽条（动态）+ 页面 + 拖放反馈 ──
 func (a *app) pane(c *ui.Context, bar ui.TitleBar, controlsRight bool) {
 	t := c.Theme()
+	a.drainToasts(c) // 帧首先倒异步 toast（帧外只能入队，见 sniff.go）
 
 	pane := ui.Column(c).Grow(1).MinWidth(0).Background(t.Background).Clip()
 
@@ -590,7 +653,9 @@ func (a *app) pane(c *ui.Context, bar ui.TitleBar, controlsRight bool) {
 		// 标题条做视觉锚点 + 可拖拽窗口
 		headH := float32(52)
 		if controlsRight {
-			headH = max(bar.Height+16, 56)
+			// 用户定案（m00961）：head 与标题按钮带严格同高（bar.Height=36）——
+			// 按钮多高 head 就多高，齐平不加深；+8/+16 呼吸高度都是丑源
+			headH = bar.Height
 		}
 		ui.Row(c).Height(headH).Shrink(0).AlignItems(ui.Center).
 			Padding(0, bar.Right, 0, contentPadX).DragWindow().Children(func() {
@@ -823,6 +888,7 @@ func (a *app) setExtractArchive(path string) {
 		mygo.RunOnMain(func() {
 			if a.extractPath == path { // 体检回来前换了归档则丢弃过期结果
 				a.extractInfo = &result
+				a.toastEngineVerdict(filepath.Base(path), result.Err) // 引擎判格浮出（m00961）
 				a.win.Invalidate()
 			}
 		})
@@ -1029,14 +1095,14 @@ func (a *app) pageCompress(c *ui.Context) {
 		//（弹 Finder 选择框 browseFiles()）——首行间距全 app 统一（m05764）
 		ui.Row(c).Padding(14, 0, 4, 0).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "已准备的压缩归档 "+itoa(len(a.inputs))+" 项共 "+humanSize(a.totalSize())+"，可拖拽加入或").
-				FontSize(12).TextColor(t.TextMuted)
+				FontSize(13).TextColor(t.TextMuted)
 			browse := ui.ButtonBase(c).Height(24).Padding(0, 10).Radius(7).Border(1, t.Border).
 				Cursor(ui.CursorPointer)
 			if browse.Hovered() {
 				browse.Background(t.SurfaceHover).Border(1, t.Accent)
 			}
 			browse.Children(func() {
-				ui.Text(c, "浏览选择…").FontSize(12).TextColor(t.Accent)
+				ui.Text(c, "浏览选择…").FontSize(13).TextColor(t.Accent)
 			})
 			if browse.Clicked() {
 				a.browseFiles()
@@ -1073,7 +1139,7 @@ func (a *app) pageCompress(c *ui.Context) {
 						a.ensureDirSize(path)
 					}
 					ui.Image(c, rowIcon).Size(14, 14)
-					ui.Text(c, path).FontSize(12).Grow(1).MinWidth(0)
+					ui.Text(c, path).FontSize(13).Grow(1).MinWidth(0)
 					shown := row.Hovered()
 					slot := ui.Row(c).Shrink(0).AlignItems(ui.Center).Height(24)
 					slot.Children(func() {
@@ -1092,7 +1158,7 @@ func (a *app) pageCompress(c *ui.Context) {
 						if shown {
 							numTarget = 0
 						}
-						sizeText := ui.Text(c, sizeLabel).Font("monospace").FontSize(12).
+						sizeText := ui.Text(c, sizeLabel).Font(fontMonoFamily + ", monospace").FontSize(13).
 							TextColor(t.TextMuted)
 						sizeText.Opacity(slot.Animate("num", numTarget, 110*time.Millisecond))
 
@@ -1143,8 +1209,8 @@ func (a *app) pageCompress(c *ui.Context) {
 				ui.Row(c).Gap(12).AlignItems(ui.Center).Padding(8, 0).Children(func() {
 					lab := ui.Column(c).Width(84).Shrink(0).Gap(2)
 					lab.Children(func() {
-						ui.Text(c, label).FontSize(12)
-						ui.Text(c, hint).FontSize(11).TextColor(t.TextMuted).Opacity(0.55)
+						ui.Text(c, label).FontSize(13)
+						ui.Text(c, hint).FontSize(12).TextColor(t.TextMuted)
 					})
 					control()
 				})
@@ -1154,8 +1220,8 @@ func (a *app) pageCompress(c *ui.Context) {
 				ui.Row(c).Gap(12).AlignItems(ui.Start).Padding(8, 0).Children(func() {
 					lab := ui.Column(c).Width(84).Shrink(0).Gap(2)
 					lab.Children(func() {
-						ui.Text(c, label).FontSize(12)
-						ui.Text(c, hint).FontSize(11).TextColor(t.TextMuted).Opacity(0.55)
+						ui.Text(c, label).FontSize(13)
+						ui.Text(c, hint).FontSize(12).TextColor(t.TextMuted)
 					})
 					control()
 				})
@@ -1181,7 +1247,7 @@ func (a *app) pageCompress(c *ui.Context) {
 							bound = &a.outDirGhost
 						}
 						outTa := ui.TextAreaBase(c, bound).
-							Grow(1).FontSize(12).Lines(1, 3).
+							Grow(1).FontSize(13).Lines(1, 3).
 							Padding(5, 10)
 						if bound != &a.outDir {
 							outTa.ReadOnly(true).TextColor(t.TextMuted)
@@ -1206,7 +1272,7 @@ func (a *app) pageCompress(c *ui.Context) {
 						}
 						browse.Children(func() {
 							ui.Image(c, iconFolder).Size(13, 13)
-							ui.Text(c, "选择").FontSize(12).TextColor(t.TextMuted)
+							ui.Text(c, "选择").FontSize(13).TextColor(t.TextMuted)
 						})
 						if browse.Clicked() {
 							a.browseOutDir()
@@ -1224,7 +1290,7 @@ func (a *app) pageCompress(c *ui.Context) {
 					Children(func() {
 						if ui.TextAreaBase(c, &a.name).
 							Placeholder(defaultName(a.inputs)+"（默认）").
-							Grow(1).FontSize(12).Lines(1, 3).
+							Grow(1).FontSize(13).Lines(1, 3).
 							Padding(5, 10).Changed() {
 							a.name = strings.ReplaceAll(a.name, "\n", "")
 							a.nameDirty = a.name != "" && a.name != defaultName(a.inputs)
@@ -1245,7 +1311,7 @@ func (a *app) pageCompress(c *ui.Context) {
 							trig.Background(t.SurfaceHover)
 						}
 						trig.Children(func() {
-							ui.Text(c, a.formatStr).Font("monospace").FontSize(12).
+							ui.Text(c, a.formatStr).Font(fontMonoFamily + ", monospace").FontSize(13).
 								TextColor(t.TextMuted).Grow(1)
 							ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 						})
@@ -1262,7 +1328,7 @@ func (a *app) pageCompress(c *ui.Context) {
 									item.Background(t.SurfaceHover)
 								}
 								item.Children(func() {
-									ui.Text(c, suffix).Font("monospace").FontSize(12)
+									ui.Text(c, suffix).Font(fontMonoFamily + ", monospace").FontSize(13)
 								})
 							}
 						})
@@ -1305,7 +1371,7 @@ func (a *app) pageCompress(c *ui.Context) {
 								pwTrig.Background(t.SurfaceHover)
 							}
 							pwTrig.Children(func() {
-								ui.Text(c, a.pwModeStr).FontSize(12).Grow(1)
+								ui.Text(c, a.pwModeStr).FontSize(13).Grow(1)
 								ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 							})
 							pwSel.Popup(func(panel ui.Element) {
@@ -1322,7 +1388,7 @@ func (a *app) pageCompress(c *ui.Context) {
 									}
 									finalMode := mode
 									item.Children(func() {
-										ui.Text(c, finalMode).FontSize(12)
+										ui.Text(c, finalMode).FontSize(13)
 									})
 								}
 							})
@@ -1330,7 +1396,7 @@ func (a *app) pageCompress(c *ui.Context) {
 								ui.Row(c).Grow(1).AlignItems(ui.Center).MinHeight(32).
 									Background(t.Surface).Border(1, t.Border).Radius(8).Children(func() {
 									pwInput := ui.TextInputBase(c, &a.password).
-										Placeholder("输入密码").Grow(1).FontSize(12).
+										Placeholder("输入密码").Grow(1).FontSize(13).
 										Padding(5, 10)
 									if !a.showPassword {
 										pwInput.Password() // 逐帧条件调用：停止调用即明文（eye 范式）
@@ -1380,7 +1446,7 @@ func (a *app) pageCompress(c *ui.Context) {
 								if label, isPreset := volumePresetLabel(a.volumeModeStr); isPreset {
 									trigText = label
 								}
-								ui.Text(c, trigText).FontSize(12).Grow(1)
+								ui.Text(c, trigText).FontSize(13).Grow(1)
 								ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 							})
 							volSel.Popup(func(panel ui.Element) {
@@ -1404,13 +1470,13 @@ func (a *app) pageCompress(c *ui.Context) {
 									}
 									finalText := itemText
 									item.Children(func() {
-										ui.Text(c, finalText).FontSize(12)
+										ui.Text(c, finalText).FontSize(13)
 									})
 								}
 							})
 							if a.volumeModeStr == "自定义" {
 								ui.TextInputBase(c, &a.volume).
-									Placeholder("如 300MB / 2GB").Grow(1).MinWidth(120).FontSize(12).
+									Placeholder("如 300MB / 2GB").Grow(1).MinWidth(120).FontSize(13).
 									Padding(5, 10).
 									Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 							}
@@ -1427,7 +1493,7 @@ func (a *app) pageCompress(c *ui.Context) {
 								}
 							}
 							if volumeHint != "" {
-								ui.Text(c, volumeHint).FontSize(11).TextColor(t.TextMuted).
+								ui.Text(c, volumeHint).FontSize(12).TextColor(t.TextMuted).
 									Wrap().Margin(4, 0, 0, 0)
 							}
 						})
@@ -1457,9 +1523,9 @@ func (a *app) pageCompress(c *ui.Context) {
 				}
 				head.Children(func() {
 					ui.Row(c).Grow(1).AlignItems(ui.Center).Gap(8).Children(func() {
-						ui.Text(c, "高级设置").FontSize(12)
+						ui.Text(c, "高级设置").FontSize(13)
 						if advHint != "" {
-							ui.Text(c, advHint).FontSize(11).TextColor(t.TextMuted).Opacity(0.55)
+							ui.Text(c, advHint).FontSize(12).TextColor(t.TextMuted)
 						}
 					})
 					openTarget := float32(0)
@@ -1513,7 +1579,7 @@ func (a *app) pageCompress(c *ui.Context) {
 									p.Fill(k, ui.RGB(255, 255, 255), knobR)
 									p.Stroke(k, t.Border.Mix(t.Text, 0.25), knobR, 1)
 								})
-								ui.Text(c, itoa(int(a.level))).Font("monospace").FontSize(12).
+								ui.Text(c, itoa(int(a.level))).Font(fontMonoFamily + ", monospace").FontSize(13).
 									TextColor(t.TextMuted).Width(14)
 							})
 						})
@@ -1586,14 +1652,14 @@ func (a *app) pageExtract(c *ui.Context) {
 		// 引导行（与压缩台同款句式，首行间距全 app 统一）
 		ui.Row(c).Padding(14, 0, 4, 0).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "已选定归档 "+filepath.Base(a.extractPath)+"，可拖入替换，或").
-				FontSize(12).TextColor(t.TextMuted)
+				FontSize(13).TextColor(t.TextMuted)
 			browse := ui.ButtonBase(c).Height(24).Padding(0, 10).Radius(7).Border(1, t.Border).
 				Cursor(ui.CursorPointer)
 			if browse.Hovered() {
 				browse.Background(t.SurfaceHover).Border(1, t.Accent)
 			}
 			browse.Children(func() {
-				ui.Text(c, "浏览选择…").FontSize(12).TextColor(t.Accent)
+				ui.Text(c, "浏览选择…").FontSize(13).TextColor(t.Accent)
 			})
 			if browse.Clicked() {
 				a.browseArchive()
@@ -1617,7 +1683,7 @@ func (a *app) pageExtract(c *ui.Context) {
 					archiveIcon = iconFolder
 				}
 				ui.Image(c, archiveIcon).Size(14, 14)
-				ui.Text(c, a.extractPath).FontSize(12).Grow(1).MinWidth(0)
+				ui.Text(c, a.extractPath).FontSize(13).Grow(1).MinWidth(0)
 				shown := row.Hovered()
 				slot := ui.Row(c).Shrink(0).AlignItems(ui.Center).Height(24)
 				slot.Children(func() {
@@ -1629,7 +1695,7 @@ func (a *app) pageExtract(c *ui.Context) {
 					if shown {
 						numTarget = 0
 					}
-					sizeText := ui.Text(c, sizeLabel).Font("monospace").FontSize(12).
+					sizeText := ui.Text(c, sizeLabel).Font(fontMonoFamily + ", monospace").FontSize(13).
 						TextColor(t.TextMuted)
 					sizeText.Opacity(slot.Animate("num", numTarget, 110*time.Millisecond))
 
@@ -1689,7 +1755,7 @@ func (a *app) pageExtract(c *ui.Context) {
 			}
 		}
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Margin(10, 0, 0, 0).Children(func() {
-			ui.Text(c, probeText).FontSize(12).TextColor(t.TextMuted)
+			ui.Text(c, probeText).FontSize(13).TextColor(t.TextMuted)
 		})
 
 		// ── 参数区：与压缩台同款开放式两列行 ──
@@ -1699,8 +1765,8 @@ func (a *app) pageExtract(c *ui.Context) {
 				ui.Row(c).Gap(12).AlignItems(ui.Center).Padding(8, 0).Children(func() {
 					lab := ui.Column(c).Width(84).Shrink(0).Gap(2)
 					lab.Children(func() {
-						ui.Text(c, label).FontSize(12)
-						ui.Text(c, hint).FontSize(11).TextColor(t.TextMuted).Opacity(0.55)
+						ui.Text(c, label).FontSize(13)
+						ui.Text(c, hint).FontSize(12).TextColor(t.TextMuted)
 					})
 					control()
 				})
@@ -1719,7 +1785,7 @@ func (a *app) pageExtract(c *ui.Context) {
 							bound = &a.extractDirGhost
 						}
 						dirTa := ui.TextAreaBase(c, bound).
-							Grow(1).FontSize(12).Lines(1, 3).
+							Grow(1).FontSize(13).Lines(1, 3).
 							Padding(5, 10)
 						if bound != &a.extractDir {
 							dirTa.ReadOnly(true).TextColor(t.TextMuted)
@@ -1744,7 +1810,7 @@ func (a *app) pageExtract(c *ui.Context) {
 						}
 						browse.Children(func() {
 							ui.Image(c, iconFolder).Size(13, 13)
-							ui.Text(c, "选择").FontSize(12).TextColor(t.TextMuted)
+							ui.Text(c, "选择").FontSize(13).TextColor(t.TextMuted)
 						})
 						if browse.Clicked() {
 							a.browseExtractDir()
@@ -1757,7 +1823,7 @@ func (a *app) pageExtract(c *ui.Context) {
 					ui.Row(c).Grow(1).AlignItems(ui.Center).MinHeight(32).
 						Background(t.Surface).Border(1, t.Border).Radius(8).Children(func() {
 						pwInput := ui.TextInputBase(c, &a.extractPw).
-							Placeholder("输入密码").Grow(1).FontSize(12).
+							Placeholder("输入密码").Grow(1).FontSize(13).
 							Padding(5, 10)
 						if !a.extractShowPw {
 							pwInput.Password() // 逐帧条件调用：停止调用即明文（eye 范式）
@@ -1850,7 +1916,7 @@ func toolSegmented(c *ui.Context, t *ui.Theme, selected *int, labels ...string) 
 			}
 			seg.Children(func() {
 				textColor := map[bool]ui.Color{true: t.AccentText, false: t.TextMuted}[index == *selected]
-				ui.Text(c, name).FontSize(12).TextColor(textColor)
+				ui.Text(c, name).FontSize(13).TextColor(textColor)
 			})
 		}
 	})
@@ -1861,8 +1927,8 @@ func openSettingRow(c *ui.Context, t *ui.Theme, label, hint string, control func
 	ui.Row(c).Gap(12).AlignItems(ui.Center).Padding(8, 0).Children(func() {
 		lab := ui.Column(c).Width(84).Shrink(0).Gap(2)
 		lab.Children(func() {
-			ui.Text(c, label).FontSize(12)
-			ui.Text(c, hint).FontSize(11).TextColor(t.TextMuted).Opacity(0.55)
+			ui.Text(c, label).FontSize(13)
+			ui.Text(c, hint).FontSize(12).TextColor(t.TextMuted)
 		})
 		control()
 	})
@@ -1874,8 +1940,8 @@ func openSettingRowTop(c *ui.Context, t *ui.Theme, label, hint string, control f
 	ui.Row(c).Gap(12).AlignItems(ui.Start).Padding(8, 0).Children(func() {
 		lab := ui.Column(c).Width(84).Shrink(0).Gap(2).Padding(5, 0, 0, 0)
 		lab.Children(func() {
-			ui.Text(c, label).FontSize(12)
-			ui.Text(c, hint).FontSize(11).TextColor(t.TextMuted).Opacity(0.55)
+			ui.Text(c, label).FontSize(13)
+			ui.Text(c, hint).FontSize(12).TextColor(t.TextMuted)
 		})
 		control()
 	})
@@ -1915,7 +1981,7 @@ func (a *app) toolFileField(c *ui.Context, t *ui.Theme, path, placeholder string
 			}
 			ui.Image(c, rowIcon).Size(14, 14).Margin(0, 0, 0, 10)
 		}
-		shownText := ui.Text(c, shown).FontSize(12).Grow(1).TextColor(shownColor)
+		shownText := ui.Text(c, shown).FontSize(13).Grow(1).TextColor(shownColor)
 		if path == "" {
 			shownText.Padding(0, 0, 0, 10)
 		}
@@ -1925,7 +1991,7 @@ func (a *app) toolFileField(c *ui.Context, t *ui.Theme, path, placeholder string
 				sizeLabel = "文件夹"
 				a.ensureDirSize(path)
 			}
-			ui.Text(c, sizeLabel).Font("monospace").FontSize(12).
+			ui.Text(c, sizeLabel).Font(fontMonoFamily + ", monospace").FontSize(13).
 				TextColor(t.TextMuted).Shrink(0)
 		}
 		pick := ui.ButtonBase(c).Height(24).Padding(0, 8).
@@ -1939,7 +2005,7 @@ func (a *app) toolFileField(c *ui.Context, t *ui.Theme, path, placeholder string
 		}
 		pick.Children(func() {
 			ui.Image(c, iconFolder).Size(13, 13)
-			ui.Text(c, "选择").FontSize(12).TextColor(t.TextMuted)
+			ui.Text(c, "选择").FontSize(13).TextColor(t.TextMuted)
 		})
 		if pick.Clicked() {
 			onPick()
@@ -1958,7 +2024,7 @@ func copyButton(c *ui.Context, t *ui.Theme, text string) {
 		btn.Background(t.SurfaceHover).Border(1, t.Accent)
 	}
 	btn.Children(func() {
-		ui.Text(c, "复制").FontSize(12).TextColor(t.Accent)
+		ui.Text(c, "复制").FontSize(13).TextColor(t.Accent)
 	})
 	if btn.Clicked() {
 		mygo.Clipboard.WriteText(text)
@@ -1973,14 +2039,14 @@ func (a *app) toolResultRow(c *ui.Context, t *ui.Theme, done *ToolResult) {
 	ui.Row(c).Gap(8).AlignItems(ui.Center).Margin(12, 0, 0, 0).Children(func() {
 		if done.Err != "" {
 			ui.Image(c, iconError).Size(14, 14)
-			ui.Text(c, done.Err).FontSize(12).TextColor(t.Danger).Grow(1)
+			ui.Text(c, done.Err).FontSize(13).TextColor(t.Danger).Grow(1)
 		} else {
 			ui.Image(c, iconDone).Size(14, 14)
 			summary := done.Output
 			if done.Extra != "" {
 				summary += "  ·  " + done.Extra
 			}
-			ui.Text(c, summary).FontSize(12).TextColor(t.TextMuted).Grow(1)
+			ui.Text(c, summary).FontSize(13).TextColor(t.TextMuted).Grow(1)
 			show := ui.ButtonBase(c).Height(24).Padding(0, 8).
 				Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer).
 				Background(ui.RGBA(0, 0, 0, 0)).Border(1, t.Border)
@@ -1990,7 +2056,7 @@ func (a *app) toolResultRow(c *ui.Context, t *ui.Theme, done *ToolResult) {
 				show.Background(t.SurfaceHover)
 			}
 			show.Children(func() {
-				ui.Text(c, revealLabel()).FontSize(12).TextColor(t.TextMuted)
+				ui.Text(c, revealLabel()).FontSize(13).TextColor(t.TextMuted)
 			})
 			if show.Clicked() {
 				revealPath(done.Output) // 精确选中产物文件（非仅开目录）
@@ -2070,7 +2136,7 @@ func (a *app) pageEncrypt(c *ui.Context) {
 	column := pageColumn(c)
 	column.Children(func() {
 		ui.Row(c).Padding(14, 0, 4, 0).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "公钥加密任意文件").FontSize(12).TextColor(t.TextMuted)
+			ui.Text(c, "公钥加密任意文件").FontSize(13).TextColor(t.TextMuted)
 		})
 
 		paramCard := ui.Column(c).Margin(12, 0, 0, 0).Gap(4)
@@ -2081,7 +2147,7 @@ func (a *app) pageEncrypt(c *ui.Context) {
 			if a.encModeIdx == 0 {
 				openSettingRow(c, t, "明文", "要加密的内容", func() {
 					ui.TextAreaBase(c, &a.encText).
-						Placeholder("输入要加密的内容").Lines(2, 6).Grow(1).FontSize(12).
+						Placeholder("输入要加密的内容").Lines(2, 6).Grow(1).FontSize(13).
 						Padding(6, 10).Background(t.Surface).Border(1, t.Border).Radius(8)
 				})
 			} else {
@@ -2100,7 +2166,7 @@ func (a *app) pageEncrypt(c *ui.Context) {
 				openSettingRow(c, t, "输出文件", "默认在输入旁", func() {
 					if ui.TextInputBase(c, &a.encOut).
 						Placeholder(encDefaultOut(a.encFile)+"（默认）").
-						Grow(1).FontSize(12).Padding(5, 10).
+						Grow(1).FontSize(13).Padding(5, 10).
 						Background(t.Surface).Border(1, t.Border).Radius(8).
 						MinHeight(32).Changed() {
 						a.encOutDirty = strings.TrimSpace(a.encOut) != ""
@@ -2124,15 +2190,15 @@ func (a *app) pageEncrypt(c *ui.Context) {
 				if a.encErr != "" {
 					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 						ui.Image(c, iconError).Size(14, 14)
-						ui.Text(c, a.encErr).FontSize(12).TextColor(t.Danger).Grow(1)
+						ui.Text(c, a.encErr).FontSize(13).TextColor(t.Danger).Grow(1)
 					})
 				} else {
 					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, "密文（Base64）").FontSize(12)
+						ui.Text(c, "密文（Base64）").FontSize(13)
 						copyButton(c, t, a.encTextOut)
 					})
 					ui.TextAreaBase(c, &a.encTextOut).
-						ReadOnly(true).Lines(2, 6).Grow(1).FontSize(12).
+						ReadOnly(true).Lines(2, 6).Grow(1).FontSize(13).
 						Padding(6, 10).Background(t.Surface).Border(1, t.Border).Radius(8)
 				}
 			})
@@ -2182,7 +2248,7 @@ func (a *app) pageDecrypt(c *ui.Context) {
 	column := pageColumn(c)
 	column.Children(func() {
 		ui.Row(c).Padding(14, 0, 4, 0).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "私钥解密还原文件").FontSize(12).TextColor(t.TextMuted)
+			ui.Text(c, "私钥解密还原文件").FontSize(13).TextColor(t.TextMuted)
 		})
 
 		paramCard := ui.Column(c).Margin(12, 0, 0, 0).Gap(4)
@@ -2193,7 +2259,7 @@ func (a *app) pageDecrypt(c *ui.Context) {
 			if a.decModeIdx == 0 {
 				openSettingRow(c, t, "密文", "Base64 密文文本", func() {
 					ui.TextAreaBase(c, &a.decText).
-						Placeholder("粘贴 Base64 密文").Lines(2, 6).Grow(1).FontSize(12).
+						Placeholder("粘贴 Base64 密文").Lines(2, 6).Grow(1).FontSize(13).
 						Padding(6, 10).Background(t.Surface).Border(1, t.Border).Radius(8)
 				})
 			} else {
@@ -2212,7 +2278,7 @@ func (a *app) pageDecrypt(c *ui.Context) {
 				openSettingRow(c, t, "输出文件", "默认在输入旁", func() {
 					if ui.TextInputBase(c, &a.decOut).
 						Placeholder(decDefaultOut(a.decFile)+"（默认）").
-						Grow(1).FontSize(12).Padding(5, 10).
+						Grow(1).FontSize(13).Padding(5, 10).
 						Background(t.Surface).Border(1, t.Border).Radius(8).
 						MinHeight(32).Changed() {
 						a.decOutDirty = strings.TrimSpace(a.decOut) != ""
@@ -2236,15 +2302,15 @@ func (a *app) pageDecrypt(c *ui.Context) {
 				if a.decErr != "" {
 					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 						ui.Image(c, iconError).Size(14, 14)
-						ui.Text(c, a.decErr).FontSize(12).TextColor(t.Danger).Grow(1)
+						ui.Text(c, a.decErr).FontSize(13).TextColor(t.Danger).Grow(1)
 					})
 				} else {
 					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, "明文").FontSize(12)
+						ui.Text(c, "明文").FontSize(13)
 						copyButton(c, t, a.decTextOut)
 					})
 					ui.TextAreaBase(c, &a.decTextOut).
-						ReadOnly(true).Lines(2, 6).Grow(1).FontSize(12).
+						ReadOnly(true).Lines(2, 6).Grow(1).FontSize(13).
 						Padding(6, 10).Background(t.Surface).Border(1, t.Border).Radius(8)
 				}
 			})
@@ -2294,7 +2360,7 @@ func (a *app) pageKeys(c *ui.Context) {
 	column := pageColumn(c)
 	column.Children(func() {
 		ui.Row(c).Padding(14, 0, 4, 0).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "生成 RSA 公钥私钥对").FontSize(12).TextColor(t.TextMuted)
+			ui.Text(c, "生成 RSA 公钥私钥对").FontSize(13).TextColor(t.TextMuted)
 		})
 
 		paramCard := ui.Column(c).Margin(12, 0, 0, 0).Gap(4)
@@ -2305,7 +2371,7 @@ func (a *app) pageKeys(c *ui.Context) {
 			openSettingRow(c, t, "名字", "文件名前缀", func() {
 				ui.TextInputBase(c, &a.keyName).
 					Placeholder("keypair（默认）").
-					Grow(1).FontSize(12).Padding(5, 10).
+					Grow(1).FontSize(13).Padding(5, 10).
 					Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 			})
 			openSettingRow(c, t, "保存位置", "默认桌面", func() {
@@ -2317,7 +2383,7 @@ func (a *app) pageKeys(c *ui.Context) {
 						dirShown = "桌面"
 						dirColor = t.TextMuted
 					}
-					ui.Text(c, dirShown).FontSize(12).Grow(1).TextColor(dirColor).Padding(0, 0, 0, 10)
+					ui.Text(c, dirShown).FontSize(13).Grow(1).TextColor(dirColor).Padding(0, 0, 0, 10)
 					pick := ui.ButtonBase(c).Height(24).Padding(0, 8).
 						Radius(6).Gap(4).AlignItems(ui.Center).Margin(0, 3, 0, 0).
 						Cursor(ui.CursorPointer).
@@ -2329,7 +2395,7 @@ func (a *app) pageKeys(c *ui.Context) {
 					}
 					pick.Children(func() {
 						ui.Image(c, iconFolder).Size(13, 13)
-						ui.Text(c, "选择").FontSize(12).TextColor(t.TextMuted)
+						ui.Text(c, "选择").FontSize(13).TextColor(t.TextMuted)
 					})
 					if pick.Clicked() {
 						a.toolBrowse("选择保存位置", true, func(pick string) {
@@ -2348,7 +2414,7 @@ func (a *app) pageKeys(c *ui.Context) {
 				if a.keyDone.Err != "" {
 					ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(10, 12).Children(func() {
 						ui.Image(c, iconError).Size(14, 14)
-						ui.Text(c, a.keyDone.Err).FontSize(12).TextColor(t.Danger).Grow(1)
+						ui.Text(c, a.keyDone.Err).FontSize(13).TextColor(t.Danger).Grow(1)
 					})
 					return
 				}
@@ -2356,7 +2422,7 @@ func (a *app) pageKeys(c *ui.Context) {
 					BorderWidth(0, 0, 1, 0).Children(func() {
 					ui.Image(c, iconDone).Size(14, 14)
 					ui.Text(c, "已生成 "+[]string{"1024", "2048", "4096"}[a.keyBitsIdx]+" 位密钥对").
-						FontSize(12)
+						FontSize(13)
 				})
 				keyRow := func(lock bool, label, fullPath string) {
 					ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(8, 12).Children(func() {
@@ -2365,10 +2431,10 @@ func (a *app) pageKeys(c *ui.Context) {
 						} else {
 							ui.Image(c, iconKeyPub).Size(13, 13) // m05143：公钥=蓝钥匙
 						}
-						ui.Text(c, label).FontSize(12).Shrink(0)
+						ui.Text(c, label).FontSize(13).Shrink(0)
 						nameRow := ui.Row(c).Gap(2).Cursor(ui.CursorPointer).Grow(1)
 						nameRow.Children(func() {
-							ui.Text(c, filepath.Base(fullPath)).FontSize(12).
+							ui.Text(c, filepath.Base(fullPath)).FontSize(13).
 								TextColor(t.Accent).Grow(1)
 						})
 						if nameRow.Clicked() { // 点文件名=复制全路径
@@ -2384,7 +2450,7 @@ func (a *app) pageKeys(c *ui.Context) {
 							show.Background(t.SurfaceHover)
 						}
 						show.Children(func() {
-							ui.Text(c, revealLabel()).FontSize(12).TextColor(t.TextMuted)
+							ui.Text(c, revealLabel()).FontSize(13).TextColor(t.TextMuted)
 						})
 						if show.Clicked() {
 							revealPath(fullPath)
@@ -2396,10 +2462,10 @@ func (a *app) pageKeys(c *ui.Context) {
 				keyRow(false, "公钥", a.keyDone.Extra)
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(8, 12).
 					Background(t.SurfaceHover.Alpha(0.35)).Children(func() {
-					ui.Text(c, "保存位置").FontSize(11).TextColor(t.TextMuted).Shrink(0)
+					ui.Text(c, "保存位置").FontSize(12).TextColor(t.TextMuted).Shrink(0)
 					dirRow := ui.Row(c).Cursor(ui.CursorPointer).Grow(1)
 					dirRow.Children(func() {
-						ui.Text(c, filepath.Dir(a.keyDone.Output)).FontSize(11).
+						ui.Text(c, filepath.Dir(a.keyDone.Output)).FontSize(12).
 							TextColor(t.TextMuted).Grow(1)
 					})
 					if dirRow.Clicked() {
@@ -2460,7 +2526,7 @@ func (a *app) pageBase64(c *ui.Context) {
 	column := pageColumn(c)
 	column.Children(func() {
 		ui.Row(c).Padding(14, 0, 4, 0).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "文本 ⇄ Base64，点击历史卡片里的内容即可复制").FontSize(12).TextColor(t.TextMuted)
+			ui.Text(c, "文本 ⇄ Base64，点击历史卡片里的内容即可复制").FontSize(13).TextColor(t.TextMuted)
 		})
 
 		paramCard := ui.Column(c).Margin(12, 0, 0, 0).Gap(6)
@@ -2468,7 +2534,7 @@ func (a *app) pageBase64(c *ui.Context) {
 			// 状态行：已输入计数 + 清除
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "已输入 "+fmt.Sprint(len([]rune(a.b64In)))).
-					FontSize(11).TextColor(t.TextMuted)
+					FontSize(12).TextColor(t.TextMuted)
 				ui.Spacer(c)
 				if a.b64In != "" {
 					clear := ui.ButtonBase(c).Height(22).Padding(0, 8).Radius(6).
@@ -2477,7 +2543,7 @@ func (a *app) pageBase64(c *ui.Context) {
 						clear.Background(t.SurfaceHover)
 					}
 					clear.Children(func() {
-						ui.Text(c, "清除").FontSize(11).TextColor(t.TextMuted)
+						ui.Text(c, "清除").FontSize(12).TextColor(t.TextMuted)
 					})
 					if clear.Clicked() {
 						a.b64In = ""
@@ -2542,7 +2608,7 @@ func (a *app) pageBase64(c *ui.Context) {
 		if a.b64Err != "" {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Margin(12, 0, 0, 0).Children(func() {
 				ui.Image(c, iconError).Size(14, 14)
-				ui.Text(c, a.b64Err).FontSize(12).TextColor(t.Danger).Grow(1)
+				ui.Text(c, a.b64Err).FontSize(13).TextColor(t.Danger).Grow(1)
 			})
 		}
 
@@ -2555,14 +2621,14 @@ func (a *app) pageBase64(c *ui.Context) {
 				// 头行：序号 + 方向徽章 + 计数 + 删除
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(6, 10).
 					BorderWidth(0, 0, 1, 0).Children(func() {
-					ui.Text(c, fmt.Sprint(recordIdx+1)).FontSize(11).TextColor(t.TextMuted)
+					ui.Text(c, fmt.Sprint(recordIdx+1)).FontSize(12).TextColor(t.TextMuted)
 					pillBg := map[bool]ui.Color{true: t.Accent.Alpha(0.12), false: t.TextMuted.Alpha(0.10)}[record.enc]
 					pillFg := map[bool]ui.Color{true: t.Accent, false: t.TextMuted}[record.enc]
 					pillLabel := map[bool]string{true: "Encode", false: "Decode"}[record.enc]
-					ui.Text(c, pillLabel).FontSize(10).TextColor(pillFg).
+					ui.Text(c, pillLabel).FontSize(11).TextColor(pillFg).
 						Background(pillBg).Radius(9).Padding(3, 8).Shrink(0)
 					ui.Text(c, "原文 "+fmt.Sprint(len([]rune(record.from)))+" / 结果 "+
-						fmt.Sprint(len([]rune(record.to)))).FontSize(11).TextColor(t.TextMuted)
+						fmt.Sprint(len([]rune(record.to)))).FontSize(12).TextColor(t.TextMuted)
 					ui.Spacer(c)
 					del := ui.ButtonBase(c).Width(24).Height(24).Radius(6).
 						AlignItems(ui.Center).Cursor(ui.CursorPointer).
@@ -2584,7 +2650,7 @@ func (a *app) pageBase64(c *ui.Context) {
 					fromRow.Background(t.SurfaceHover)
 				}
 				fromRow.Children(func() {
-					ui.Text(c, record.from).FontSize(12).Grow(1)
+					ui.Text(c, record.from).FontSize(13).Grow(1)
 				})
 				if fromRow.Clicked() {
 					mygo.Clipboard.WriteText(record.from)
@@ -2597,7 +2663,7 @@ func (a *app) pageBase64(c *ui.Context) {
 					toRow.Background(t.SurfaceHover)
 				}
 				toRow.Children(func() {
-					ui.Text(c, record.to).FontSize(12).Grow(1)
+					ui.Text(c, record.to).FontSize(13).Grow(1)
 				})
 				if toRow.Clicked() {
 					mygo.Clipboard.WriteText(record.to)
@@ -2700,7 +2766,7 @@ func (a *app) imagePreviewBox(c *ui.Context, t *ui.Theme, path string) {
 			if a.imgPrevState == 3 {
 				ui.Image(c, iconFile).Size(28, 28).Opacity(0.5)
 			} else {
-				ui.Text(c, "读取中…").FontSize(12).TextColor(t.TextMuted)
+				ui.Text(c, "读取中…").FontSize(13).TextColor(t.TextMuted)
 			}
 		})
 	})
@@ -2758,14 +2824,14 @@ func (a *app) pagePdfMerge(c *ui.Context) {
 		}
 		ui.Row(c).Padding(14, 0, 4, 0).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "已准备的 PDF "+itoa(len(a.pdfMergeInputs))+" 项共 "+humanSize(pdfTotal)+
-				"，可拖拽加入或（按清单顺序合并）").FontSize(12).TextColor(t.TextMuted)
+				"，可拖拽加入或（按清单顺序合并）").FontSize(13).TextColor(t.TextMuted)
 			browse := ui.ButtonBase(c).Height(24).Padding(0, 10).Radius(7).Border(1, t.Border).
 				Cursor(ui.CursorPointer)
 			if browse.Hovered() {
 				browse.Background(t.SurfaceHover).Border(1, t.Accent)
 			}
 			browse.Children(func() {
-				ui.Text(c, "浏览选择…").FontSize(12).TextColor(t.Accent)
+				ui.Text(c, "浏览选择…").FontSize(13).TextColor(t.Accent)
 			})
 			if browse.Clicked() {
 				a.browsePdfMerge()
@@ -2787,7 +2853,7 @@ func (a *app) pagePdfMerge(c *ui.Context) {
 				}
 				row.Children(func() {
 					ui.Image(c, iconFile).Size(14, 14)
-					ui.Text(c, a.pdfMergeInputs[entryIdx]).FontSize(12).Grow(1).MinWidth(0)
+					ui.Text(c, a.pdfMergeInputs[entryIdx]).FontSize(13).Grow(1).MinWidth(0)
 					shown := row.Hovered()
 					slot := ui.Row(c).Shrink(0).AlignItems(ui.Center).Height(24)
 					slot.Children(func() {
@@ -2835,7 +2901,7 @@ func (a *app) pagePdfMerge(c *ui.Context) {
 		openSettingRow(c, t, "名字", "合并产物文件名", func() {
 			ui.TextInputBase(c, &a.pdfMergeName).
 				Placeholder("合并文档（默认）").
-				Grow(1).FontSize(12).Padding(5, 10).
+				Grow(1).FontSize(13).Padding(5, 10).
 				Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 		})
 		a.convertCTARow(c, t, "合并 "+itoa(len(a.pdfMergeInputs))+" 个 PDF", len(a.pdfMergeInputs) >= 2, func() {
@@ -2874,7 +2940,7 @@ func (a *app) pagePdfExtract(c *ui.Context) {
 		openSettingRow(c, t, "页码区间", "如 1-3,5,8-（8- 表示到末页）", func() {
 			ui.TextInputBase(c, &a.pdfExtractPages).
 				Placeholder("1-3,5,8-").
-				Grow(1).FontSize(12).Padding(5, 10).
+				Grow(1).FontSize(13).Padding(5, 10).
 				Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 		})
 		a.convertOutRow(c, t, "输出位置", filepath.Dir(a.pdfExtractPath),
@@ -2900,20 +2966,25 @@ func (a *app) pagePdfExtract(c *ui.Context) {
 	})
 }
 
-// addPdfMerges 并入合并清单：只收 PDF（按扩展名），去重保序。
+// addPdfMerges 并入合并清单：内容判格（m00961 用户定案——不看扩展名），
+// 分类器认出非 PDF 的明确拒收并计数 toast，认不出的放行引擎裁决；去重保序。
 func (a *app) addPdfMerges(files []string) {
-	added := false
+	added, rejected := 0, 0
 	for _, candidate := range files {
-		if !strings.EqualFold(filepath.Ext(candidate), ".pdf") {
+		if got := classifyMagic(magicSniff(candidate)); got != "" && got != "pdf" {
+			rejected++
 			continue
 		}
 		if slices.Contains(a.pdfMergeInputs, candidate) {
 			continue
 		}
 		a.pdfMergeInputs = append(a.pdfMergeInputs, candidate)
-		added = true
+		added++
 	}
-	if added {
+	if rejected > 0 {
+		a.queueToast(fmt.Sprintf("已跳过 %d 个非 PDF 文件", rejected))
+	}
+	if added > 0 {
 		a.win.Update(func() {})
 	}
 }
@@ -2950,6 +3021,9 @@ func (a *app) browsePdfMerge() {
 
 // setPdfExtractPath 选定/拖入待提取 PDF：换源重置输出脏状态。
 func (a *app) setPdfExtractPath(path string) {
+	if a.rejectIfForeign(path, "pdf") { // 内容判格守卫（m00961）：明确非PDF → toast 拒收
+		return
+	}
 	a.pdfExtractPath = path
 	if !a.pdfExtractOutDirty {
 		a.pdfExtractOut = ""
@@ -2982,7 +3056,7 @@ func (a *app) pageMediaCmp(c *ui.Context) {
 					trig.Background(t.SurfaceHover)
 				}
 				trig.Children(func() {
-					ui.Text(c, a.mediaCmpMode).FontSize(12).Grow(1)
+					ui.Text(c, a.mediaCmpMode).FontSize(13).Grow(1)
 					ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 				})
 				targetSel.Popup(func(panel ui.Element) {
@@ -2999,13 +3073,13 @@ func (a *app) pageMediaCmp(c *ui.Context) {
 							item.Background(t.SurfaceHover)
 						}
 						item.Children(func() {
-							ui.Text(c, opt).FontSize(12)
+							ui.Text(c, opt).FontSize(13)
 						})
 					}
 				})
 				if a.mediaCmpMode == "自定义" {
 					ui.TextInputBase(c, &a.mediaCmpSize).
-						Placeholder("如 80MB / 500KB").Grow(1).FontSize(12).Padding(5, 10).
+						Placeholder("如 80MB / 500KB").Grow(1).FontSize(13).Padding(5, 10).
 						Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 				}
 			})
@@ -3051,12 +3125,12 @@ func (a *app) pageAudioCvt(c *ui.Context) {
 		})
 		openSettingRow(c, t, "码率", "留空跟随源", func() {
 			ui.TextInputBase(c, &a.audioCvtBitrate).
-				Placeholder("如 128k").Grow(1).FontSize(12).Padding(5, 10).
+				Placeholder("如 128k").Grow(1).FontSize(13).Padding(5, 10).
 				Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 		})
 		openSettingRow(c, t, "采样率", "留空跟随源", func() {
 			ui.TextInputBase(c, &a.audioCvtRate).
-				Placeholder("如 44100").Grow(1).FontSize(12).Padding(5, 10).
+				Placeholder("如 44100").Grow(1).FontSize(13).Padding(5, 10).
 				Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 		})
 		openSettingRow(c, t, "单声道", "合并双声道", func() {
@@ -3101,7 +3175,7 @@ func (a *app) pageAudioCmp(c *ui.Context) {
 		})
 		openSettingRow(c, t, "目标码率", "留空=自动压到一半", func() {
 			ui.TextInputBase(c, &a.audioCmpBitrate).
-				Placeholder("如 64k").Grow(1).FontSize(12).Padding(5, 10).
+				Placeholder("如 64k").Grow(1).FontSize(13).Padding(5, 10).
 				Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 		})
 		openSettingRow(c, t, "单声道", "合并双声道", func() {
@@ -3139,6 +3213,9 @@ func (a *app) pageAudioCmp(c *ui.Context) {
 }
 
 func (a *app) setMediaCmpPath(path string) {
+	if a.rejectIfForeign(path, "av") { // 内容判格守卫（m00961）：明确非音视频 → toast 拒收
+		return
+	}
 	a.mediaCmpPath = path
 	if !a.mediaCmpOutDirty {
 		a.mediaCmpOut = ""
@@ -3151,6 +3228,9 @@ func (a *app) browseMediaCmp() {
 }
 
 func (a *app) setAudioCvtPath(path string) {
+	if a.rejectIfForeign(path, "av") { // 内容判格守卫（m00961）：明确非音视频 → toast 拒收
+		return
+	}
 	a.audioCvtPath = path
 	if !a.audioCvtOutDirty {
 		a.audioCvtOut = ""
@@ -3163,6 +3243,9 @@ func (a *app) browseAudioCvt() {
 }
 
 func (a *app) setAudioCmpPath(path string) {
+	if a.rejectIfForeign(path, "av") { // 内容判格守卫（m00961）：明确非音视频 → toast 拒收
+		return
+	}
 	a.audioCmpPath = path
 	if !a.audioCmpOutDirty {
 		a.audioCmpOut = ""
@@ -3189,21 +3272,21 @@ func (a *app) pageImageCmp(c *ui.Context) {
 		}
 		ui.Row(c).Padding(14, 0, 4, 0).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "已准备的图片 "+itoa(len(a.imageCmpInputs))+" 项共 "+humanSize(cmpTotal)+"，可拖拽加入或").
-				FontSize(12).TextColor(t.TextMuted)
+				FontSize(13).TextColor(t.TextMuted)
 			browse := ui.ButtonBase(c).Height(24).Padding(0, 10).Radius(7).Border(1, t.Border).
 				Cursor(ui.CursorPointer)
 			if browse.Hovered() {
 				browse.Background(t.SurfaceHover).Border(1, t.Accent)
 			}
 			browse.Children(func() {
-				ui.Text(c, "浏览选择…").FontSize(12).TextColor(t.Accent)
+				ui.Text(c, "浏览选择…").FontSize(13).TextColor(t.Accent)
 			})
 			if browse.Clicked() {
 				a.browseImageCmp()
 			}
 			ui.Box(c).Grow(1)
 			if len(a.imageCmpInputs) > 0 {
-				if ui.Button(c, "清空").FontSize(12).Height(22).Padding(0, 8).
+				if ui.Button(c, "清空").FontSize(13).Height(22).Padding(0, 8).
 					TextColor(t.TextMuted).Cursor(ui.CursorPointer).Clicked() {
 					a.clearImageCmp()
 				}
@@ -3240,7 +3323,7 @@ func (a *app) pageImageCmp(c *ui.Context) {
 					}
 					row.Children(func() {
 						ui.Image(c, iconFile).Size(14, 14)
-						ui.Text(c, path).FontSize(12).Grow(1).MinWidth(0)
+						ui.Text(c, path).FontSize(13).Grow(1).MinWidth(0)
 						shown := row.Hovered()
 						slot := ui.Row(c).Shrink(0).AlignItems(ui.Center).Height(24)
 						slot.Children(func() {
@@ -3248,7 +3331,7 @@ func (a *app) pageImageCmp(c *ui.Context) {
 							if shown {
 								numTarget = 0
 							}
-							sizeText := ui.Text(c, humanSize(a.entryInfoOf(path).size)).Font("monospace").FontSize(12).
+							sizeText := ui.Text(c, humanSize(a.entryInfoOf(path).size)).Font(fontMonoFamily + ", monospace").FontSize(13).
 								TextColor(t.TextMuted)
 							sizeText.Opacity(slot.Animate("num", numTarget, 110*time.Millisecond))
 							del := ui.ButtonBase(c).Absolute().Right(0).Size(24, 24).Radius(6).Center().
@@ -3301,7 +3384,7 @@ func (a *app) pageImageCmp(c *ui.Context) {
 					trig.Background(t.SurfaceHover)
 				}
 				trig.Children(func() {
-					ui.Text(c, a.imageCmpMode).FontSize(12).Grow(1)
+					ui.Text(c, a.imageCmpMode).FontSize(13).Grow(1)
 					ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 				})
 				sizeSel.Popup(func(panel ui.Element) {
@@ -3318,13 +3401,13 @@ func (a *app) pageImageCmp(c *ui.Context) {
 							item.Background(t.SurfaceHover)
 						}
 						item.Children(func() {
-							ui.Text(c, opt).FontSize(12)
+							ui.Text(c, opt).FontSize(13)
 						})
 					}
 				})
 				if a.imageCmpMode == "自定义" {
 					ui.TextInputBase(c, &a.imageCmpSize).
-						Placeholder("如 300KB / 2MB").Grow(1).FontSize(12).Padding(5, 10).
+						Placeholder("如 300KB / 2MB").Grow(1).FontSize(13).Padding(5, 10).
 						Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 				}
 			})
@@ -3371,9 +3454,9 @@ func (a *app) pageImageCmp(c *ui.Context) {
 										p.Fill(ui.Rect{X: r.X + (r.W-d)/2, Y: r.Y + (r.W-d)/2, W: d, H: d}, t.AccentText, d/2)
 									}
 								})
-								ui.Text(c, opt.title).FontSize(12)
+								ui.Text(c, opt.title).FontSize(13)
 							})
-							ui.Text(c, opt.hint).FontSize(11).TextColor(t.TextMuted).Margin(0, 0, 0, 24).Wrap()
+							ui.Text(c, opt.hint).FontSize(12).TextColor(t.TextMuted).Margin(0, 0, 0, 24).Wrap()
 						})
 					})
 					if row.Clicked() {
@@ -3392,10 +3475,10 @@ func (a *app) pageImageCmp(c *ui.Context) {
 				ui.Image(c, iconWarn).Size(14, 14)
 				if jpgCount == 0 {
 					ui.Text(c, "所选全是无损格式（PNG/WebP/GIF/BMP/TIFF），没有质量维度——目标体积压缩只支持 JPG，可先在「图片转换」转成 .jpg").
-						FontSize(11).TextColor(t.Text).Grow(1).Wrap()
+						FontSize(12).TextColor(t.Text).Grow(1).Wrap()
 				} else {
 					ui.Text(c, itoa(len(a.imageCmpInputs)-jpgCount)+" 张无损格式（PNG/WebP 等）没有质量维度，目标体积对它们不生效——逐张任务会报错，其余照常压缩").
-						FontSize(11).TextColor(t.Text).Grow(1).Wrap()
+						FontSize(12).TextColor(t.Text).Grow(1).Wrap()
 				}
 			})
 		}
@@ -3446,30 +3529,30 @@ func (a *app) pageImageNew(c *ui.Context) {
 	column := pageColumn(c)
 	column.Children(func() {
 		ui.Row(c).Padding(14, 0, 4, 0).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "生成空白占位图（可指定颜色与打印密度）").FontSize(12).TextColor(t.TextMuted)
+			ui.Text(c, "生成空白占位图（可指定颜色与打印密度）").FontSize(13).TextColor(t.TextMuted)
 		})
 		openSettingRow(c, t, "尺寸", "800x600 / a4 / 55x90mm", func() {
 			ui.TextInputBase(c, &a.imageNewSize).
 				Placeholder("800x600（或 a4 / 55x90mm）").
-				Grow(1).FontSize(12).Padding(5, 10).
+				Grow(1).FontSize(13).Padding(5, 10).
 				Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 		})
 		openSettingRow(c, t, "颜色", "留空=全透明", func() {
 			ui.TextInputBase(c, &a.imageNewColor).
 				Placeholder("如 red / #FF0000 / #3344FF88").
-				Grow(1).FontSize(12).Padding(5, 10).
+				Grow(1).FontSize(13).Padding(5, 10).
 				Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 		})
 		openSettingRow(c, t, "打印密度", "配合 mm/cm/in 尺寸（如 300）", func() {
 			ui.TextInputBase(c, &a.imageNewPpi).
 				Placeholder("缺省 300").
-				Grow(1).FontSize(12).Padding(5, 10).
+				Grow(1).FontSize(13).Padding(5, 10).
 				Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 		})
 		openSettingRow(c, t, "名字", "输出文件名（扩展名定格式）", func() {
 			ui.TextInputBase(c, &a.imageNewName).
 				Placeholder("空白图.png（默认）").
-				Grow(1).FontSize(12).Padding(5, 10).
+				Grow(1).FontSize(13).Padding(5, 10).
 				Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 		})
 		a.convertOutRow(c, t, "输出位置", filepath.Join(func() string {
@@ -3527,7 +3610,7 @@ func (a *app) pageOffice(c *ui.Context) {
 			if target == "" {
 				target = "待选择 DOC/XLS/PPT（或 WPS 家族）"
 			}
-			ui.Text(c, target).FontSize(12).TextColor(t.Text)
+			ui.Text(c, target).FontSize(13).TextColor(t.Text)
 		})
 		openSettingRow(c, t, "转换引擎", "自动=内置引擎", func() {
 			ui.Row(c).Grow(1).Children(func() {
@@ -3540,7 +3623,7 @@ func (a *app) pageOffice(c *ui.Context) {
 					trig.Background(t.SurfaceHover)
 				}
 				trig.Children(func() {
-					ui.Text(c, a.officeEngine).FontSize(12).Grow(1)
+					ui.Text(c, a.officeEngine).FontSize(13).Grow(1)
 					ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 				})
 				engineSel.Popup(func(panel ui.Element) {
@@ -3557,7 +3640,7 @@ func (a *app) pageOffice(c *ui.Context) {
 							item.Background(t.SurfaceHover)
 						}
 						item.Children(func() {
-							ui.Text(c, opt).FontSize(12)
+							ui.Text(c, opt).FontSize(13)
 						})
 					}
 				})
@@ -3607,17 +3690,14 @@ func officeTargetOf(path string) string {
 	return ""
 }
 
-// imageCmpExts 常见位图扩展名（拖拽/多选过滤；目标体积仅 JPG 生效，其余引擎明确报错透传）
-var imageCmpExts = map[string]bool{
-	".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".bmp": true,
-	".tif": true, ".tiff": true, ".gif": true, ".heic": true, ".heif": true,
-	".avif": true, ".jxl": true,
-}
-
-// addImageCmpInputs 收敛拖拽/多选（m07800 多图批压）：扩展名过滤+去重保序
+// addImageCmpInputs 收敛拖拽/多选（m07800 多图批压）：内容判格（m00961
+// 用户定案——不看扩展名；分类器认出非图片才拒并计数 toast，认不出的放行
+// 引擎裁决）+去重保序
 func (a *app) addImageCmpInputs(paths []string) {
+	rejected := 0
 	for _, path := range paths {
-		if !imageCmpExts[strings.ToLower(filepath.Ext(path))] {
+		if got := classifyMagic(magicSniff(path)); got != "" && got != "image" {
+			rejected++
 			continue
 		}
 		dup := false
@@ -3630,6 +3710,9 @@ func (a *app) addImageCmpInputs(paths []string) {
 		if !dup {
 			a.imageCmpInputs = append(a.imageCmpInputs, path)
 		}
+	}
+	if rejected > 0 {
+		a.queueToast(fmt.Sprintf("已跳过 %d 个非图片文件", rejected))
 	}
 	if !a.imageCmpOutDirty {
 		a.imageCmpOut = ""
@@ -3670,6 +3753,9 @@ func (a *app) browseImageCmp() {
 }
 
 func (a *app) setOfficePath(path string) {
+	if a.rejectIfForeign(path, "office") { // 内容判格守卫（m00961）：明确非Office 文档 → toast 拒收
+		return
+	}
 	a.officePath = path
 	if !a.officeOutDirty {
 		a.officeOut = ""
@@ -3701,7 +3787,7 @@ func (a *app) pagePdfRotate(c *ui.Context) {
 					trig.Background(t.SurfaceHover)
 				}
 				trig.Children(func() {
-					ui.Text(c, a.pdfRotateDir).FontSize(12).Grow(1)
+					ui.Text(c, a.pdfRotateDir).FontSize(13).Grow(1)
 					ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 				})
 				dirSel.Popup(func(panel ui.Element) {
@@ -3718,7 +3804,7 @@ func (a *app) pagePdfRotate(c *ui.Context) {
 							item.Background(t.SurfaceHover)
 						}
 						item.Children(func() {
-							ui.Text(c, opt).FontSize(12)
+							ui.Text(c, opt).FontSize(13)
 						})
 					}
 				})
@@ -3727,7 +3813,7 @@ func (a *app) pagePdfRotate(c *ui.Context) {
 		openSettingRow(c, t, "页码", "留空=全部（如 1-3,5,8-）", func() {
 			ui.TextInputBase(c, &a.pdfRotatePages).
 				Placeholder("1-3,5,8-（可选）").
-				Grow(1).FontSize(12).Padding(5, 10).
+				Grow(1).FontSize(13).Padding(5, 10).
 				Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 		})
 		a.convertOutRow(c, t, "输出位置", filepath.Dir(a.pdfRotatePath),
@@ -3786,7 +3872,7 @@ func (a *app) pagePdfResize(c *ui.Context) {
 					trig.Background(t.SurfaceHover)
 				}
 				trig.Children(func() {
-					ui.Text(c, a.pdfResizeSize).FontSize(12).Grow(1)
+					ui.Text(c, a.pdfResizeSize).FontSize(13).Grow(1)
 					ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 				})
 				sizeSel.Popup(func(panel ui.Element) {
@@ -3803,7 +3889,7 @@ func (a *app) pagePdfResize(c *ui.Context) {
 							item.Background(t.SurfaceHover)
 						}
 						item.Children(func() {
-							ui.Text(c, opt).FontSize(12)
+							ui.Text(c, opt).FontSize(13)
 						})
 					}
 				})
@@ -3812,7 +3898,7 @@ func (a *app) pagePdfResize(c *ui.Context) {
 		openSettingRow(c, t, "页码", "留空=全部（如 1-3,5）", func() {
 			ui.TextInputBase(c, &a.pdfResizePages).
 				Placeholder("1-3,5,8-（可选）").
-				Grow(1).FontSize(12).Padding(5, 10).
+				Grow(1).FontSize(13).Padding(5, 10).
 				Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 		})
 		a.convertOutRow(c, t, "输出位置", filepath.Dir(a.pdfResizePath),
@@ -3862,21 +3948,21 @@ func (a *app) pageHash(c *ui.Context) {
 		}
 		ui.Row(c).Padding(14, 0, 4, 0).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "已准备的待校验文件 "+itoa(len(a.hashInputs))+" 项共 "+humanSize(hashTotal)+"，可拖拽加入或").
-				FontSize(12).TextColor(t.TextMuted)
+				FontSize(13).TextColor(t.TextMuted)
 			browse := ui.ButtonBase(c).Height(24).Padding(0, 10).Radius(7).Border(1, t.Border).
 				Cursor(ui.CursorPointer)
 			if browse.Hovered() {
 				browse.Background(t.SurfaceHover).Border(1, t.Accent)
 			}
 			browse.Children(func() {
-				ui.Text(c, "浏览选择…").FontSize(12).TextColor(t.Accent)
+				ui.Text(c, "浏览选择…").FontSize(13).TextColor(t.Accent)
 			})
 			if browse.Clicked() {
 				a.browseHash()
 			}
 			ui.Box(c).Grow(1)
 			if len(a.hashInputs) > 0 {
-				if ui.Button(c, "清空").FontSize(12).Height(22).Padding(0, 8).
+				if ui.Button(c, "清空").FontSize(13).Height(22).Padding(0, 8).
 					TextColor(t.TextMuted).Cursor(ui.CursorPointer).Clicked() {
 					a.hashInputs = nil
 					a.hashResults = nil
@@ -3911,7 +3997,7 @@ func (a *app) pageHash(c *ui.Context) {
 							a.ensureDirSize(path)
 						}
 						ui.Image(c, rowIcon).Size(14, 14)
-						ui.Text(c, path).FontSize(12).Grow(1).MinWidth(0)
+						ui.Text(c, path).FontSize(13).Grow(1).MinWidth(0)
 						shown := row.Hovered()
 						slot := ui.Row(c).Shrink(0).AlignItems(ui.Center).Height(24)
 						slot.Children(func() {
@@ -3930,7 +4016,7 @@ func (a *app) pageHash(c *ui.Context) {
 							if shown {
 								numTarget = 0
 							}
-							sizeText := ui.Text(c, sizeLabel).Font("monospace").FontSize(12).
+							sizeText := ui.Text(c, sizeLabel).Font(fontMonoFamily + ", monospace").FontSize(13).
 								TextColor(t.TextMuted)
 							sizeText.Opacity(slot.Animate("num", numTarget, 110*time.Millisecond))
 
@@ -3985,7 +4071,7 @@ func (a *app) pageHash(c *ui.Context) {
 					trig.Background(t.SurfaceHover)
 				}
 				trig.Children(func() {
-					ui.Text(c, strings.ToUpper(a.hashAlgo)).FontSize(12).Grow(1)
+					ui.Text(c, strings.ToUpper(a.hashAlgo)).FontSize(13).Grow(1)
 					ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 				})
 				algoSel.Popup(func(panel ui.Element) {
@@ -4002,7 +4088,7 @@ func (a *app) pageHash(c *ui.Context) {
 							item.Background(t.SurfaceHover)
 						}
 						item.Children(func() {
-							ui.Text(c, strings.ToUpper(opt)).FontSize(12)
+							ui.Text(c, strings.ToUpper(opt)).FontSize(13)
 						})
 					}
 				})
@@ -4013,7 +4099,7 @@ func (a *app) pageHash(c *ui.Context) {
 			openSettingRow(c, t, "期望值", "留空=只计算（hex）", func() {
 				ui.TextInputBase(c, &a.hashExpect).
 					Placeholder(strings.Repeat("0", 16)+"…（可选）").
-					Grow(1).FontSize(12).Padding(5, 10).
+					Grow(1).FontSize(13).Padding(5, 10).
 					Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
 			})
 		}
@@ -4021,7 +4107,7 @@ func (a *app) pageHash(c *ui.Context) {
 		if a.hashErr != "" {
 			ui.Row(c).Margin(10, 0, 0, 0).Gap(6).AlignItems(ui.Center).Children(func() {
 				ui.Image(c, iconError).Size(14, 14)
-				ui.Text(c, a.hashErr).FontSize(12).TextColor(t.Danger).Grow(1).Wrap()
+				ui.Text(c, a.hashErr).FontSize(13).TextColor(t.Danger).Grow(1).Wrap()
 			})
 		}
 		for _, res := range a.hashResults {
@@ -4031,25 +4117,25 @@ func (a *app) pageHash(c *ui.Context) {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					ui.Image(c, iconDone).Size(14, 14)
 					// m07774 用户定案：结果卡注明完整路径+算法（原先只显基名）
-					ui.Text(c, result.Path).FontSize(12).Grow(1).Shrink(1).MinWidth(0)
-					ui.Text(c, strings.ToUpper(a.hashAlgo)).FontSize(10).Font("monospace").
+					ui.Text(c, result.Path).FontSize(13).Grow(1).Shrink(1).MinWidth(0)
+					ui.Text(c, strings.ToUpper(a.hashAlgo)).FontSize(11).Font(fontMonoFamily+", monospace").
 						TextColor(t.TextMuted).
 						Background(t.SurfaceHover).Radius(4).Padding(2, 5).Shrink(0)
 					if result.Matched != nil {
 						if *result.Matched {
-							ui.Text(c, "匹配").FontSize(11).TextColor(hexA("#65B85D", 1))
+							ui.Text(c, "匹配").FontSize(12).TextColor(hexA("#65B85D", 1))
 						} else {
-							ui.Text(c, "不匹配").FontSize(11).TextColor(t.Danger)
+							ui.Text(c, "不匹配").FontSize(12).TextColor(t.Danger)
 						}
 					}
-					if ui.Button(c, "复制").FontSize(11).Height(22).Padding(0, 8).
+					if ui.Button(c, "复制").FontSize(12).Height(22).Padding(0, 8).
 						TextColor(t.TextMuted).Border(1, t.Border).Radius(6).
 						Cursor(ui.CursorPointer).Clicked() {
 						mygo.Clipboard.WriteText(result.Hash)
 						c.Toast("已复制哈希值")
 					}
 				})
-				ui.Text(c, result.Hash).FontSize(11).Font("monospace").TextColor(t.TextMuted).Wrap()
+				ui.Text(c, result.Hash).FontSize(12).Font(fontMonoFamily + ", monospace").TextColor(t.TextMuted).Wrap()
 			})
 		}
 		// CTA
@@ -4120,6 +4206,9 @@ func (a *app) browseHash() {
 }
 
 func (a *app) setPdfRotatePath(path string) {
+	if a.rejectIfForeign(path, "pdf") { // 内容判格守卫（m00961）：明确非PDF → toast 拒收
+		return
+	}
 	a.pdfRotatePath = path
 	if !a.pdfRotateOutDirty {
 		a.pdfRotateOut = ""
@@ -4132,6 +4221,9 @@ func (a *app) browsePdfRotate() {
 }
 
 func (a *app) setPdfResizePath(path string) {
+	if a.rejectIfForeign(path, "pdf") { // 内容判格守卫（m00961）：明确非PDF → toast 拒收
+		return
+	}
 	a.pdfResizePath = path
 	if !a.pdfResizeOutDirty {
 		a.pdfResizeOut = ""
@@ -4151,7 +4243,7 @@ func (a *app) pageRandom(c *ui.Context) {
 	column := pageColumn(c)
 	column.Children(func() {
 		ui.Row(c).Padding(14, 0, 4, 0).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "随机密码与 UUID，生成后点击复制").FontSize(12).TextColor(t.TextMuted)
+			ui.Text(c, "随机密码与 UUID，生成后点击复制").FontSize(13).TextColor(t.TextMuted)
 		})
 
 		toolSegmented(c, t, &a.randomModeIdx, "密码", "UUID")
@@ -4170,7 +4262,7 @@ func (a *app) pageRandom(c *ui.Context) {
 							trig.Background(t.SurfaceHover)
 						}
 						trig.Children(func() {
-							ui.Text(c, a.pwLenStr).FontSize(12).Grow(1)
+							ui.Text(c, a.pwLenStr).FontSize(13).Grow(1)
 							ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 						})
 						lenSel.Popup(func(panel ui.Element) {
@@ -4187,7 +4279,7 @@ func (a *app) pageRandom(c *ui.Context) {
 									item.Background(t.SurfaceHover)
 								}
 								item.Children(func() {
-									ui.Text(c, opt).FontSize(12)
+									ui.Text(c, opt).FontSize(13)
 								})
 							}
 						})
@@ -4207,7 +4299,7 @@ func (a *app) pageRandom(c *ui.Context) {
 							csItem := cs
 							ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
 								ui.Switch(c, csItem.flag)
-								ui.Text(c, csItem.label).FontSize(12)
+								ui.Text(c, csItem.label).FontSize(13)
 							})
 						}
 					})
@@ -4224,7 +4316,7 @@ func (a *app) pageRandom(c *ui.Context) {
 							trig.Background(t.SurfaceHover)
 						}
 						trig.Children(func() {
-							ui.Text(c, a.uuidFmt).FontSize(12).Grow(1)
+							ui.Text(c, a.uuidFmt).FontSize(13).Grow(1)
 							ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 						})
 						fmtSel.Popup(func(panel ui.Element) {
@@ -4241,7 +4333,7 @@ func (a *app) pageRandom(c *ui.Context) {
 									item.Background(t.SurfaceHover)
 								}
 								item.Children(func() {
-									ui.Text(c, opt).FontSize(12)
+									ui.Text(c, opt).FontSize(13)
 								})
 							}
 						})
@@ -4316,14 +4408,14 @@ func (a *app) pageRandom(c *ui.Context) {
 		if a.randomErr != "" {
 			ui.Row(c).Margin(10, 0, 0, 0).Gap(6).AlignItems(ui.Center).Children(func() {
 				ui.Image(c, iconError).Size(14, 14)
-				ui.Text(c, a.randomErr).FontSize(12).TextColor(t.Danger).Grow(1).Wrap()
+				ui.Text(c, a.randomErr).FontSize(13).TextColor(t.Danger).Grow(1).Wrap()
 			})
 		}
 		if a.randomOut != "" {
 			ui.Column(c).Margin(10, 0, 0, 0).Gap(4).
 				Background(t.Surface).Border(1, t.Border).Radius(10).Padding(10, 12).Children(func() {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, a.randomOut).FontSize(13).Font("monospace").Grow(1).Wrap()
+					ui.Text(c, a.randomOut).FontSize(13).Font(fontMonoFamily + ", monospace").Grow(1).Wrap()
 					copyButton(c, t, a.randomOut)
 				})
 			})
@@ -4337,14 +4429,14 @@ func (a *app) pageArchive(c *ui.Context) {
 	column.Children(func() {
 		// 引导行（压缩台同款描边钮抄齐 m07672）
 		ui.Row(c).Padding(14, 0, 4, 0).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "已浏览 1 个归档，可继续拖拽或").FontSize(12).TextColor(t.TextMuted)
+			ui.Text(c, "已浏览 1 个归档，可继续拖拽或").FontSize(13).TextColor(t.TextMuted)
 			browse := ui.ButtonBase(c).Height(24).Padding(0, 10).Radius(7).Border(1, t.Border).
 				Cursor(ui.CursorPointer)
 			if browse.Hovered() {
 				browse.Background(t.SurfaceHover).Border(1, t.Accent)
 			}
 			browse.Children(func() {
-				ui.Text(c, "浏览选择…").FontSize(12).TextColor(t.Accent)
+				ui.Text(c, "浏览选择…").FontSize(13).TextColor(t.Accent)
 			})
 			if browse.Clicked() {
 				a.browseArchive2()
@@ -4362,7 +4454,7 @@ func (a *app) pageArchive(c *ui.Context) {
 			}
 			row.Children(func() {
 				ui.Image(c, iconFile).Size(14, 14)
-				ui.Text(c, a.archivePath).FontSize(12).Grow(1).MinWidth(0)
+				ui.Text(c, a.archivePath).FontSize(13).Grow(1).MinWidth(0)
 				del := ui.ButtonBase(c).Absolute().Right(0).Size(24, 24).Radius(6).
 					Cursor(ui.CursorPointer).Background(ui.RGBA(0, 0, 0, 0))
 				del.Opacity(del.Animate("vis", revealTarget(row.Hovered()), 110*time.Millisecond))
@@ -4405,12 +4497,12 @@ func (a *app) pageArchive(c *ui.Context) {
 				if a.archiveListing != nil && a.archiveListing.Err != "" {
 					probeColor = t.Danger
 				}
-				ui.Text(c, probeText).FontSize(12).TextColor(probeColor).Grow(1).Wrap()
+				ui.Text(c, probeText).FontSize(13).TextColor(probeColor).Grow(1).Wrap()
 			})
 		}
 		// 校验行
 		ui.Row(c).Margin(10, 0, 0, 0).Gap(8).AlignItems(ui.Center).Children(func() {
-			btn := ui.Button(c, "校验归档").FontSize(12).Height(26).Padding(0, 10).
+			btn := ui.Button(c, "校验归档").FontSize(13).Height(26).Padding(0, 10).
 				Background(t.Surface).Border(1, t.Border).Radius(8).
 				Cursor(ui.CursorPointer)
 			if btn.Hovered() {
@@ -4423,27 +4515,27 @@ func (a *app) pageArchive(c *ui.Context) {
 				a.runArchiveTest()
 			}
 			btn.Children(func() {
-				ui.Text(c, "校验归档").FontSize(12)
+				ui.Text(c, "校验归档").FontSize(13)
 			})
 			switch a.archiveTest {
 			case 1:
-				ui.Text(c, "校验中…").FontSize(12).TextColor(t.TextMuted)
+				ui.Text(c, "校验中…").FontSize(13).TextColor(t.TextMuted)
 			case 2:
 				ui.Image(c, iconDone).Size(14, 14)
-				ui.Text(c, a.archiveTestMsg).FontSize(12).TextColor(hexA("#65B85D", 1))
+				ui.Text(c, a.archiveTestMsg).FontSize(13).TextColor(hexA("#65B85D", 1))
 			case 3:
 				ui.Image(c, iconError).Size(14, 14)
-				ui.Text(c, a.archiveTestMsg).FontSize(12).TextColor(t.Danger).Grow(1).Wrap()
+				ui.Text(c, a.archiveTestMsg).FontSize(13).TextColor(t.Danger).Grow(1).Wrap()
 			}
 		})
 		if len(a.archiveFails) > 0 {
 			ui.Column(c).Margin(8, 0, 0, 0).Gap(4).Children(func() {
 				for idx, failure := range a.archiveFails {
 					if idx >= 3 {
-						ui.Text(c, "…另有 "+itoa(len(a.archiveFails)-3)+" 条损坏明细").FontSize(11).TextColor(t.TextMuted)
+						ui.Text(c, "…另有 "+itoa(len(a.archiveFails)-3)+" 条损坏明细").FontSize(12).TextColor(t.TextMuted)
 						break
 					}
-					ui.Text(c, failure).FontSize(11).TextColor(t.Danger).Wrap()
+					ui.Text(c, failure).FontSize(12).TextColor(t.Danger).Wrap()
 				}
 			})
 		}
@@ -4456,7 +4548,7 @@ func (a *app) pageArchive(c *ui.Context) {
 				header := ui.Row(c).Padding(9, 12).AlignItems(ui.Center).
 					Border(1, t.Border).BorderWidth(0, 0, 1, 0)
 				header.Children(func() {
-					ui.Text(c, "内容清单 · "+itoa(listing.EntryCount)+" 条").FontSize(12).Grow(1)
+					ui.Text(c, "内容清单 · "+itoa(listing.EntryCount)+" 条").FontSize(13).Grow(1)
 				})
 				limit := len(listing.Entries)
 				if limit > 500 {
@@ -4474,15 +4566,15 @@ func (a *app) pageArchive(c *ui.Context) {
 					}
 					row.Children(func() {
 						ui.Image(c, iconFile).Size(12, 12)
-						ui.Text(c, entry.Name).FontSize(12).Grow(1).MinWidth(0)
-						ui.Text(c, humanSize(entry.Size)).FontSize(11).Font("monospace").TextColor(t.TextMuted)
+						ui.Text(c, entry.Name).FontSize(13).Grow(1).MinWidth(0)
+						ui.Text(c, humanSize(entry.Size)).FontSize(12).Font(fontMonoFamily + ", monospace").TextColor(t.TextMuted)
 					})
 				}
 				if len(listing.Entries) > 500 {
 					footer := ui.Row(c).Padding(6, 12)
 					footer.Children(func() {
 						ui.Text(c, "…仅显示前 500 条，共 "+itoa(listing.EntryCount)+" 条").
-							FontSize(11).TextColor(t.TextMuted)
+							FontSize(12).TextColor(t.TextMuted)
 					})
 				}
 			})
@@ -4509,6 +4601,7 @@ func (a *app) setArchivePath(path string) {
 				return // 过期结果丢弃
 			}
 			a.archiveListing = &result
+			a.toastEngineVerdict(filepath.Base(pathCopy), result.Err) // 引擎判格浮出（m00961）
 		})
 	})
 }
@@ -4567,14 +4660,14 @@ func (a *app) convertLeadRow(c *ui.Context, kind, path string, browse func()) {
 	}
 	ui.Row(c).Padding(14, 0, 4, 0).Gap(8).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, "已准备的"+kind+" 1 项共 "+sizeLabel+"，可拖拽加入或").
-			FontSize(12).TextColor(t.TextMuted)
+			FontSize(13).TextColor(t.TextMuted)
 		browseBtn := ui.ButtonBase(c).Height(24).Padding(0, 10).Radius(7).Border(1, t.Border).
 			Cursor(ui.CursorPointer)
 		if browseBtn.Hovered() {
 			browseBtn.Background(t.SurfaceHover).Border(1, t.Accent)
 		}
 		browseBtn.Children(func() {
-			ui.Text(c, "浏览选择…").FontSize(12).TextColor(t.Accent)
+			ui.Text(c, "浏览选择…").FontSize(13).TextColor(t.Accent)
 		})
 		if browseBtn.Clicked() {
 			browse()
@@ -4593,7 +4686,7 @@ func (a *app) convertFormatRow(c *ui.Context, t *ui.Theme, dst *string, formats 
 		trig.Background(t.SurfaceHover)
 	}
 	trig.Children(func() {
-		ui.Text(c, strings.ToUpper(strings.TrimPrefix(*dst, "."))).FontSize(12).Grow(1)
+		ui.Text(c, strings.ToUpper(strings.TrimPrefix(*dst, "."))).FontSize(13).Grow(1)
 		ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 	})
 	sel.Popup(func(panel ui.Element) {
@@ -4610,7 +4703,7 @@ func (a *app) convertFormatRow(c *ui.Context, t *ui.Theme, dst *string, formats 
 				item.Background(t.SurfaceHover)
 			}
 			item.Children(func() {
-				ui.Text(c, strings.ToUpper(strings.TrimPrefix(itemFormat, "."))).FontSize(12)
+				ui.Text(c, strings.ToUpper(strings.TrimPrefix(itemFormat, "."))).FontSize(13)
 			})
 		}
 	})
@@ -4629,7 +4722,7 @@ func (a *app) convertOutRow(c *ui.Context, t *ui.Theme, label, planDir string, o
 					bound = ghost
 				}
 				outTa := ui.TextAreaBase(c, bound).
-					Grow(1).FontSize(12).Lines(1, 3).Padding(5, 10)
+					Grow(1).FontSize(13).Lines(1, 3).Padding(5, 10)
 				if bound != out {
 					outTa.ReadOnly(true).TextColor(t.TextMuted)
 				} else if outTa.Changed() {
@@ -4652,7 +4745,7 @@ func (a *app) convertOutRow(c *ui.Context, t *ui.Theme, label, planDir string, o
 				}
 				browse.Children(func() {
 					ui.Image(c, iconFolder).Size(13, 13)
-					ui.Text(c, "选择").FontSize(12).TextColor(t.TextMuted)
+					ui.Text(c, "选择").FontSize(13).TextColor(t.TextMuted)
 				})
 				if browse.Clicked() {
 					a.toolBrowse("选择输出位置", true, func(pick string) {
@@ -4693,6 +4786,9 @@ func (a *app) convertOutput(src, format, outDir string) string {
 
 // setMediaPath/setImagePath 选定/拖入：换源重置输出位置脏状态
 func (a *app) setMediaPath(path string) {
+	if a.rejectIfForeign(path, "av") { // 内容判格守卫（m00961）：明确非音视频 → toast 拒收
+		return
+	}
 	a.mediaPath = path
 	if !a.mediaOutDirty {
 		a.mediaOut = ""
@@ -4701,6 +4797,9 @@ func (a *app) setMediaPath(path string) {
 }
 
 func (a *app) setImagePath(path string) {
+	if a.rejectIfForeign(path, "image") { // 内容判格守卫（m00961）：明确非图片 → toast 拒收
+		return
+	}
 	a.imagePath = path
 	if !a.imageOutDirty {
 		a.imageOut = ""
@@ -4740,7 +4839,7 @@ func (a *app) pageTasks(c *ui.Context) {
 						clearLink.Background(t.SurfaceHover)
 					}
 					clearLink.Children(func() {
-						ui.Text(c, "清掉已结束的 "+itoa(finished)+" 项").FontSize(11).
+						ui.Text(c, "清掉已结束的 "+itoa(finished)+" 项").FontSize(12).
 							TextColor(t.TextMuted)
 					})
 					if clearLink.Clicked() {
@@ -4760,7 +4859,7 @@ func (a *app) pageTasks(c *ui.Context) {
 						ui.Text(c, task.Title).FontSize(13).Bold().SingleLine().Grow(1).MinWidth(0)
 						switch task.State {
 						case TaskRunning:
-							ui.Text(c, task.Detail).FontSize(12).TextColor(t.TextMuted)
+							ui.Text(c, task.Detail).FontSize(13).TextColor(t.TextMuted)
 						case TaskDone, TaskFailed:
 							// 状态符号一律 SVG（交互铁律：禁止 Unicode 字形当图标）
 							tone := hexA("#65B85D", 1)
@@ -4770,7 +4869,7 @@ func (a *app) pageTasks(c *ui.Context) {
 							} else {
 								ui.Image(c, iconDone).Size(11, 11) // m05014 原图
 							}
-							ui.Text(c, task.Result).FontSize(12).TextColor(tone)
+							ui.Text(c, task.Result).FontSize(13).TextColor(tone)
 						}
 						if task.State == TaskRunning {
 							cancelTask := ui.ButtonBase(c).Height(22).Padding(0, 8).Radius(6).Shrink(0).
@@ -4781,7 +4880,7 @@ func (a *app) pageTasks(c *ui.Context) {
 								cancelTask.Background(t.SurfaceHover)
 							}
 							cancelTask.Children(func() {
-								ui.Text(c, "取消").FontSize(11).TextColor(t.TextMuted)
+								ui.Text(c, "取消").FontSize(12).TextColor(t.TextMuted)
 							})
 							if cancelTask.Clicked() {
 								task.Cancel()
@@ -4795,7 +4894,7 @@ func (a *app) pageTasks(c *ui.Context) {
 								showTask.Background(t.SurfaceHover)
 							}
 							showTask.Children(func() {
-								ui.Text(c, revealLabel()).FontSize(11).TextColor(t.TextMuted)
+								ui.Text(c, revealLabel()).FontSize(12).TextColor(t.TextMuted)
 							})
 							if showTask.Clicked() {
 								revealPath(task.Product)
@@ -4805,7 +4904,7 @@ func (a *app) pageTasks(c *ui.Context) {
 					if task.State == TaskRunning {
 						ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 							ui.Progress(c, task.Percent/100).Grow(1)
-							ui.Text(c, percentText(task.Percent)).Font("monospace").FontSize(12).TextColor(t.TextMuted)
+							ui.Text(c, percentText(task.Percent)).Font(fontMonoFamily + ", monospace").FontSize(13).TextColor(t.TextMuted)
 						}).AlignSelf(ui.Stretch)
 					}
 				}).AlignSelf(ui.Stretch)
@@ -4841,17 +4940,21 @@ func (a *app) pageSettings(c *ui.Context) {
 
 		paramCard := ui.Column(c).Margin(12, 0, 0, 0).Gap(4)
 		paramCard.Children(func() {
-			openSettingRow(c, t, "外观", "深浅跟随系统", func() {
-				ui.Row(c).Grow(1).AlignItems(ui.Center).MinHeight(32).
-					Background(t.Surface).Border(1, t.Border).Radius(8).Children(func() {
-					ui.Text(c, map[bool]string{true: "深色", false: "浅色"}[t.Dark]).
-						FontSize(12).TextColor(t.TextMuted).Grow(1).Padding(0, 0, 0, 10)
-				})
+			// 外观可调（2026-11-22 用户定案）：三态切换，切换即施
+			// 加 Theme.SetSource 并落盘 gui-settings.json（appearance.go）
+			// 控件同解密/加密「输入方式」toolSegmented（m00376）。
+			openSettingRow(c, t, "外观", "深浅色来源", func() {
+				themeBefore := a.themeMode
+				toolSegmented(c, t, &a.themeMode, themeModeNames...)
+				if a.themeMode != themeBefore { // 即时模式无 Changed 句柄，前后值对比检变化
+					mygo.Theme.SetSource(themeSource(a.themeMode))
+					saveThemeMode(a.themeMode)
+				}
 			})
 			openSettingRow(c, t, "引擎版本", "内嵌 zpack 命令行", func() {
 				ui.Row(c).Grow(1).AlignItems(ui.Center).MinHeight(32).
 					Background(t.Surface).Border(1, t.Border).Radius(8).Children(func() {
-					ui.Text(c, versionShown).FontSize(12).Grow(1).Padding(0, 0, 0, 10)
+					ui.Text(c, versionShown).FontSize(13).Grow(1).Padding(0, 0, 0, 10)
 				})
 			})
 			openSettingRow(c, t, "引擎路径", "GUI 调用的二进制", func() {
@@ -4864,7 +4967,7 @@ func (a *app) pageSettings(c *ui.Context) {
 						shown = "未找到——将引擎放入应用同目录或重装"
 						color = t.Danger
 					}
-					ui.Text(c, shown).FontSize(12).TextColor(color).Grow(1).SingleLine().MinWidth(0)
+					ui.Text(c, shown).FontSize(13).TextColor(color).Grow(1).SingleLine().MinWidth(0).Padding(0, 0, 0, 10)
 					if pathRow.Clicked() && shown != "" {
 						mygo.Clipboard.WriteText(shown)
 						c.Toast("已复制路径")
@@ -4875,7 +4978,7 @@ func (a *app) pageSettings(c *ui.Context) {
 				repoRow := ui.Row(c).Grow(1).AlignItems(ui.Center).MinHeight(32).
 					Background(t.Surface).Border(1, t.Border).Radius(8).Cursor(ui.CursorPointer)
 				repoRow.Children(func() {
-					ui.Text(c, "github.com/guohub8080/zpack").FontSize(12).
+					ui.Text(c, "github.com/guohub8080/zpack").FontSize(13).
 						TextColor(t.Accent).Grow(1).Padding(0, 0, 0, 10)
 					if repoRow.Clicked() {
 						exec.Command("open", "https://github.com/guohub8080/zpack").Start()
@@ -4884,7 +4987,7 @@ func (a *app) pageSettings(c *ui.Context) {
 			})
 		})
 		ui.Text(c, "任务参数记忆（记住上次的格式/级别/分卷）在后续版本交付").
-			FontSize(11).TextColor(t.TextMuted).Opacity(0.7).Margin(10, 0, 0, 0)
+			FontSize(12).TextColor(t.TextMuted).Margin(10, 0, 0, 0)
 	})
 }
 
@@ -4894,6 +4997,15 @@ func (a *app) watchTask(task *Task) {
 		a.win.Update(func() {})
 	}
 	a.win.Update(func() {})
+	// 任务失败 toast 兜底网（用户定案 m00961）：失败绝不可「无事发生过」——
+	// 用户在别的页时处理台里的失败不可见，toast 补最后一跳
+	if task.State == TaskFailed {
+		reason := task.Result
+		if runes := []rune(reason); len(runes) > 120 {
+			reason = string(runes[:120]) + "…"
+		}
+		a.queueToast(task.Title + " 失败：" + reason)
+	}
 	// 完成后策略（用户定案 m03442）：成功才打开，失败/取消不打扰
 	if task.State == TaskDone && a.donePolicy == "打开文件夹" && task.Folder != "" {
 		openFolder(task.Folder)
@@ -4957,7 +5069,7 @@ func (a *app) renderDonePolicy(c *ui.Context, t *ui.Theme) {
 		trig.Background(t.SurfaceHover)
 	}
 	trig.Children(func() {
-		ui.Text(c, a.donePolicy).FontSize(12).Grow(1)
+		ui.Text(c, a.donePolicy).FontSize(13).Grow(1)
 		ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 	})
 	sel.Popup(func(panel ui.Element) {
@@ -4973,7 +5085,7 @@ func (a *app) renderDonePolicy(c *ui.Context, t *ui.Theme) {
 				item.Background(t.SurfaceHover)
 			}
 			item.Children(func() {
-				ui.Text(c, policy).FontSize(12)
+				ui.Text(c, policy).FontSize(13)
 			})
 		}
 	})
@@ -4992,10 +5104,29 @@ func main() {
 		}
 		application.syncName()
 	}
+	// 三平台默认字体先于窗口创建注册（内嵌 MiSans VF，失败回退系统字体）
+	registerMiSans()
+	// 外观偏好先于窗口创建读回（缺文件/损坏回退跟随系统），窗口起来即生效
+	application.themeMode = loadThemeMode()
 	mygo.App.WhenReady(func() {
-		// 裸二进制开发态补 Dock 图标（.app 形态由 icns 提供，此处幂等无害）
-		if err := mygo.App.Dock.SetIcon(iconPNG); err != nil {
+		// 裸二进制开发态补 Dock 图标（.app 形态由 icns 提供，此处幂等无害）。
+		// Windows 用全出血变体：Dock.SetIcon 在 Windows 后端即任务栏/标题图标
+		//（internal/windows/app.go SetDockIcon → w.setIcon），mac 留白版会显小。
+		iconApp := iconPNG
+		if runtime.GOOS == "windows" {
+			iconApp = iconWindowsPNG
+		}
+		if err := mygo.App.Dock.SetIcon(iconApp); err != nil {
 			log.Printf("Dock 图标设置失败: %v", err)
+		}
+		// 外观来源在窗口创建前施加（Theme.SetSource 启动期一次生效；运行期切换见设置页）
+		mygo.Theme.SetSource(themeSource(application.themeMode))
+		// 顶部按钮带高度按平台：52 是 mac 红绿灯锚定高度；Windows 原生标题栏
+		// 32pt（captionHeight），52 会把最小化/最大化/关闭拉成巨钮——36 给悬停
+		// 热区一点余量又贴原生比例（用户 2026-11-22 反馈按钮夸张）。
+		titleBarHeight := 52
+		if runtime.GOOS == "windows" {
+			titleBarHeight = 36
 		}
 		application.win = mygo.NewWindow(mygo.WindowOptions{
 			Title: "zpack",
@@ -5005,7 +5136,7 @@ func main() {
 			// macOS 沉浸式：红绿灯内嵌悬于侧栏上；Windows/Linux 控制钮在
 			// 顶部按钮带（TitleBarHeight）——两侧位置每帧由 TitleBar() 动态适配
 			TitleBarStyle:  mygo.TitleBarHiddenInset,
-			TitleBarHeight: 52,
+			TitleBarHeight: titleBarHeight,
 			Vibrancy:       mygo.VibrancySidebar,
 			Content:        ui.View(application.view),
 		})
@@ -5386,14 +5517,14 @@ func (a *app) pageBurn(c *ui.Context) {
 		//（Finder 多选不含文件夹）与右侧「清空」；卡前不再垫 Height(8)
 		ui.Row(c).Padding(14, 0, 4, 0).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "已准备的刻录内容 "+itoa(len(a.burnInputs))+" 项，可拖拽加入或").
-				FontSize(12).TextColor(t.TextMuted)
+				FontSize(13).TextColor(t.TextMuted)
 			browse := ui.ButtonBase(c).Height(24).Padding(0, 10).Radius(7).Border(1, t.Border).
 				Cursor(ui.CursorPointer)
 			if browse.Hovered() {
 				browse.Background(t.SurfaceHover).Border(1, t.Accent)
 			}
 			browse.Children(func() {
-				ui.Text(c, "浏览选择…").FontSize(12).TextColor(t.Accent)
+				ui.Text(c, "浏览选择…").FontSize(13).TextColor(t.Accent)
 			})
 			if browse.Clicked() {
 				a.browseBurnFiles()
@@ -5406,14 +5537,14 @@ func (a *app) pageBurn(c *ui.Context) {
 			}
 			dirPick.Children(func() {
 				ui.Image(c, iconFolder).Size(13, 13)
-				ui.Text(c, "选择文件夹…").FontSize(12).TextColor(t.TextMuted)
+				ui.Text(c, "选择文件夹…").FontSize(13).TextColor(t.TextMuted)
 			})
 			if dirPick.Clicked() {
 				a.browseBurnDir()
 			}
 			ui.Box(c).Grow(1)
 			if len(a.burnInputs) > 0 {
-				if ui.Button(c, "清空").FontSize(12).Height(22).Padding(0, 8).
+				if ui.Button(c, "清空").FontSize(13).Height(22).Padding(0, 8).
 					TextColor(t.TextMuted).Cursor(ui.CursorPointer).Clicked() {
 					a.clearBurn()
 				}
@@ -5449,7 +5580,7 @@ func (a *app) pageBurn(c *ui.Context) {
 							a.ensureDirSize(path)
 						}
 						ui.Image(c, rowIcon).Size(14, 14)
-						ui.Text(c, path).FontSize(12).Grow(1).MinWidth(0)
+						ui.Text(c, path).FontSize(13).Grow(1).MinWidth(0)
 						shown := row.Hovered()
 						slot := ui.Row(c).Shrink(0).AlignItems(ui.Center).Height(24)
 						slot.Children(func() {
@@ -5468,7 +5599,7 @@ func (a *app) pageBurn(c *ui.Context) {
 							if shown {
 								numTarget = 0
 							}
-							sizeText := ui.Text(c, sizeLabel).Font("monospace").FontSize(12).
+							sizeText := ui.Text(c, sizeLabel).Font(fontMonoFamily + ", monospace").FontSize(13).
 								TextColor(t.TextMuted)
 							sizeText.Opacity(slot.Animate("num", numTarget, 110*time.Millisecond))
 
@@ -5535,7 +5666,7 @@ func (a *app) pageBurn(c *ui.Context) {
 						deviceTrig.Background(t.SurfaceHover)
 					}
 					deviceTrig.Children(func() {
-						ui.Text(c, a.burnDevStr).FontSize(12).Grow(1)
+						ui.Text(c, a.burnDevStr).FontSize(13).Grow(1)
 						ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 					})
 					deviceSel.Popup(func(panel ui.Element) {
@@ -5552,7 +5683,7 @@ func (a *app) pageBurn(c *ui.Context) {
 								item.Background(t.SurfaceHover)
 							}
 							item.Children(func() {
-								ui.Text(c, label).FontSize(12)
+								ui.Text(c, label).FontSize(13)
 							})
 						}
 					})
@@ -5566,7 +5697,7 @@ func (a *app) pageBurn(c *ui.Context) {
 					refresh.Background(t.SurfaceHover)
 				}
 				refresh.Children(func() {
-					ui.Text(c, "刷新").FontSize(12).TextColor(t.TextMuted)
+					ui.Text(c, "刷新").FontSize(13).TextColor(t.TextMuted)
 				})
 				if refresh.Clicked() {
 					a.burnRefreshDevices()
@@ -5604,7 +5735,7 @@ func (a *app) pageBurn(c *ui.Context) {
 						modeTrig.Background(t.SurfaceHover)
 					}
 					modeTrig.Children(func() {
-						ui.Text(c, a.burnModeStr).FontSize(12).Grow(1)
+						ui.Text(c, a.burnModeStr).FontSize(13).Grow(1)
 						ui.Icon(c, iconChevronDown).Size(9, 9).TextColor(t.TextMuted)
 					})
 					modeSel.Popup(func(panel ui.Element) {
@@ -5620,12 +5751,12 @@ func (a *app) pageBurn(c *ui.Context) {
 								item.Background(t.SurfaceHover)
 							}
 							item.Children(func() {
-								ui.Text(c, label).FontSize(12)
+								ui.Text(c, label).FontSize(13)
 							})
 						}
 					})
 				})
-				ui.Text(c, modeHint).FontSize(11).TextColor(t.TextMuted).Margin(4, 0, 0, 0).Wrap()
+				ui.Text(c, modeHint).FontSize(12).TextColor(t.TextMuted).Margin(4, 0, 0, 0).Wrap()
 			})
 		})
 
@@ -5659,7 +5790,7 @@ func (a *app) pageBurn(c *ui.Context) {
 					p.Fill(k, ui.RGB(255, 255, 255), knobR)
 					p.Stroke(k, t.Border.Mix(t.Text, 0.25), knobR, 1)
 				})
-				ui.Text(c, burnSpeedLabel(int(a.burnSpeedIdx+0.5))).Font("monospace").FontSize(12).
+				ui.Text(c, burnSpeedLabel(int(a.burnSpeedIdx+0.5))).Font(fontMonoFamily + ", monospace").FontSize(13).
 					TextColor(t.TextMuted).Width(36)
 			})
 		})
@@ -5696,7 +5827,7 @@ func (a *app) pageBurn(c *ui.Context) {
 				clear.Background(t.Danger.Alpha(0.08)).Border(1, t.Danger)
 			}
 			clear.Children(func() {
-				ui.Text(c, "清除").FontSize(12).TextColor(t.Text)
+				ui.Text(c, "清除").FontSize(13).TextColor(t.Text)
 			})
 			if clear.Clicked() {
 				a.clearBurn()
@@ -5730,7 +5861,7 @@ func (a *app) pageBurn(c *ui.Context) {
 				disabled := ui.ButtonBase(c).Height(32).Padding(0, 18).Radius(8).Grow(1)
 				disabled.Background(t.Border)
 				disabled.Children(func() {
-					ui.Text(c, burnBlockHint).FontSize(12).TextColor(t.TextMuted)
+					ui.Text(c, burnBlockHint).FontSize(13).TextColor(t.TextMuted)
 				})
 			}
 		})

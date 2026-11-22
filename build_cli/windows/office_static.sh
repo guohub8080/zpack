@@ -21,7 +21,18 @@ cleanup_work() { [ "${KEEP_WORK:-0}" = "1" ] || rm -rf "$WORK"; }
 trap cleanup_work EXIT
 cd "$WORK"
 
-git clone --depth 1 --branch v0.1.16 https://github.com/yfedoseev/office_oxide.git office_oxide
+# 克隆三次退避重试（代理 SSL 中断偶发——ffmpeg tarball 下载同款网络抖动，见陷阱 #35/#36）
+clone_ok=""
+for attempt in 1 2 3; do
+  if git clone --depth 1 --branch v0.1.16 https://github.com/yfedoseev/office_oxide.git office_oxide; then
+    clone_ok=1
+    break
+  fi
+  echo "office_oxide 克隆失败（第 ${attempt}/3 次），8 秒后重试…"
+  rm -rf office_oxide
+  sleep 8
+done
+[ -n "$clone_ok" ] || { echo "✗ office_oxide 克隆三次均失败"; exit 1; }
 (cd office_oxide && cargo build --release --lib)
 
 # 清除会污染宿主模块包图的 Go 源（mac 产线同源陷阱）后拷产物（仅 .a + 头文件落地）

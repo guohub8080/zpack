@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,11 +66,15 @@ func NewService() *Service {
 func (service *Service) zpackPath() string {
 	service.once.Do(func() {
 		selfPath, _ := os.Executable()
+		engineName := "zpack"
+		if runtime.GOOS == "windows" {
+			engineName = "zpack.exe" // Windows 产物带扩展名——裸名 bin/zpack 不存在
+		}
 		candidates := []string{
 			os.Getenv("ZPACK_BIN"),
-			exeSibling("zpack"),     // 开发态平铺布局（引擎与 GUI 同目录）
-			bundleResource("zpack"), // 打包态：自身 .app Contents/Resources 内嵌引擎
-			repoBin(),               // 开发态仓库 bin——必须先于 /Applications：装机引擎
+			exeSibling(engineName),     // 开发态平铺布局（引擎与 GUI 同目录）
+			bundleResource(engineName), // 打包态：自身 .app Contents/Resources 内嵌引擎
+			repoBin(engineName),        // 开发态仓库 bin——必须先于 /Applications：装机引擎
 			// 可能旧于仓库（m05014 血案：dev GUI 拿旧引擎静默
 			// 覆盖桌面密钥，引擎覆盖守卫形同虚设）
 			"/Applications/zpack Finder Menu.app/Contents/Resources/zpack", // FinderSync 宿主内嵌引擎（装机兜底）
@@ -106,14 +111,14 @@ func exeSibling(name string) string {
 }
 
 // repoBin 开发态：本仓库产线产物。
-func repoBin() string {
+func repoBin(name string) string {
 	exePath, err := os.Executable()
 	if err != nil {
 		return ""
 	}
 	dir := filepath.Dir(exePath)
 	for depth := 0; depth < 5; depth++ {
-		candidate := filepath.Join(dir, "bin", "zpack")
+		candidate := filepath.Join(dir, "bin", name)
 		if isExecutable(candidate) {
 			return candidate
 		}
@@ -124,7 +129,13 @@ func repoBin() string {
 
 func isExecutable(path string) bool {
 	info, err := os.Stat(path)
-	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true // Windows 文件无执行位语义——存在即视为可执行（否则全部候选被误拒）
+	}
+	return info.Mode()&0o111 != 0
 }
 
 // StartCompress 派发压缩任务（立即返回；进度经 Updates 通知）。
@@ -387,6 +398,17 @@ func (service *Service) Inspect(path string, callback func(InspectResult)) {
 		cmd := exec.Command(service.zpackPath(), "info", path)
 		raw, err := cmd.Output()
 		if err != nil {
+			// 退出非零先别弃——引擎 error 信封可能已在 stdout（is_success:false），
+			// 引擎判语（无法识别/损坏）优先于笼统「预览不可用」（m00961）
+			var failureEnvelope struct {
+				IsSuccess bool   `json:"is_success"`
+				ErrorInfo string `json:"error_info"`
+			}
+			if json.Unmarshal(raw, &failureEnvelope) == nil && !failureEnvelope.IsSuccess {
+				result.Err = failureEnvelope.ErrorInfo
+				callback(result)
+				return
+			}
 			// info 失败不阻断解压（如分卷集 info 未覆盖）——留空壳结果
 			result.Err = "预览不可用"
 			callback(result)
