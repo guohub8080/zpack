@@ -20,6 +20,7 @@ func TestToolPagesBuild(t *testing.T) {
 		"image":      (*app).pageImage,
 		"imagecmp":   (*app).pageImageCmp,
 		"burn":       (*app).pageBurn,
+		"random":     (*app).pageRandom,
 	}
 	for name, page := range pages {
 		t.Run(name, func(t *testing.T) {

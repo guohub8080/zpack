@@ -3,8 +3,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,38 +20,166 @@ import (
 // Task 是一条任务（一个 zpack 子进程）。
 type Task struct {
 	Title   string  // 列表标题（如 "项目备份.zip"）
-	State   int     // TaskRunning / TaskDone / TaskFailed
+	State   int     // TaskRunning / TaskDone / TaskFailed / TaskCancelled
 	Percent float64 // 0-100
 	Detail  string  // 进度明细（速度/文件数/剩余）
 	Result  string  // 完成摘要（产物+规模）或失败原因
 	Folder  string  // 完成后「打开文件夹」目标目录（GUI 消费）
 	Product string  // 主产物（压缩=归档路径 / 解压=输出目录）；任务卡「显示」钮精确选中
+	Verb    string  // 动作名（压缩 / 解压 / 转换 / 刻录）——收尾文案按它组句
 
-	Updates chan struct{} // 引擎事件 → GUI 重绘信号
-	cancel  func()
+	Updates chan struct{} // 引擎事件 → GUI 重绘信号；任务收尾时关闭（watchTask 靠关闭退出）
+
+	// 以下字段由引擎 goroutine 写、UI 帧读：一律在 mu 内访问，UI 经 View 取只读快照
+	mu      sync.Mutex
+	ended   bool   // 已收尾：Updates 已关闭，之后不再发送
+	kill    func() // 终止子进程
+	cleanup func() // 删半成品（仅压缩任务有：归档与分卷）
 }
 
 const (
 	TaskRunning = iota
 	TaskDone
 	TaskFailed
+	// TaskCancelled 是用户主动取消——不算失败：不弹失败提示，卡片用中性样式。
+	TaskCancelled
 )
+
+// TaskView 是任务字段的只读快照——UI 帧只读它，不直接读 Task 字段。
+type TaskView struct {
+	Title   string
+	State   int
+	Percent float64
+	Detail  string
+	Result  string
+	Folder  string
+	Product string
+	Verb    string
+}
+
+// View 返回任务字段的只读快照。
+func (task *Task) View() TaskView {
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	return TaskView{Title: task.Title, State: task.State, Percent: task.Percent, Detail: task.Detail,
+		Result: task.Result, Folder: task.Folder, Product: task.Product, Verb: task.Verb}
+}
+
+// newTask 造一条运行中的任务。
+func newTask(title, verb, folder, product string) *Task {
+	return &Task{Title: title, State: TaskRunning, Detail: "启动中…", Folder: folder, Product: product,
+		Verb: verb, Updates: make(chan struct{}, 8)}
+}
+
+// notify 发一次重绘信号（缓冲满了就丢——UI 下一帧总会重绘）。收尾后不再发送。
+func (task *Task) notify() {
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	if task.ended {
+		return
+	}
+	select {
+	case task.Updates <- struct{}{}:
+	default:
+	}
+}
+
+// setProgress 更新进度并通知重绘。
+func (task *Task) setProgress(percent float64, detail string) {
+	task.mu.Lock()
+	task.Percent, task.Detail = percent, detail
+	task.mu.Unlock()
+	task.notify()
+}
+
+// setKill 登记子进程的终止动作（取消时调用）。
+func (task *Task) setKill(kill func()) {
+	task.mu.Lock()
+	task.kill = kill
+	task.mu.Unlock()
+}
+
+// setCleanup 登记半成品清理动作（取消时调用；仅压缩任务有）。
+func (task *Task) setCleanup(cleanup func()) {
+	task.mu.Lock()
+	task.cleanup = cleanup
+	task.mu.Unlock()
+}
+
+// setProduct 回填主产物与所在目录（成功后按引擎信封修正，如分卷的 .001）。
+func (task *Task) setProduct(product string) {
+	task.mu.Lock()
+	task.Product = product
+	task.Folder = filepath.Dir(product)
+	task.mu.Unlock()
+}
+
+// finish 收尾：仍在运行才落终态（已取消则保留取消态）；随后发最后一次重绘信号并关闭
+// Updates。关闭是 watchTask 循环的退出条件——不关则它后面的失败提示与完成后策略永不
+// 执行，且每个任务漏一个协程（2026-11-23 审计）。
+func (task *Task) finish(state int, result string) {
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	if task.ended {
+		return
+	}
+	task.ended = true
+	if task.State == TaskRunning {
+		task.State = state
+		task.Result = result
+		if state == TaskDone {
+			task.Percent = 100
+		}
+	}
+	select {
+	case task.Updates <- struct{}{}:
+	default:
+	}
+	close(task.Updates)
+}
+
+// Cancel 终止子进程并删半成品（幂等；任务已结束则不动）。信号在锁内发——收尾后通道
+// 即关闭，锁外的发送可能撞上 close。
+func (task *Task) Cancel() {
+	task.mu.Lock()
+	if task.State != TaskRunning {
+		task.mu.Unlock()
+		return
+	}
+	task.State = TaskCancelled
+	task.Result = "已取消"
+	kill, cleanup := task.kill, task.cleanup
+	select {
+	case task.Updates <- struct{}{}:
+	default:
+	}
+	task.mu.Unlock()
+	if kill != nil {
+		kill()
+	}
+	if cleanup != nil {
+		cleanup()
+	}
+}
+
+// removeArchiveAndVolumes 删归档及其分卷（out.zip、out.zip.001…）——取消压缩时清半成品；
+// 分卷进行到一半时原档可能已删、分卷可能只写了一部分，两种形态都要清。
+func removeArchiveAndVolumes(archive string) {
+	_ = os.Remove(archive)
+	matches, _ := filepath.Glob(archive + ".[0-9][0-9][0-9]")
+	for _, match := range matches {
+		_ = os.Remove(match)
+	}
+}
 
 func countRunning(tasks []*Task) int {
 	running := 0
 	for _, task := range tasks {
-		if task.State == TaskRunning {
+		if task.View().State == TaskRunning {
 			running++
 		}
 	}
 	return running
-}
-
-// Cancel 终止子进程并删半成品（idempotent）。
-func (task *Task) Cancel() {
-	if task.cancel != nil {
-		task.cancel()
-	}
 }
 
 // Service 定位 zpack 二进制并派发任务。
@@ -161,32 +291,10 @@ func (service *Service) StartCompress(inputs []string, format string, level int,
 	output := filepath.Join(parent, base+"."+format)
 	output = uniquePath(output)
 
-	task := &Task{
-		Title:   filepath.Base(output),
-		State:   TaskRunning,
-		Detail:  "启动中…",
-		Folder:  filepath.Dir(output),
-		Product: output,
-		Updates: make(chan struct{}, 8),
-	}
-	var once sync.Once
-	var cmd *exec.Cmd
-	task.cancel = func() {
-		once.Do(func() {
-			if cmd != nil && cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
-			_ = os.Remove(output) // 删半成品
-			task.State = TaskFailed
-			task.Result = "已取消"
-			task.notify()
-		})
-	}
-	go service.runCompress(task, &cmd, inputs, output, level, password, volume)
-	return task
-}
+	task := newTask(filepath.Base(output), "压缩", filepath.Dir(output), output)
+	// 取消时清半成品：归档本体 + 可能已切出的分卷
+	task.setCleanup(func() { removeArchiveAndVolumes(output) })
 
-func (service *Service) runCompress(task *Task, cmdPtr **exec.Cmd, inputs []string, output string, level int, password, volume string) {
 	arguments := []string{"compress"}
 	arguments = append(arguments, inputs...)
 	arguments = append(arguments, "--output", output, "--level", strconv.Itoa(level))
@@ -196,15 +304,46 @@ func (service *Service) runCompress(task *Task, cmdPtr **exec.Cmd, inputs []stri
 	if password != "" {
 		arguments = append(arguments, "--password", password)
 	}
+	go func() {
+		raw, exitCode, ok := service.runTask(task, arguments)
+		if !ok {
+			return // 进程没起来：runTask 已以失败收尾
+		}
+		if exitCode != 0 {
+			task.finish(TaskFailed, envelopeError(raw, task.View().Verb+"失败（exit "+strconv.Itoa(exitCode)+"）"))
+			return
+		}
+		// 产物以引擎信封为准：分卷时是 out.zip.001（原档已被引擎删除），「显示」才指得到
+		var envelope struct {
+			Data struct {
+				Archive string `json:"archive"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(raw, &envelope) == nil && envelope.Data.Archive != "" {
+			task.setProduct(envelope.Data.Archive)
+		}
+		task.finish(TaskDone, compressSummary(raw, output))
+	}()
+	return task
+}
+
+// runTask 跑一个引擎子进程到结束：stderr 进度行流式解析进任务，stdout 整段回读。
+// 不判定终态——调用方据退出码 finish。进程起不来时在内部以失败收尾并返回 ok=false。
+func (service *Service) runTask(task *Task, arguments []string) (raw []byte, exitCode int, ok bool) {
 	cmd := exec.Command(service.zpackPath(), arguments...)
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
-	*cmdPtr = cmd
+	task.setKill(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
 	if err := cmd.Start(); err != nil {
-		task.State = TaskFailed
-		task.Result = "启动引擎失败：" + err.Error()
-		task.notify()
-		return
+		task.finish(TaskFailed, "启动引擎失败："+err.Error())
+		return nil, 0, false
+	}
+	if task.View().State != TaskRunning {
+		_ = cmd.Process.Kill() // 派发后、进程起来前就被取消：那时还拿不到进程句柄，补杀
 	}
 
 	// stderr 进度行流（另一 goroutine 增量解析）
@@ -225,9 +364,7 @@ func (service *Service) runCompress(task *Task, cmdPtr **exec.Cmd, inputs []stri
 					line := string(pending[:lineBreak])
 					pending = pending[lineBreak+1:]
 					if percent, detail, ok := parseProgressLine(line); ok {
-						task.Percent = percent
-						task.Detail = detail
-						task.notify()
+						task.setProgress(percent, detail)
 					}
 				}
 			}
@@ -238,7 +375,7 @@ func (service *Service) runCompress(task *Task, cmdPtr **exec.Cmd, inputs []stri
 	}()
 
 	// stdout：信封 JSON 整段回读
-	raw := make([]byte, 0, 4096)
+	raw = make([]byte, 0, 4096)
 	readBuffer := make([]byte, 8192)
 	for {
 		read, err := stdout.Read(readBuffer)
@@ -249,19 +386,7 @@ func (service *Service) runCompress(task *Task, cmdPtr **exec.Cmd, inputs []stri
 	}
 	_ = cmd.Wait()
 	<-done
-
-	if task.State != TaskRunning {
-		return // 已取消
-	}
-	if code := cmd.ProcessState.ExitCode(); code == 0 {
-		task.State = TaskDone
-		task.Percent = 100
-		task.Result = compressSummary(raw, output)
-	} else {
-		task.State = TaskFailed
-		task.Result = envelopeError(raw, "压缩失败（exit "+strconv.Itoa(code)+"）")
-	}
-	task.notify()
+	return raw, cmd.ProcessState.ExitCode(), true
 }
 
 // compressSummary 从信封 JSON 提产物摘要（文件数/大小）。
@@ -336,13 +461,6 @@ func bytesIndex(data []byte, target byte) int {
 	return -1
 }
 
-func (task *Task) notify() {
-	select {
-	case task.Updates <- struct{}{}:
-	default:
-	}
-}
-
 func sizeOf(path string) int64 {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -361,6 +479,8 @@ func sizeOf(path string) int64 {
 	return info.Size()
 }
 
+// humanSize 人读体积：整数位不带小数（3GB / 5MB），否则一位小数（2.3MB）；数字与单位之间
+// 不留空格（2026-11-23 用户定案：原来写成「3.0 GB」）。
 func humanSize(bytes int64) string {
 	value := float64(bytes)
 	units := []string{"B", "KB", "MB", "GB", "TB"}
@@ -370,9 +490,18 @@ func humanSize(bytes int64) string {
 		unitIdx++
 	}
 	if unitIdx == 0 {
-		return strconv.FormatInt(bytes, 10) + " B"
+		return strconv.FormatInt(bytes, 10) + units[0]
 	}
-	return strconv.FormatFloat(value, 'f', 1, 64) + " " + units[unitIdx]
+	// 先按一位小数取整；取整后进到下一档（1023.96KB → 1024.0KB → 1MB）
+	rounded := math.Round(value*10) / 10
+	for rounded >= 1024 && unitIdx < len(units)-1 {
+		rounded /= 1024
+		unitIdx++
+	}
+	if rounded == math.Trunc(rounded) {
+		return strconv.FormatInt(int64(rounded), 10) + units[unitIdx]
+	}
+	return strconv.FormatFloat(rounded, 'f', 1, 64) + units[unitIdx]
 }
 
 // InspectResult 归档体检结果（zpack info 信封回读；分卷计数为 GUI 侧配套探测）。
@@ -467,31 +596,8 @@ func (service *Service) StartExtract(archive, password, outDir string) *Task {
 	if archive == "" || service.zpackPath() == "" {
 		return nil
 	}
-	task := &Task{
-		Title:   filepath.Base(archive),
-		State:   TaskRunning,
-		Detail:  "启动中…",
-		Folder:  outDir,
-		Product: outDir,
-		Updates: make(chan struct{}, 8),
-	}
-	var once sync.Once
-	var cmd *exec.Cmd
-	task.cancel = func() {
-		once.Do(func() {
-			if cmd != nil && cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
-			task.State = TaskFailed
-			task.Result = "已取消"
-			task.notify()
-		})
-	}
-	go service.runExtract(task, &cmd, archive, password, outDir)
-	return task
-}
+	task := newTask(filepath.Base(archive), "解压", outDir, outDir)
 
-func (service *Service) runExtract(task *Task, cmdPtr **exec.Cmd, archive, password, outDir string) {
 	arguments := []string{"extract", archive}
 	if strings.TrimSpace(outDir) != "" {
 		arguments = append(arguments, "--output", strings.TrimSpace(outDir))
@@ -499,71 +605,31 @@ func (service *Service) runExtract(task *Task, cmdPtr **exec.Cmd, archive, passw
 	if password != "" {
 		arguments = append(arguments, "--password", password)
 	}
-	cmd := exec.Command(service.zpackPath(), arguments...)
-	stdout, _ := cmd.StdoutPipe()
-	stderr, _ := cmd.StderrPipe()
-	*cmdPtr = cmd
-	if err := cmd.Start(); err != nil {
-		task.State = TaskFailed
-		task.Result = "启动引擎失败：" + err.Error()
-		task.notify()
-		return
-	}
-	done := make(chan struct{})
 	go func() {
-		defer close(done)
-		buffer := make([]byte, 4096)
-		var pending []byte
-		for {
-			read, err := stderr.Read(buffer)
-			if read > 0 {
-				pending = append(pending, buffer[:read]...)
-				for {
-					lineBreak := bytesIndex(pending, '\n')
-					if lineBreak < 0 {
-						break
-					}
-					line := string(pending[:lineBreak])
-					pending = pending[lineBreak+1:]
-					if percent, detail, ok := parseProgressLine(line); ok {
-						task.Percent = percent
-						task.Detail = detail
-						task.notify()
-					}
-				}
-			}
-			if err != nil {
-				return
-			}
+		raw, exitCode, ok := service.runTask(task, arguments)
+		if !ok {
+			return // 进程没起来：runTask 已以失败收尾
 		}
+		if exitCode != 0 {
+			task.finish(TaskFailed, envelopeError(raw, task.View().Verb+"失败（exit "+strconv.Itoa(exitCode)+"）"))
+			return
+		}
+		// 产物目录以引擎信封为准：「显示」与「打开文件夹」才落在实际输出处
+		var envelope struct {
+			Data struct {
+				Output string `json:"output"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(raw, &envelope) == nil && envelope.Data.Output != "" {
+			task.setProduct(envelope.Data.Output)
+		}
+		task.finish(TaskDone, extractSummary(raw))
 	}()
-	raw := make([]byte, 0, 4096)
-	readBuffer := make([]byte, 8192)
-	for {
-		read, err := stdout.Read(readBuffer)
-		raw = append(raw, readBuffer[:read]...)
-		if err != nil {
-			break
-		}
-	}
-	_ = cmd.Wait()
-	<-done
-
-	if task.State != TaskRunning {
-		return // 已取消
-	}
-	if code := cmd.ProcessState.ExitCode(); code == 0 {
-		task.State = TaskDone
-		task.Percent = 100
-		task.Result = extractSummary(raw)
-	} else {
-		task.State = TaskFailed
-		task.Result = envelopeError(raw, "解压失败（exit "+strconv.Itoa(code)+"）")
-	}
-	task.notify()
+	return task
 }
 
-// extractSummary 从信封 JSON 提解压摘要（文件数/大小/跳过数）。
+// extractSummary 从信封 JSON 提解压摘要（文件数/大小/跳过数）；一个新文件都没解出
+// （全部已存在被跳过）时如实说明，不报「解压完成」。
 func extractSummary(raw []byte) string {
 	var envelope struct {
 		Data struct {
@@ -572,14 +638,20 @@ func extractSummary(raw []byte) string {
 			Skipped   int   `json:"skipped"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Data.FileCount > 0 {
-		summary := itoa(envelope.Data.FileCount) + " 个文件 · " + humanSize(envelope.Data.SizeBytes)
-		if envelope.Data.Skipped > 0 {
-			summary += " · 跳过 " + itoa(envelope.Data.Skipped)
-		}
-		return summary
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return "解压完成"
 	}
-	return "解压完成"
+	switch {
+	case envelope.Data.FileCount == 0 && envelope.Data.Skipped == 0:
+		return "解压完成"
+	case envelope.Data.FileCount == 0:
+		return "没有新文件（已存在的 " + itoa(envelope.Data.Skipped) + " 项已跳过）"
+	}
+	summary := itoa(envelope.Data.FileCount) + " 个文件 · " + humanSize(envelope.Data.SizeBytes)
+	if envelope.Data.Skipped > 0 {
+		summary += " · 跳过 " + itoa(envelope.Data.Skipped)
+	}
+	return summary
 }
 
 // ─── 工具箱（base64 / crypto 家族：无进度短命令，stdout 信封回读）───
@@ -597,111 +669,65 @@ type ToolResult struct {
 // 命令）：arguments 为完整 argv（不含引擎路径）。stderr 进度行与压缩/解压
 // 同一管线解析；stdout 信封回读出摘要（m05445：视频/图片转换页）。
 func (service *Service) StartConvert(title string, arguments []string, folder, product string) *Task {
+	return service.startProcess(title, "转换", arguments, folder, product)
+}
+
+// startProcess 是 StartConvert / StartBurn 的公共实现：verb 决定收尾文案与失败文案。
+// 刻录任务没有产物文件（product 留空）——任务卡不出「显示」钮，摘要也不落到「转换完成」。
+func (service *Service) startProcess(title, verb string, arguments []string, folder, product string) *Task {
 	if service.zpackPath() == "" {
 		return nil
 	}
-	task := &Task{
-		Title:   title,
-		State:   TaskRunning,
-		Detail:  "启动中…",
-		Folder:  folder,
-		Product: product,
-		Updates: make(chan struct{}, 8),
-	}
-	var once sync.Once
-	var cmd *exec.Cmd
-	task.cancel = func() {
-		once.Do(func() {
-			if cmd != nil && cmd.Process != nil {
-				_ = cmd.Process.Kill()
+	task := newTask(title, verb, folder, product)
+	go func() {
+		raw, exitCode, ok := service.runTask(task, arguments)
+		if !ok {
+			return // 进程没起来：runTask 已以失败收尾
+		}
+		if exitCode != 0 {
+			task.finish(TaskFailed, envelopeError(raw, verb+"失败（exit "+strconv.Itoa(exitCode)+"）"))
+			return
+		}
+		if product != "" {
+			var envelope struct {
+				Data struct {
+					Output string `json:"output"`
+				} `json:"data"`
 			}
-			task.State = TaskFailed
-			task.Result = "已取消"
-			task.notify()
-		})
-	}
-	go service.runConvert(task, &cmd, arguments)
+			if json.Unmarshal(raw, &envelope) == nil && envelope.Data.Output != "" {
+				task.setProduct(envelope.Data.Output)
+			}
+		}
+		task.finish(TaskDone, convertSummary(raw, verb))
+	}()
 	return task
 }
 
-func (service *Service) runConvert(task *Task, cmdPtr **exec.Cmd, arguments []string) {
-	cmd := exec.Command(service.zpackPath(), arguments...)
-	stdout, _ := cmd.StdoutPipe()
-	stderr, _ := cmd.StderrPipe()
-	*cmdPtr = cmd
-	if err := cmd.Start(); err != nil {
-		task.State = TaskFailed
-		task.Result = "启动引擎失败：" + err.Error()
-		task.notify()
-		return
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		buffer := make([]byte, 4096)
-		var pending []byte
-		for {
-			read, err := stderr.Read(buffer)
-			if read > 0 {
-				pending = append(pending, buffer[:read]...)
-				for {
-					lineBreak := bytesIndex(pending, '\n')
-					if lineBreak < 0 {
-						break
-					}
-					line := string(pending[:lineBreak])
-					pending = pending[lineBreak+1:]
-					if percent, detail, ok := parseProgressLine(line); ok {
-						task.Percent = percent
-						task.Detail = detail
-						task.notify()
-					}
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-	raw := make([]byte, 0, 4096)
-	readBuffer := make([]byte, 8192)
-	for {
-		read, err := stdout.Read(readBuffer)
-		raw = append(raw, readBuffer[:read]...)
-		if err != nil {
-			break
-		}
-	}
-	_ = cmd.Wait()
-	<-done
-
-	if task.State != TaskRunning {
-		return // 已取消
-	}
-	if code := cmd.ProcessState.ExitCode(); code == 0 {
-		task.State = TaskDone
-		task.Percent = 100
-		task.Result = convertSummary(raw)
-	} else {
-		task.State = TaskFailed
-		task.Result = envelopeError(raw, "转换失败（exit "+strconv.Itoa(code)+"）")
-	}
-	task.notify()
-}
-
-// convertSummary 从信封 JSON 提转换摘要（产物名 + 大小）。
-func convertSummary(raw []byte) string {
+// convertSummary 从信封 JSON 提转换摘要（产物名 + 大小）。体积字段兼容两种命名：多数命令出
+// size_bytes，图片转换/压缩/新建出 output_size_bytes（此前只读前者，图片任务恒显「0 B」）；
+// 信封没带体积时回退 Stat 产物。
+func convertSummary(raw []byte, verb string) string {
 	var envelope struct {
 		IsSuccess bool `json:"is_success"`
 		Data      struct {
-			Output    string `json:"output"`
-			SizeBytes int64  `json:"size_bytes"`
+			Output          string `json:"output"`
+			SizeBytes       int64  `json:"size_bytes"`
+			OutputSizeBytes int64  `json:"output_size_bytes"`
 		} `json:"data"`
 	}
-	if json.Unmarshal(raw, &envelope) == nil && envelope.IsSuccess && envelope.Data.Output != "" {
-		return "已输出 " + filepath.Base(envelope.Data.Output) + " · " + humanSize(envelope.Data.SizeBytes)
+	if err := json.Unmarshal(raw, &envelope); err != nil || !envelope.IsSuccess || envelope.Data.Output == "" {
+		return verb + "完成"
 	}
-	return "转换完成"
+	size := envelope.Data.OutputSizeBytes
+	if size == 0 {
+		size = envelope.Data.SizeBytes
+	}
+	if size == 0 {
+		if info, statErr := os.Stat(envelope.Data.Output); statErr == nil {
+			size = info.Size()
+		}
+	}
+	return "已输出 " + filepath.Base(envelope.Data.Output) + " · " + humanSize(size)
 }
 
 func (service *Service) RunTool(args []string, callback func(ToolResult)) {
@@ -906,12 +932,28 @@ func (service *Service) ZpackPath() string {
 // RunToolText 执行文本态短命令（stdout 非信封：TextPrint 或裸字节），
 // 回调给 stdout 全文（去尾换行）；失败时 stdout 里是 error 信封（ErrorPrint 契约）。
 func (service *Service) RunToolText(args []string, callback func(text, errMsg string)) {
+	service.runToolOutput(args, nil, callback)
+}
+
+// RunToolStdin 与 RunToolText 同，但把 input 原样喂给引擎的标准输入。文本内容一律走
+// stdin 而不是 argv：引擎把首个不以「-」开头的参数当文本，明文以「-」开头（如 Markdown
+// 列表）时会被当成旗标跳过、回落去读空的 stdin——加密页悄悄加密了空内容、Base64 页点了
+// 没反应（2026-11-23 审计）；argv 另有平台长度上限（Windows 命令行 32767 字符）。
+func (service *Service) RunToolStdin(args []string, input string, callback func(text, errMsg string)) {
+	service.runToolOutput(args, []byte(input), callback)
+}
+
+// runToolOutput 跑一条输出纯文本的短命令：stdin 非nil 时喂给引擎；输出去掉引擎补的末尾换行。
+func (service *Service) runToolOutput(args []string, stdin []byte, callback func(text, errMsg string)) {
 	if service.zpackPath() == "" {
 		callback("", "未找到 zpack 引擎")
 		return
 	}
 	go func() {
 		cmd := exec.Command(service.zpackPath(), args...)
+		if stdin != nil {
+			cmd.Stdin = bytes.NewReader(stdin)
+		}
 		raw, err := cmd.Output()
 		if err != nil {
 			var envelope struct {
@@ -988,7 +1030,6 @@ func (service *Service) StartBurn(inputs []string, deviceIndex int, speed, mode 
 	if len(inputs) > 1 {
 		title = "刻录 " + strconv.Itoa(len(inputs)) + " 项"
 	}
-	folder := filepath.Dir(inputs[0])
-	product := inputs[0]
-	return service.StartConvert(title, arguments, folder, product)
+	// 刻录没有产物文件：不出「显示」钮，摘要与失败文案按「刻录」组句
+	return service.startProcess(title, "刻录", arguments, "", "")
 }

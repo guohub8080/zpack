@@ -3,7 +3,12 @@ MiSans 可变字体（MiSans VF）
 
 来源：小米 MiSans 官方字库（https://hyperos.mi.com/font）
 许可：小米 MiSans 字体许可——免费商用，允许随应用内嵌分发（2026-11 官方声明）。
-文件：MiSans-VF.ttf.gz（可变字体 wght 轴，gzip -9 压缩嵌入，启动时解压注册）
+文件：MiSans-W450.ttf.gz（正文默认——VF 经 fontTools varLib.instancer 钉死
+wght=450 的静态单实例，OS/2.usWeightClass=450；2026-11-23。不用 VF 裸注册做
+正文：fvar 缺省实例 330（Light）偏细。字重裁定链：500 Medium 太粗（用户）→400
+Regular 回退→定格 450（用户，介于 Regular 与 Medium 之间））
+文件：MiSans-VF.ttf.gz（完整可变字体 wght 150-700——仅 Bold 标题族「MiSans VF」
+用，显式 FontWeight 需要字重插值时落在它上面）
 
 zpack GUI 全平台默认字体：经 mygo ui.RegisterFont 注册为 "MiSans" 族，
 ui.Theme.Font 指向该族——三平台（Windows dwrite / macOS CoreText / Linux pango）统一渲染。

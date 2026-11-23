@@ -20,8 +20,14 @@ if [ ! -x "${REPO_ENGINE}" ]; then
 	exit 1
 fi
 cp "${REPO_ENGINE}" "${BUNDLE}/Contents/Resources/zpack"
+# 引擎是 mygo 签名之后才注入的，还带着 Finder 自定义图标的资源叉——注入后必须重签，
+# 否则装出来的包封印失效（codesign --verify 报 detritus / sealed resource invalid）
+xattr -cr "${BUNDLE}/Contents/Resources/zpack"
+codesign --force --sign - "${BUNDLE}"
+codesign --verify --strict "${BUNDLE}"
 
 TARGET="/Applications/zpack.app"
 rm -rf "${TARGET}"
 ditto "${BUNDLE}" "${TARGET}"
+codesign --verify --strict "${TARGET}"
 echo "OK 已安装 ${TARGET} (bundleID top.guohub.zpack-gui)"

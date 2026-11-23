@@ -9,7 +9,7 @@ description: 单二进制文档媒体工具箱（stdout 恒一条 JSON、exit 0/
 
 | 项 | 规则 |
 |---|---|
-| stdout | 恒一条 JSON：成功 `{"is_success":true,"data":{...}}`；失败 `{"is_success":false,"error_info":"人类可读原因"}`。例外（纯文本）：`base64 encode/decode`（无 --output）、`crypto encrypt/decrypt`（无 --output）、`skill`、`ffmpeg`（原版透传） |
+| stdout | 恒一条 JSON：成功 `{"is_success":true,"data":{...}}`；失败 `{"is_success":false,"error_info":"人类可读原因"}`。例外（纯文本）：`base64 encode/decode`（无 --output）、`crypto encrypt/decrypt`（无 --output）、`crypto password`、`crypto uuid`、`skill`、`ffmpeg`（原版透传） |
 | 退出码 | 成功 0 / 失败 1。判定类（`test`、`hash --expect`、`hash --check`）结论为否时 exit 1 但 JSON 仍带完整 data 字段 |
 | stderr | 过程日志（进度条/警告/钳制提示），可整体忽略（`2>/dev/null`）不影响结果判断 |
 | 确定性 | 同输入产出字节确定；数值旗标非法/越界即报错退出；未知旗标静默忽略 |
@@ -188,13 +188,18 @@ stdout/stderr/退出码=ffmpeg 原生语义（stdout 可为二进制 `pipe:` 流
 
 ### 3.12 编码——base64 与加密
 
-用途：Base64 编解码（内嵌数据、传输安全编码）；RSA 密钥对生成与公钥加解密（小文件/密钥交换）。
+用途：Base64 编解码（内嵌数据、传输安全编码）；RSA 密钥对生成与公钥加解密（小文件/密钥交换）；随机密码与 UUID 生成。
 
 ```
 zpack base64 encode|decode <输入> [--output <路径>]   # 无 --output=stdout 纯文本/原始字节（二进制安全）
 zpack crypto genkey [--bits 2048] [--output <前缀>]   # RSA 密钥对（输出 .pub/.pem + b64 形态）
 zpack crypto encrypt|decrypt <输入> [--output <路径>] # 公钥加密/私钥解密；无 --output=stdout 纯文本
+zpack crypto password [--length 16] [--count 1] [--lower true|false] [--upper …] [--digit …] [--symbol …] [--charset <字符集>]
+zpack crypto uuid [--count 1] [--upper] [--no-dash]
 ```
+
+- `crypto password`：stdout 纯文本，每行一个密码（共 `--count` 个，1-100）。`--length` 4-128（字符数）。四个字符类缺省全开；启用的类各保底 1 个字符再随机填充。`--charset` 追加自定义字符集（同样保底 1 个字符；可含非 ASCII 字符）。四类全关且无 `--charset` → 失败。
+- `crypto uuid`：stdout 纯文本，每行一个 UUID v4（共 `--count` 个）。
 
 ### 3.13 json——消费 JSON 结果（零依赖）
 

@@ -635,6 +635,31 @@ assert_equal "crypto password 全关 exit" 1 "$cr_pw_af_exit"
 echo "$cr_pw_allfalse" | grep -q "至少启用一个字符类"; assert_equal "crypto password 全关 error_info" 0 "$?"
 cr_pw_short=$("$NEW_CLI" crypto password --length 3 2>/dev/null); cr_pw_short_exit=$?
 assert_equal "crypto password 长度越界 exit" 1 "$cr_pw_short_exit"
+# --charset 自定义字符集（2026-11-23 随机生成页「自定义」分组的引擎面）：各类全关时仅用自定义集；
+# 非 ASCII 字符集按字符取（长度按字符数）；与内置类同开各保底 1 个；空串拒绝
+cr_pw_cs=$("$NEW_CLI" crypto password --length 12 --lower=false --upper=false --digit=false --symbol=false --charset "abc123" 2>/dev/null); cr_pw_cs_exit=$?
+assert_equal "crypto password --charset exit" 0 "$cr_pw_cs_exit"
+assert_equal "crypto password --charset 长度" 12 "${#cr_pw_cs}"
+if printf '%s' "$cr_pw_cs" | grep -qvE "^[abc123]+$"; then report_fail "crypto password --charset 只含自定义字符" "仅 abc123" "$cr_pw_cs"; else report_pass; fi
+cr_pw_cjk=$("$NEW_CLI" crypto password --length 8 --lower=false --upper=false --digit=false --symbol=false --charset "中文密码" 2>/dev/null); cr_pw_cjk_exit=$?
+assert_equal "crypto password --charset 非 ASCII exit" 0 "$cr_pw_cjk_exit"
+cr_pw_cjk_ok=$(printf '%s' "$cr_pw_cjk" | python3 -c "
+import sys
+try:
+    text = sys.stdin.buffer.read().decode('utf-8')
+    print('ok' if len(text) == 8 and all(ch in '中文密码' for ch in text) else 'bad')
+except Exception:
+    print('bad')")
+assert_equal "crypto password --charset 非 ASCII 8 个字符且都在集内" "ok" "$cr_pw_cjk_ok"
+cr_pw_mix=$("$NEW_CLI" crypto password --length 40 --symbol=false --charset "!#@" 2>/dev/null); cr_pw_mix_exit=$?
+assert_equal "crypto password --charset 与内置类同开 exit" 0 "$cr_pw_mix_exit"
+if printf '%s' "$cr_pw_mix" | grep -q "[!#@]" && ! printf '%s' "$cr_pw_mix" | grep -qE '[$%^&*()_=+\[\]{}<>?,.-]'; then report_pass; else report_fail "crypto password --charset 保底含自定义符号且不含其它符号" "含 !#@ 且无其它符号" "$cr_pw_mix"; fi
+cr_pw_csempty=$("$NEW_CLI" crypto password --charset "" 2>/dev/null); cr_pw_csempty_exit=$?
+assert_equal "crypto password --charset 空串 exit" 1 "$cr_pw_csempty_exit"
+echo "$cr_pw_csempty" | grep -q "charset"; assert_equal "crypto password --charset 空串 error_info" 0 "$?"
+cr_pw_csonly=$("$NEW_CLI" crypto password --lower=false --upper=false --digit=false --symbol=false --charset "%_-" 2>/dev/null); cr_pw_csonly_exit=$?
+assert_equal "crypto password 各类全关仅 --charset exit" 0 "$cr_pw_csonly_exit"
+if printf '%s' "$cr_pw_csonly" | grep -qvE "^[%_-]+$"; then report_fail "crypto password 仅 --charset 只含自定义字符" "仅 %_-" "$cr_pw_csonly"; else report_pass; fi
 cr_uuid=$("$NEW_CLI" crypto uuid 2>/dev/null); cr_uuid_exit=$?
 assert_equal "crypto uuid exit" 0 "$cr_uuid_exit"
 if printf '%s' "$cr_uuid" | grep -qE "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"; then report_pass; else report_fail "crypto uuid v4 格式" "v4 小写" "$cr_uuid"; fi

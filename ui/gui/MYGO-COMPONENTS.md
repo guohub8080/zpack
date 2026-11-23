@@ -46,9 +46,19 @@ App.Run/Quit · Window(New/Flyout/NewNative) · Dialog(Message/Open/…) · Clip
 | 减号/尺寸槽动画 | Animate | 已用官方（合规） |
 | 任务卡片 | List/Table? | 暂留（条数少），多起来再 List |
 | 进度显示 | Progress/Spinner | **候选**：压缩中任务行可上 Progress 条 |
+| pwCharsetSelect 字符集多选（随机生成页） | MenuBase + CheckItem + KeepOpen + SubmenuItem/Submenu | 已用官方机件自定观感（合规，照 PopoverMenuButton 主题配方）。**查证结论（2026-11-23）**：mygo v0.10.0（及当日主干）没有独立的 MultiSelect；带主题的 `*ui.Menu`（MenuButton/PopoverMenuButton）选中一项即关菜单，多选须走 MenuBase+KeepOpen |
+| convertCTARow 转换类主按钮 | PrimaryButton | **已换**（2026-11-23）——此前 ButtonBase 自绘缺按下态；框架自带 AccentHover/AccentPressed；注意覆盖 Background 会关掉框架的悬停/按下面（ui/widgets.go:184），只在禁用态覆盖 |
+| 哈希清单 / 图片压缩清单 / 刻录清单 | List + inputListRow | **已换**（2026-11-23）——五张清单同一个小件（刻录页此前是旧版行的整段复制） |
+| pressFeedback / leadBrowseButton / pickButton / copyButton 反馈小件 | ButtonBase + Hovered/Pressed | 机件合规：反馈语汇的唯一定义点（悬停 SurfaceHover / 按下 pressedShade），页面代码不得再内联状态判断。pickButton 自带 4px 右内缩（`Margin`）——调用处不要再写 Margin |
+| 设置页仓库链接 | Link | 框架 Link 只有悬停下划线、无按下态——按下字色（AccentPressed）自补 |
+| 清单行 / 卡片的路径 | Text（换行） | pathCell：整段纯文字完整显示——**不截断、不分色**（2026-11-23 用户否决了 RichText+TruncateStart 的省略方案：过度设计） |
+| 刻录引导行 | Row.Wrap + Basis | 机件合规：句子 `Basis(下限).Grow(1)` 先收缩，放不下才把按钮换行 |
+| 行内校验红字 | Form / Field | 当前两列行是设计定案，自绘 settingControl（控件列 + 红字）；校验规则在 validate.go 纯函数 |
 
 ## 规矩（新增，已同步 AGENTS.md）
 
 1. 任何交互行为动手前：先查本清单 + `grep -n "func.*Xxx" $MYGO/ui/api_gen.go`。
 2. 用了组件但深度定制（ButtonBase 自绘）→ 注明「机件合规」；纯手搓 → 必须先在本文件记一行弃用理由。
 3. 组件行为存疑 → 直接读 `examples/`（gallery 是全集示例）。
+4. **新增可点元素必须在 `feedback_test.go` 的 `feedbackTargets` 登记**（悬停/按下/手型三态断言，全页面 75 个目标常驻验收）；真有豁免理由的标 `rowOnly` 并写明。
+5. **页面函数假定清单非空**（空态由 pane 判 `heroPage()` 走 hero）：无头测试渲染页面要经 `heroAwarePage`，直接渲染空清单会读 `inputs[0]` 越界。**清单增删在建帧结束后才落地**（压缩台 / PDF 合并的参数区同帧还要读首输入）。

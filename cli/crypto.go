@@ -28,7 +28,9 @@ import (
 	"io"
 	"math/big"
 	"os"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -67,7 +69,7 @@ func runCrypto(args []string) {
 	case "uuid":
 		cryptoUUID(restArgs)
 	default:
-		stdout.ErrorPrint("用法: crypto genkey [--bits 2048] / crypto encrypt|decrypt --key-file <pem> / crypto password [--length 16] [--count 1] / crypto uuid [--count 1]")
+		stdout.ErrorPrint("用法: crypto genkey [--bits 2048] / crypto encrypt|decrypt --key-file <pem> / crypto password [--length 16] [--count 1] [--charset <字符集>] / crypto uuid [--count 1]")
 	}
 }
 
@@ -107,6 +109,53 @@ func cryptoParseBoolStrict(flagName, valueText string) bool {
 	return false
 }
 
+// cryptoCharset 是密码的一个字符类：启用的类各保底 1 字符，再并入候选池随机填充。
+type cryptoCharset struct {
+	name  string
+	chars string
+	on    bool
+}
+
+// cryptoCharsetFlagValue 解析 --charset：--charset <字符集> 与 --charset=<字符集> 两式都收；
+// 没给返回 ("", false)。给了但为空串返回 ("", true)，由调用方判错。
+func cryptoCharsetFlagValue(restArgs []string) (string, bool) {
+	const flagName = "--charset"
+	for _, arg := range restArgs {
+		if strings.HasPrefix(arg, flagName+"=") {
+			return strings.TrimPrefix(arg, flagName+"="), true
+		}
+	}
+	for argIndex, arg := range restArgs {
+		if arg == flagName && argIndex+1 < len(restArgs) {
+			return restArgs[argIndex+1], true
+		}
+	}
+	return "", false
+}
+
+// cryptoCharsetFlagValid 判断自定义字符集是否可用：非空且是合法 UTF-8。
+func cryptoCharsetFlagValid(charset string) bool {
+	return charset != "" && utf8.ValidString(charset)
+}
+
+// cryptoCharsetPool 把启用的字符类并成一个候选池：字符去重，按首次出现的顺序。
+func cryptoCharsetPool(charsets []cryptoCharset) string {
+	seen := map[rune]bool{}
+	var pool strings.Builder
+	for _, charset := range charsets {
+		if !charset.on {
+			continue
+		}
+		for _, char := range charset.chars {
+			if !seen[char] {
+				seen[char] = true
+				pool.WriteRune(char)
+			}
+		}
+	}
+	return pool.String()
+}
+
 // cryptoPassword 生成随机密码：stdout 纯文本（count>1 逐行），管道友好。
 // 每个启用的字符类保底 1 字符再随机填充+洗牌（crypto/rand）。
 func cryptoPassword(restArgs []string) {
@@ -127,28 +176,26 @@ func cryptoPassword(restArgs []string) {
 			stdout.ErrorPrint(fmt.Sprintf("--count 需要 1-%d 整数，收到: %s", CRYPTO_RANDOM_MAX_COUNT, countText))
 		}
 	}
-	charsets := []struct {
-		name  string
-		chars string
-		on    bool
-	}{
+	charsets := []cryptoCharset{
 		{"lower", "abcdefghijklmnopqrstuvwxyz", cryptoPasswordBoolFlag(restArgs, "--lower", true)},
 		{"upper", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", cryptoPasswordBoolFlag(restArgs, "--upper", true)},
 		{"digit", "0123456789", cryptoPasswordBoolFlag(restArgs, "--digit", true)},
 		{"symbol", "!@#$%^&*()-_=+[]{}<>?,.", cryptoPasswordBoolFlag(restArgs, "--symbol", true)},
 	}
-	var combined strings.Builder
-	for _, charset := range charsets {
-		if charset.on {
-			combined.WriteString(charset.chars)
+	// --charset：自定义字符集——当作第五个字符类，同样保底 1 字符（GUI「自定义」分组的引擎面）
+	if customCharset, hasCustom := cryptoCharsetFlagValue(restArgs); hasCustom {
+		if !cryptoCharsetFlagValid(customCharset) {
+			stdout.ErrorPrint("--charset 需要非空的字符集（合法 UTF-8），收到: " + strconv.Quote(customCharset))
 		}
+		charsets = append(charsets, cryptoCharset{"custom", customCharset, true})
 	}
-	if combined.Len() == 0 {
-		stdout.ErrorPrint("至少启用一个字符类（--lower/--upper/--digit/--symbol 不能全部为 false）")
+	pool := cryptoCharsetPool(charsets)
+	if pool == "" {
+		stdout.ErrorPrint("至少启用一个字符类（--lower/--upper/--digit/--symbol 不能全部为 false），或用 --charset 指定自定义字符集")
 	}
 	lines := make([]string, 0, count)
 	for lineIdx := 0; lineIdx < count; lineIdx++ {
-		password, genErr := cryptoGeneratePassword(length, charsets, combined.String())
+		password, genErr := cryptoGeneratePassword(length, charsets, pool)
 		if genErr != nil {
 			stdout.ErrorPrint("随机源失败: " + genErr.Error())
 		}
@@ -158,11 +205,7 @@ func cryptoPassword(restArgs []string) {
 }
 
 // cryptoGeneratePassword 保底每类 1 字符 + 随机填充 + Fisher-Yates 洗牌。
-func cryptoGeneratePassword(length int, charsets []struct {
-	name  string
-	chars string
-	on    bool
-}, combined string) (string, error) {
+func cryptoGeneratePassword(length int, charsets []cryptoCharset, pool string) (string, error) {
 	runes := make([]rune, 0, length)
 	for _, charset := range charsets {
 		if charset.on {
@@ -174,7 +217,7 @@ func cryptoGeneratePassword(length int, charsets []struct {
 		}
 	}
 	for len(runes) < length {
-		pick, pickErr := cryptoRandRune(combined)
+		pick, pickErr := cryptoRandRune(pool)
 		if pickErr != nil {
 			return "", pickErr
 		}
@@ -192,13 +235,15 @@ func cryptoGeneratePassword(length int, charsets []struct {
 }
 
 // cryptoRandRune 从字符集里取一个随机字符（crypto/rand，拒绝采样防模偏）。
+// 按 rune 取：自定义字符集可以含非 ASCII 字符。
 func cryptoRandRune(chars string) (rune, error) {
+	runes := []rune(chars)
 	for {
-		idxBig, randErr := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+		idxBig, randErr := rand.Int(rand.Reader, big.NewInt(int64(len(runes))))
 		if randErr != nil {
 			return 0, randErr
 		}
-		return rune(chars[idxBig.Int64()]), nil
+		return runes[idxBig.Int64()], nil
 	}
 }
 
