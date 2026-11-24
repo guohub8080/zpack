@@ -463,6 +463,8 @@ zpack office convert 合同.doc 合同.docx --try-libreoffice --libreoffice-path
 
 也就是说，这个功能的任何回归——内置引擎转不出来、外部引擎找不到套件、`source_format` 报错——目前都不会被门禁发现。
 
+> **【等用户提供夹具】2026-11-24 用户定案**：office 的测试夹具由用户自己造；夹具到位之前**不补** office 的自动化验收用例，agent 不要自行造夹具、也不要先补下面「建议的最小集合」。这是对「验收全绿才算实现完」铁律的一项书面豁免，豁免期到夹具到位为止。
+
 ### 手动验证
 
 每一步都检查三件事：退出码、stdout 的 JSON 字段、产物能否被别的软件打开。
@@ -496,7 +498,7 @@ soffice --headless --convert-to csv --outdir /tmp/check 新文件.xlsx     # 能
 
 **已知不对、暂时没改的：**
 
-- **没有任何自动化验收和单元测试**（见 8）。这与铁律「验收全绿才算实现完」相悖。
+- **没有任何自动化验收和单元测试**（见 8）。这与铁律「验收全绿才算实现完」相悖——2026-11-24 用户定案：夹具由用户自己造，到位之前书面豁免（见 8 的标注）。
 - **跨族拒绝的文案两条路不一样**：内置是「（doc 族只出 .docx）」，外部是「（只出 .docx）」（office/convert_cgo.go:52、office/engines.go:49）。
 - **「未检测到 LibreOffice」的提示只提了环境变量**，没提 `--libreoffice-path` 旗标（office/engines.go:226）。
 - **`--libreoffice-path` 的两个坑**：目录形态在 macOS / Linux 上无效；路径不存在时静默忽略（office/engines.go:93-106）。
@@ -551,3 +553,4 @@ soffice --headless --convert-to csv --outdir /tmp/check 新文件.xlsx     # 能
 | 日期 | 改了什么 | 同步的代码（提交） |
 |---|---|---|
 | 2026-11-24 | 初版：从代码与 AGENTS.md 整理 | 40fb9e7 |
+| 2026-11-24 | 标注：office 夹具由用户自己造，到位之前不补自动化验收（书面豁免，见 8） | —（仅文档） |
