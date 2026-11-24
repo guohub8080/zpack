@@ -858,6 +858,7 @@ tar 条目由单个协程顺序写入，内存有界（并行只发生在 gzip �
 | 字典衔接与降档 | `TestZipChunkDictionaryLinkage`、`TestZipHsaRuntimeDowngradeDeterministic` |
 | 加密 | `TestGenerateEncryptedZipFixtures`（生成夹具，短模式跳过）、`TestEncryptedZipExtract`、`TestEncrypted7zExtract`、`TestEncryptedRarExtract`、`TestZipPasswordTable`、`TestZipPasswordLargeEntryEncrypted` |
 | 并发失败回归 | `TestZipExtractConcurrentWrongPassword`、`TestParallelContainerExtractConcurrentFailures`（core/parallel_failure_test.go，各跑 5 轮） |
+| 重名条目检查 | `TestCollectCompressTasksRejectsDuplicates`、`TestReportDuplicateEntriesReportsUpToLimit`（core/duplicates_test.go：不重名照常收集；同名文件 / 同名目录 / 同一路径给两次都报错；文案整句比对；点到上限为止） |
 | 7z 写入 | `TestSevenZWriteArchive`、`TestSevenZWriteEmptyInput`（没有 7z 引擎的构建里跳过） |
 
 其它：`cli/archive/compress_test.go` 的 `TestParseVolumeSize`；`internal/cmdutil` 的 `TestParseIntStrict`、`TestMatchGlob`、`TestMatchGlobDirPattern`；`internal/stdout` 的信封编码与键序测试。
@@ -936,9 +937,9 @@ zpack compress 某目录 --output /tmp/j8.zip                           # 默认
 zpack compress 某目录 --output /tmp/j1.zip --jobs 1
 unzip -l /tmp/j8.zip ; unzip -l /tmp/j1.zip                          # 比较小条目的日期：1980 还是真实日期
 
-# ④ 多输入同名文件（9.2 第 13 条）
-zpack compress 甲/x.txt 乙/x.txt --output /tmp/dup.zip
-zpack extract /tmp/dup.zip --output /tmp/dup-out                     # 按代码推断：报「归档含重复条目名」
+# ④ 多输入同名文件（9.2 第 13 条，2026-11-24 起在压缩这一侧就报错；门禁里有 5 条自动用例，这里只是手看一眼）
+zpack compress 甲/x.txt 乙/x.txt --output /tmp/dup.zip                   # 报「多个输入在压缩包里会同名：x.txt（… 与 …）；请…」，exit 1，没有产出 dup.zip
+zpack compress 丙/资料 丁/资料 --output /tmp/dup.tar                     # 两个同名的目录同理（zip / tar / 7z 同一条规则）
 
 # ⑤ convert 的 tar.gz 为什么不稳定（9.2 第 7 条）
 zpack convert 同一个源归档 /tmp/c1.tar ; zpack convert 同一个源归档 /tmp/c2.tar   # 不压缩的 tar，差异好定位
@@ -990,7 +991,7 @@ bin/zpack-race compress 一个几百 MB 的目录 --output /tmp/big.tar.gz   # �
 | 10 | 压缩侧单给 `--password-table`、不给 `--password` 时**根本不加密**（是否加密只看 `--password` 是否非空）；密码表给出空密码时，小条目按空密码加密、大条目写成明文 | core/zip.go:544、712、725、728；core/crypto.go:505 | 按代码确定 |
 | 11 | 并行 gzip 写入器里工作协程**无锁读 map**，与主协程持锁的写并发——数据竞争，运行时可能 `fatal error: concurrent map read and map write`（exit 2、stdout 为空） | core/gzip_parallel.go:182 对 161、214、233 | 【待确认】未用 `-race` 实测 |
 | 12 | zip 并行路径的条目头只设 `Modified`，而 `CreateRaw` 只写 `ModifiedDate` / `ModifiedTime`——小条目与分块条目的时间戳字段是 0；顺序路径的时间戳是真实的。同一归档里两种条目元数据不一致 | core/zip.go:487、747；标准库 archive/zip/writer.go 的 `CreateRaw` | 【待确认】 |
-| 13 | 多个输入含同名文件时不去重，归档里出现重复条目名——而自家 `extract` 拒绝含重复条目名的归档 | core/common.go:75；core/zip.go:959 | 【待确认】 |
+| 13 | ~~多个输入含同名文件时不去重，归档里出现重复条目名——而自家 `extract` 拒绝含重复条目名的归档~~ **已解决（2026-11-24 用户拍板：不自动改名，报错）**：`reportDuplicateEntries` 在收集完条目后检查，zip / tar / 7z 写入线共用（core/duplicates.go）。只比较完全相同的包内名；大小写不同的两个名字不拦，但它们在 Windows / macOS 上解压时会撞成同一个文件——这是有意留着的不拦（见 4.1 的说明） | core/duplicates.go |
 | 14 | `list` / `info` 遇到加密了头部的 7z 或 rar 时返回**成功**，条目数 0、`encrypted` 为 false（清单读取失败被吞掉） | core/list.go:149、167 | 按代码确定 |
 | 15 | `list` 遇到读损坏的 tar 时静默返回已读到的条目 | core/list.go:133 | 按代码确定 |
 | 16 | `zipComment` 是包级变量，同进程里先列 zip 再列别的格式会带上一个 zip 的注释 | core/list.go:257 | 按代码确定 |
@@ -1054,7 +1055,7 @@ bin/zpack-race compress 一个几百 MB 的目录 --output /tmp/big.tar.gz   # �
 3. ~~zip 密码表的逐文件密码是否真的不成立~~ **已实测确认并修复**（见 6.17）：同码条目共用首个条目的密码，第二个文件起报「密码错误或归档损坏」。
 4. **并行 gzip 的数据竞争会不会在实际负载上触发**（9.2 第 11 条）——没有用 `-race` 或大语料实测。
 5. **zip 并行路径的条目时间戳是否确为 0**（9.2 第 12 条）——读了标准库 `CreateRaw` 的实现，未产出归档用第三方工具查看。
-6. **多输入同名文件产出的归档是否被自家 extract 拒绝**（9.2 第 13 条）——按代码推断。
+6. ~~多输入同名文件产出的归档是否被自家 extract 拒绝~~ **已实测并解决（2026-11-24）**：压缩这一侧现在直接报错，走不到解压；门禁 5 条 + 单测。
 7. **取消行为**（3.7 的表）——全部按代码读出，没有实际按过 Ctrl+C。
 8. **7z 解密失败时对外的具体文案**（9.2 第 21 条）——没有查 bodgit 库的错误文本。
 9. **7z 归档里的符号链接按普通文件落地**（4.1.9）——按管线代码推断。
@@ -1071,3 +1072,4 @@ bin/zpack-race compress 一个几百 MB 的目录 --output /tmp/big.tar.gz   # �
 | 2026-11-24 | 初版：从代码与 AGENTS.md 整理 | 40fb9e7 |
 | 2026-11-24 | 修复：并行解出的取消通道只关一次（多条目加密包配错密码曾 panic、exit 2、stdout 为空） | fd857e7 |
 | 2026-11-24 | 修复：Store 条目加密后解不开、尾部 HMAC 校验失效、逐文件密码表不成立、只给密码表时整包明文（见 6.17） | 45402e1 |
+| 2026-11-24 | 多个输入在包里同名时压缩直接报错，不自动改名（2026-11-24 用户拍板）：zip / tar / 7z 写入线共用一条检查，报错里点名包内名与来源并给出两条出路（3.1、3.7、4.1、7、8.1、8.2、9.2 #13） | d8c9d2c |
