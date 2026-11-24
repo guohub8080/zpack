@@ -6,18 +6,22 @@
 //	         目录先 hdiutil makehybrid -iso -joliet 产临时镜像再烧（长文件名走 Joliet）
 //	linux  : xorriso（未安装报安装引导）；-devices 枚举；目录 -map 原生刻录（可追加默认）、
 //	         镜像走 -as cdrecord -multi；--close 封盘；--blank blank=as_needed 按介质自动选擦除
-//	windows: M1 暂不支持（M2 交 IMAPI2：mastered=IDiscFormat2Data / 优盘模式=IDiscFormat2RandomWrite）
+//	windows: 系统自带引擎 IMAPI2（imapi2.dll 设备/写入/擦除 + imapi2fs.dll 目录→镜像；见 burn_windows.go 与
+//	         internal/imapi2）；目录/散文件由系统镜像库流式生成后直烧、不经临时 ISO；--close 封盘；
+//	         --blank 快速擦除可擦写盘；--speed 就近落到介质支持的档位；live（优盘模式）暂未接入
 //
 // 模式语义（用户痛点：Linux 默认 DAO 封盘连空白盘都只能烧一次）：
 //
 //	--mode multi（缺省）= 区段不封盘，烧完可继续追加；--close 显式封盘（最大兼容，老设备只认终章）
 //	--mode mastered = 单区段定稿（等价 multi + 封盘）
-//	--mode live = UDF 包写入「优盘模式」（Windows M2；其余平台如实报不支持）
+//	--mode live = UDF 包写入「优盘模式」（各平台均暂未接入，如实报不支持）
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,8 +58,10 @@ func NewBurnCmd() *cobra.Command {
   zpack burn 目录/ --close                 # 目录直刻并封盘（最大兼容）
   zpack burn 镜像.iso --device 1 --speed 8 # 第二台刻录机，8x
   zpack burn 目录/ --blank                 # 先擦除（RW 介质）再烧
+  zpack burn 目录/ --volid 备份            # 给光盘起名（空白盘；缺省用目录名，Windows 支持中文名）
 
-模式: multi（缺省，区段可追加）/ mastered（单区段定稿）/ live（优盘式 UDF 包写入，Windows M2）。
+模式: multi（缺省，区段可追加）/ mastered（单区段定稿）/ live（优盘式 UDF 包写入，暂未接入）。
+光盘名称: 空白盘随意起；已有内容的盘缺省沿用原名称（显式 --volid 才改）；已封盘的不能改。
 stdout 恒为一条 JSON：{"is_success":true,"devices":[...]} 或 {"is_success":true,"image":"...","size_bytes":N,...}。`,
 		Short:              "刻录光盘（设备枚举 / 镜像或目录刻录，多区段默认）",
 		DisableFlagParsing: true,
@@ -87,9 +93,10 @@ func burnListDevices() []BurnDevice {
 		return burnListDevicesDarwin()
 	case "linux":
 		return burnListDevicesLinux()
+	case "windows":
+		return burnListDevicesWindows()
 	default:
-		// windows: M2 交 IMAPI2（IDiscMaster2 枚举）——如实报暂不支持
-		stdout.ErrorPrint("暂不支持 windows：刻录设备枚举走 IMAPI2，M2 交付（mastered=IDiscFormat2Data；优盘模式=IDiscFormat2RandomWrite）")
+		stdout.ErrorPrint(burnUnsupportedPlatform().Error())
 	}
 	return nil
 }
@@ -235,32 +242,24 @@ func runBurnWrite(args []string) {
 			stdout.ErrorPrint("不识别的镜像扩展名（支持 .iso/.img/.bin；文件/文件夹请与其他内容一起多输入）: " + inputs[0])
 		}
 	}
+	// 无刻录后端的平台在任何暂存动作之前拒绝——此前目录/多输入会先走镜像生成，
+	// 报出空原因的「生成临时镜像失败」且把舞台目录遗留在用户目录（2026-11-23 Windows 实测）
+	if unsupported := burnUnsupportedPlatform(); unsupported != nil {
+		stdout.ErrorPrint(unsupported.Error())
+	}
+	flags.volid = burnResolveVolumeName(inputs, flags)
 	if flags.mode == "live" {
-		stdout.ErrorPrint("优盘模式（UDF 包写入）仅 Windows 计划支持（M2 交付）；当前平台请用 multi（多区段追加）")
+		stdout.ErrorPrint(burnLiveUnsupported())
 	}
 
 	imagePath := inputs[0]
-	cleanup := func() {}
-	isStaged := false
-	if len(inputs) == 1 {
-		if info, _ := os.Stat(inputs[0]); info != nil && info.IsDir() {
-			imagePath, cleanup = burnStageISO(inputs[0], flags, false)
-			isStaged = true
-		}
-	} else {
-		imagePath, cleanup = burnStageInputs(inputs, flags)
-		isStaged = true
-	}
 	var burnErr error
-	switch runtimeOS() {
-	case "darwin":
-		burnErr = burnDarwin(imagePath, flags)
-	case "linux":
-		burnErr = burnLinux(imagePath, isStaged, flags)
-	default:
-		stdout.ErrorPrint("暂不支持 windows：刻录走 IMAPI2（mastered=IDiscFormat2Data 流式写；优盘模式=IDiscFormat2RandomWrite 包写入），M2 交付")
+	if runtimeOS() == "windows" {
+		// Windows：系统镜像库流式生成、直烧，不经临时 ISO（见 burn_windows.go）
+		totalBytes, burnErr = burnWindows(inputs, flags)
+	} else {
+		imagePath, burnErr = burnViaTempISO(inputs, flags)
 	}
-	cleanup() // 显式清理临时镜像（ErrorPrint 即 exit，defer 不执行）
 	if burnErr != nil {
 		stdout.ErrorPrint(burnErr.Error())
 	}
@@ -279,39 +278,117 @@ func runBurnWrite(args []string) {
 	})
 }
 
+// burnViaTempISO mac / Linux 的刻录路径：目录 / 散文件先经外部工具产临时 ISO 再烧（用完即删）。
+// 返回临时镜像路径（返回时已清理）与刻录错误
+func burnViaTempISO(inputs []string, flags burnFlags) (string, error) {
+	imagePath := inputs[0]
+	cleanup := func() {}
+	isStaged := false
+	var stageErr error
+	if len(inputs) == 1 {
+		if info, _ := os.Stat(inputs[0]); info != nil && info.IsDir() {
+			imagePath, cleanup, stageErr = burnStageISO(inputs[0], flags, false)
+			isStaged = true
+		}
+	} else {
+		imagePath, cleanup, stageErr = burnStageInputs(inputs, flags, burnStageISO)
+		isStaged = true
+	}
+	if stageErr != nil {
+		cleanup()
+		return imagePath, stageErr
+	}
+	var burnErr error
+	switch runtimeOS() {
+	case "darwin":
+		burnErr = burnDarwin(imagePath, flags)
+	case "linux":
+		burnErr = burnLinux(imagePath, isStaged, flags)
+	}
+	cleanup() // 显式清理临时镜像（print 即 exit，defer 不执行）
+	return imagePath, burnErr
+}
+
+// burnUniqueEntryNames 多输入的顶层条目名（按输入顺序；重名加 -2 / -3 序号）——
+// mac/Linux 的舞台挂载与 Windows 的镜像构建共用
+func burnUniqueEntryNames(inputs []string) []string {
+	used := map[string]bool{}
+	entryNames := make([]string, len(inputs))
+	for index, input := range inputs {
+		baseName := filepath.Base(input)
+		entryName := baseName
+		for suffix := 2; used[entryName]; suffix++ {
+			// 每次从原名起算——否则第三个重名会叠成 a-2-3.txt
+			ext := filepath.Ext(baseName)
+			entryName = strings.TrimSuffix(baseName, ext) + "-" + strconv.Itoa(suffix) + ext
+		}
+		used[entryName] = true
+		entryNames[index] = entryName
+	}
+	return entryNames
+}
+
+// BURN_SIZE_UNITS 容量换算单位（1024 进制）
+var BURN_SIZE_UNITS = []string{"B", "KB", "MB", "GB", "TB"}
+
+// burnFormatBytes 人读容量：整数位不带小数（3GB / 5MB），否则一位小数（2.3MB），数字与单位之间不留空格
+// （与 GUI 的 humanSize 同约定——两个模块各自一份，逻辑一致）
+func burnFormatBytes(bytes int64) string {
+	value := float64(bytes)
+	unitIdx := 0
+	for value >= 1024 && unitIdx < len(BURN_SIZE_UNITS)-1 {
+		value /= 1024
+		unitIdx++
+	}
+	if unitIdx == 0 {
+		return strconv.FormatInt(bytes, 10) + BURN_SIZE_UNITS[0]
+	}
+	// 先按一位小数取整；取整后进到下一档（1023.96KB → 1024.0KB → 1MB）
+	rounded := math.Round(value*10) / 10
+	for rounded >= 1024 && unitIdx < len(BURN_SIZE_UNITS)-1 {
+		rounded /= 1024
+		unitIdx++
+	}
+	if rounded == math.Trunc(rounded) {
+		return strconv.FormatInt(int64(rounded), 10) + BURN_SIZE_UNITS[unitIdx]
+	}
+	return strconv.FormatFloat(rounded, 'f', 1, 64) + BURN_SIZE_UNITS[unitIdx]
+}
+
 // burnStageInputs 多输入聚台（2026-11-22 用户定案：像压缩包一样任意数量）：
 // 在输入们的公共祖先目录里建临时舞台（同卷——硬链接零拷贝），逐项挂进舞台：
 // darwin=硬链接（跨卷回退拷贝）；linux=符号链接（mkisofs -f 跟随）。
-// 返回舞台目录与清理函数；目录输入按「目录名为根」语义整树挂入（同 compress）。
-func burnStageInputs(inputs []string, flags burnFlags) (string, func()) {
+// 目录输入按「目录名为根」语义整树挂入（同 compress）。返回镜像路径与清理函数；
+// 任一环节失败自行清场并返回 error（不在此 ErrorPrint——print 即 exit 会让调用方无从清理）。
+// buildISO 为镜像生成器（测试注入——无 hdiutil/xorriso 的平台也能验证舞台生命周期）。
+func burnStageInputs(inputs []string, flags burnFlags, buildISO func(string, burnFlags, bool) (string, func(), error)) (string, func(), error) {
 	ancestor := burnCommonAncestor(inputs)
 	stageDir, err := os.MkdirTemp(ancestor, ".zpack-burn-stage-")
 	if err != nil {
 		// 公共祖先不可写（只读卷等）→ 回退系统临时目录（此时硬链接多会跨卷，逐文件回退拷贝）
 		stageDir, err = os.MkdirTemp("", "zpack-burn-stage-")
 		if err != nil {
-			stdout.ErrorPrint("创建刻录暂存目录失败: " + err.Error())
+			return "", func() {}, fmt.Errorf("创建刻录暂存目录失败: %w", err)
 		}
 	}
-	used := map[string]bool{}
-	for _, input := range inputs {
-		entryName := filepath.Base(input)
-		for suffix := 2; used[entryName]; suffix++ {
-			ext := filepath.Ext(entryName)
-			entryName = strings.TrimSuffix(entryName, ext) + "-" + strconv.Itoa(suffix) + ext
-		}
-		used[entryName] = true
-		target := filepath.Join(stageDir, entryName)
+	entryNames := burnUniqueEntryNames(inputs)
+	for index, input := range inputs {
+		target := filepath.Join(stageDir, entryNames[index])
 		if mountErr := burnLinkEntry(input, target); mountErr != nil {
 			_ = os.RemoveAll(stageDir)
-			stdout.ErrorPrint("暂存刻录内容失败: " + mountErr.Error())
+			return "", func() {}, fmt.Errorf("暂存刻录内容失败: %w", mountErr)
 		}
 	}
-	imagePath, isoCleanup := burnStageISO(stageDir, flags, runtimeOS() == "linux")
+	imagePath, isoCleanup, isoErr := buildISO(stageDir, flags, runtimeOS() == "linux")
+	if isoErr != nil {
+		// 舞台目录只有本函数知道——镜像生成失败时归这里清，否则连硬链接一起遗留在用户目录
+		_ = os.RemoveAll(stageDir)
+		return "", func() {}, isoErr
+	}
 	return imagePath, func() {
 		isoCleanup()
 		_ = os.RemoveAll(stageDir)
-	}
+	}, nil
 }
 
 // burnCommonAncestor 取输入们的最长公共目录（同卷硬链接的前提；单输入退化为父目录）
@@ -394,13 +471,14 @@ func burnCopyFile(source, target string) error {
 
 // burnFlags 刻录旗标集
 type burnFlags struct {
-	device  int
-	speed   int
-	volid   string
-	mode    string
-	close   bool
-	blank   bool
-	noEject bool
+	device     int
+	speed      int
+	volid      string
+	volidGiven bool // 是否显式给了 --volid（Windows 追加区段时未给则沿用盘上原有卷标）
+	mode       string
+	close      bool
+	blank      bool
+	noEject    bool
 }
 
 // burnParseFlags 手写旗标解析（同仓惯例：未知静默忽略、数值严格校验）
@@ -435,6 +513,7 @@ func burnParseFlags(rest []string) burnFlags {
 		case "--volid":
 			if v, ok := value(); ok {
 				flags.volid = v
+				flags.volidGiven = true
 			}
 		case "--mode":
 			if v, ok := value(); ok {
@@ -454,11 +533,34 @@ func burnParseFlags(rest []string) burnFlags {
 	if flags.mode == "mastered" {
 		flags.close = true // mastered=单区段定稿
 	}
-	if flags.volid == "" {
-		base := filepath.Base(mustAbs("."))
-		flags.volid = burnSanitizeVolid(base)
+	return flags // 未给 --volid 时留空：缺省卷标取决于输入形态，由 runBurnWrite 经 burnResolveVolumeName 定
+}
+
+// burnResolveVolumeName 定下本次使用的卷标。未给 --volid：单个目录输入用目录名（2026-11-24 用户定案），
+// 其余形态沿用旧规则取当前目录名。显式给了：Windows 做温和规范化（见 burn_windows.go），
+// mac/Linux 原样交给外部工具（旧行为）。追加区段未给 --volid 时沿用盘上名称由 Windows 后端按 volidGiven 处理
+func burnResolveVolumeName(inputs []string, flags burnFlags) string {
+	if flags.volidGiven {
+		if runtimeOS() == "windows" {
+			return burnWindowsVolumeName(flags.volid)
+		}
+		return flags.volid
 	}
-	return flags
+	if len(inputs) == 1 {
+		if info, statErr := os.Stat(inputs[0]); statErr == nil && info.IsDir() {
+			return burnPlatformVolumeName(filepath.Base(mustAbs(inputs[0])))
+		}
+	}
+	return burnPlatformVolumeName(filepath.Base(mustAbs(".")))
+}
+
+// burnPlatformVolumeName 缺省卷标的平台规范化：Windows 允许中文名（系统镜像库原生支持）；
+// mac/Linux 只保留 A-Z 0-9 下划线（外部工具的字符集限制）
+func burnPlatformVolumeName(raw string) string {
+	if runtimeOS() == "windows" {
+		return burnWindowsVolumeName(raw)
+	}
+	return burnSanitizeVolid(raw)
 }
 
 // burnSanitizeVolid ISO9660 卷标约束：A-Z0-9_、≤32 字符
@@ -489,12 +591,25 @@ func burnLooksLikeImage(path string) bool {
 	return false
 }
 
-// burnStageISO 目录 → 临时 ISO 镜像（返回清理函数）
-func burnStageISO(dir string, flags burnFlags, followSymlinks bool) (string, func()) {
+// burnStageISO 目录 → 临时 ISO 镜像（返回清理函数）。失败返回 error 而非 ErrorPrint：
+// print 即 exit 会跳过调用方的善后（多输入舞台目录曾因此泄漏，2026-11-23 Windows 实测）
+func burnStageISO(dir string, flags burnFlags, followSymlinks bool) (string, func(), error) {
 	staged := filepath.Join(os.TempDir(), "zpack-burn-"+strconv.Itoa(os.Getpid())+".iso")
 	volid := flags.volid
 	if volid == "" {
 		volid = burnSanitizeVolid(filepath.Base(mustAbs(dir)))
+	}
+	imageTool := "xorriso"
+	if runtimeOS() == "darwin" {
+		imageTool = "hdiutil"
+	}
+	// 引擎缺席先点名——否则调用方只拿到冒号后空白的「生成临时镜像失败: 」
+	if _, lookErr := exec.LookPath(imageTool); lookErr != nil {
+		missing := "未找到 " + imageTool + "（" + runtimeOS() + " 侧镜像生成引擎）"
+		if imageTool == "xorriso" {
+			missing += "——请安装：sudo apt install xorriso / sudo dnf install xorriso / sudo pacman -S xorriso"
+		}
+		return "", func() {}, errors.New(missing)
 	}
 	var out []byte
 	var err error
@@ -509,9 +624,9 @@ func burnStageISO(dir string, flags burnFlags, followSymlinks bool) (string, fun
 		out, err = exec.Command("xorriso", mkisofsArgs...).CombinedOutput()
 	}
 	if err != nil {
-		stdout.ErrorPrint("生成临时镜像失败: " + strings.TrimSpace(string(out)))
+		return "", func() {}, fmt.Errorf("生成临时镜像失败: %s", strings.TrimSpace(string(out)))
 	}
-	return staged, func() { _ = os.Remove(staged) }
+	return staged, func() { _ = os.Remove(staged) }, nil
 }
 
 // burnDarwin hdiutil 刻录（默认不封盘=可追加；--close 才 -forceclose）
@@ -585,6 +700,20 @@ func burnRunCommand(name string, arguments []string) error {
 
 // runtimeOS 目标平台名（burn 内部用）
 func runtimeOS() string { return runtime.GOOS }
+
+// burnUnsupportedPlatform 无刻录后端平台的拒绝原因（nil=平台受支持）
+func burnUnsupportedPlatform() error {
+	switch runtimeOS() {
+	case "darwin", "linux", "windows":
+		return nil
+	}
+	return fmt.Errorf("暂不支持 %s：刻录引擎仅 darwin=hdiutil / linux=xorriso / windows=IMAPI2", runtimeOS())
+}
+
+// burnLiveUnsupported 优盘模式的拒绝原因（各平台均未接入）
+func burnLiveUnsupported() string {
+	return "暂不支持 live：优盘模式（UDF 包写入）尚未接入，请用 multi（多区段追加）或 mastered（封盘）"
+}
 
 // mustAbs 绝对路径（失败即原样返回）
 func mustAbs(path string) string {

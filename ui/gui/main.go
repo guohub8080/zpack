@@ -438,14 +438,15 @@ type app struct {
 	randomOut     string
 	randomErr     string
 	// 刻录光盘（m06038：burn devices + 镜像/目录刻录）
-	burnInputs   []string // 刻录内容清单（任意数量文件/文件夹，2026-11-22 用户定案）
-	burnDevices  []BurnDevice
-	burnDevStr   string
-	burnModeStr  string  // 可追加（multi 不封盘）/ 一次性烧录（mastered 封盘）
-	burnSpeedIdx float64 // 刻录速度档：0=自动；1-6 → 4/8/16/24/32/48x
-	burnBlank    bool
-	burnQueried  bool
-	burnDevErr   string
+	burnInputs     []string // 刻录内容清单（任意数量文件/文件夹，2026-11-22 用户定案）
+	burnDevices    []BurnDevice
+	burnDevStr     string
+	burnModeStr    string  // 可追加（multi 不封盘）/ 一次性烧录（mastered 封盘）
+	burnSpeedIdx   float64 // 刻录速度档：0=自动；1-6 → 4/8/16/24/32/48x
+	burnBlank      bool
+	burnVolumeName string // 光盘名称（仅空白盘可设；留空=引擎缺省：单个目录用目录名）
+	burnQueried    bool
+	burnDevErr     string
 
 	// 归档浏览（m05602 收官：list 可视化 + test 校验；入口已让位刻录，代码保留）
 	archivePath    string
@@ -5548,6 +5549,23 @@ func (a *app) burnRefreshDevices() {
 	a.win.Invalidate()
 }
 
+// burnSelectedDevice 当前选中的刻录机（下拉选中项按显示名对应；没选中返回零值与 false）
+func (a *app) burnSelectedDevice() (BurnDevice, bool) {
+	for _, device := range a.burnDevices {
+		if burnDeviceLabel(device) == a.burnDevStr {
+			return device, true
+		}
+	}
+	return BurnDevice{}, false
+}
+
+// burnVolumeNamePlan 光盘名称行的显示与传参规则——按选中刻录机的介质状态与刻录内容形态定
+func (a *app) burnVolumeNamePlan() burnVolumeNamePlan {
+	selected, _ := a.burnSelectedDevice()
+	singleDir := len(a.burnInputs) == 1 && burnInputIsDir(a.burnInputs[0])
+	return planBurnVolumeName(selected.Status, a.burnVolumeName, singleDir, a.burnBlank)
+}
+
 // clearBurn 清空刻录内容
 func (a *app) clearBurn() {
 	a.burnInputs = nil
@@ -5686,6 +5704,27 @@ func (a *app) pageBurn(c *ui.Context) {
 			})
 		})
 
+		// 光盘名称（2026-11-24 用户定案）：只有空白盘能起名，已有内容的盘沿用盘上名称。
+		// 非空白态不摆灰掉的输入框，直接一句话说清为什么不能改。输入框与分卷大小、码率等
+		// 既有文本框同类，不进反馈矩阵（矩阵只收悬停 / 按下态的按钮族）
+		namePlan := a.burnVolumeNamePlan()
+		openSettingRow(c, t, "光盘名称", namePlan.hint, func() {
+			ui.Column(c).Grow(1).Children(func() {
+				if namePlan.editable {
+					ui.TextInputBase(c, &a.burnVolumeName).
+						Placeholder(namePlan.placeholder).Grow(1).MinWidth(120).FontSize(13).
+						Padding(5, 10).
+						Background(t.Surface).Border(1, t.Border).Radius(8).MinHeight(32)
+				} else {
+					ui.Text(c, namePlan.lockedText).FontSize(13).TextColor(t.TextMuted).Wrap()
+				}
+				if namePlan.note != "" {
+					ui.Text(c, namePlan.note).FontSize(12).TextColor(t.TextMuted).
+						Wrap().Margin(4, 0, 0, 0)
+				}
+			})
+		})
+
 		// 写入模式（可追加=引擎 multi 不封盘——Linux DAO 封死空盘的痛点；一次性=mastered 封盘）
 		// 平台差异化提示（用户定案 m06432/m06508）：可追加各平台能做的事不一样，写明白
 		modeHint := "封盘定稿，这张盘之后不能再写；老 DVD 机/车机兼容最好"
@@ -5774,10 +5813,8 @@ func (a *app) pageBurn(c *ui.Context) {
 		// 擦除（仅可重写介质出现此行，用户定案 m06524：一次性碟物理不可擦，
 		// 摆出来只会让人困惑「有的光盘不是删不掉吗」；DVD+RW 天生覆盖写免擦）
 		selectedMedia := ""
-		for _, device := range a.burnDevices {
-			if burnDeviceLabel(device) == a.burnDevStr {
-				selectedMedia = device.Media
-			}
+		if selected, chosen := a.burnSelectedDevice(); chosen {
+			selectedMedia = selected.Media
 		}
 		rewritable := strings.Contains(selectedMedia, "RW") || strings.Contains(selectedMedia, "RE")
 		if rewritable && selectedMedia != "DVD+RW" {
@@ -5800,11 +5837,11 @@ func (a *app) pageBurn(c *ui.Context) {
 			start := primaryCTA(c, t, map[bool]string{true: "刻录", false: burnBlockHint}[burnReady], burnReady)
 			if burnReady && start.Clicked() {
 				deviceIndex := 0
-				for _, device := range a.burnDevices {
-					if burnDeviceLabel(device) == a.burnDevStr {
-						deviceIndex = device.Index
-					}
+				if selected, chosen := a.burnSelectedDevice(); chosen {
+					deviceIndex = selected.Index
 				}
+				// 光盘名称只在空白盘（或计划先擦空）时传——规则见 planBurnVolumeName
+				nameArg := a.burnVolumeNamePlan().volumeArg
 				engineMode := "multi"
 				if a.burnModeStr == "一次性烧录" {
 					engineMode = "mastered"
@@ -5813,7 +5850,7 @@ func (a *app) pageBurn(c *ui.Context) {
 				if spdIdx := int(a.burnSpeedIdx + 0.5); spdIdx > 0 {
 					speedArg = strconv.Itoa([]int{0, 4, 8, 16, 24, 32, 48}[spdIdx])
 				}
-				a.launchTask(a.service.StartBurn(a.burnInputs, deviceIndex, speedArg, engineMode, a.burnBlank))
+				a.launchTask(a.service.StartBurn(a.burnInputs, deviceIndex, speedArg, engineMode, a.burnBlank, nameArg))
 			}
 		})
 	})

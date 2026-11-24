@@ -108,14 +108,17 @@ func TestConvertSummary(t *testing.T) {
 	if err := os.WriteFile(product, make([]byte, 20642), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Windows 路径的反斜杠在 JSON 串里须转义——直接拼进去是非法转义，整段信封解析失败，
+	// 两例都会回落成动作名（2026-11-24 Windows 实测机首跑暴露；mac 路径无反斜杠故无症状）
+	productJSON := strings.ReplaceAll(product, `\`, `\\`)
 	cases := []struct {
 		name     string
 		raw      string
 		expected string
 	}{
 		{"size_bytes", `{"is_success":true,"data":{"output":"/x/a.mkv","size_bytes":1024}}`, "已输出 a.mkv · 1KB"},
-		{"图片族 output_size_bytes", `{"is_success":true,"data":{"output":"` + product + `","output_size_bytes":20642}}`, "已输出 产物.webp · 20.2KB"},
-		{"都没有则 Stat 产物", `{"is_success":true,"data":{"output":"` + product + `"}}`, "已输出 产物.webp · 20.2KB"},
+		{"图片族 output_size_bytes", `{"is_success":true,"data":{"output":"` + productJSON + `","output_size_bytes":20642}}`, "已输出 产物.webp · 20.2KB"},
+		{"都没有则 Stat 产物", `{"is_success":true,"data":{"output":"` + productJSON + `"}}`, "已输出 产物.webp · 20.2KB"},
 		{"失败信封回落动作名", `{"is_success":false,"error_info":"x"}`, "刻录完成"},
 		{"非 JSON 回落动作名", `plain`, "刻录完成"},
 	}

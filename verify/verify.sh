@@ -1088,21 +1088,27 @@ assert_equal "burn devices 信封" "true" "$(echo "$burn_dev_json" | "$NEW_CLI" 
 echo "$burn_dev_json" | "$NEW_CLI" json get data.devices >/dev/null 2>&1; assert_equal "burn devices devices 字段 exit" 0 "$?"
 "$NEW_CLI" burn /nonexistent-path.iso >/dev/null 2>&1; assert_equal "burn 输入不存在 exit" 1 "$?"
 echo "$("$NEW_CLI" burn /nonexistent-path.iso 2>/dev/null)" | grep -q "输入不存在" && report_pass || report_fail "burn 输入不存在 error_info" "输入不存在" "缺失"
-"$NEW_CLI" burn /tmp --mode live >/dev/null 2>&1; assert_equal "burn live 非 Windows 拒绝 exit" 1 "$?"
+"$NEW_CLI" burn /tmp --mode live >/dev/null 2>&1; assert_equal "burn live 未接入拒绝 exit" 1 "$?"
 "$NEW_CLI" burn --help >/dev/null 2>&1; assert_equal "burn --help exit" 0 "$?"
 
 # ── burn 多输入（2026-11-22 用户定案：任意数量文件/文件夹）──
+# 刻录是物理且不可逆的操作：检出刻录机的机器上跳过「真实写入」用例，只跑不碰设备的参数校验用例
+# （2026-11-24 Windows 接入 IMAPI2 后补的保护——否则门禁会真的往盘上写）
 burn_multi_a=$(mktemp /tmp/zpack-burn-ma.XXXXXX); printf 'ma' >"${burn_multi_a}"
 burn_multi_b=$(mktemp /tmp/zpack-burn-mb.XXXXXX); printf 'mb' >"${burn_multi_b}"
 burn_iso_tmp=/tmp/zpack-burn-fake.iso; printf 'PK-fake-not-iso' >"${burn_iso_tmp}"
+"$NEW_CLI" burn "${burn_iso_tmp}" "${burn_multi_a}" >/dev/null 2>&1
+assert_equal "burn 镜像混排拒绝 exit" 1 "$?"
+echo "$("$NEW_CLI" burn "${burn_iso_tmp}" "${burn_multi_a}" 2>/dev/null)" | grep -q "只能单独刻录" && report_pass || report_fail "burn 镜像混排 error_info" "只能单独刻录" "缺失"
+if [ "$(echo "$burn_dev_json" | "$NEW_CLI" json get data.devices 2>/dev/null)" = "[]" ]; then
 "$NEW_CLI" burn "${burn_multi_a}" "${burn_multi_b}" >/dev/null 2>&1
 assert_equal "burn 多文件 exit(无光驱=1)" 1 "$?"
 burn_multi_json=$("$NEW_CLI" burn "${burn_multi_a}" "${burn_multi_b}" 2>/dev/null)
 echo "${burn_multi_json}" | "$NEW_CLI" json get error_info >/dev/null 2>&1
 assert_equal "burn 多文件失败也带回 error_info exit" 0 "$?"
-"$NEW_CLI" burn "${burn_iso_tmp}" "${burn_multi_a}" >/dev/null 2>&1
-assert_equal "burn 镜像混排拒绝 exit" 1 "$?"
-echo "$("$NEW_CLI" burn "${burn_iso_tmp}" "${burn_multi_a}" 2>/dev/null)" | grep -q "只能单独刻录" && report_pass || report_fail "burn 镜像混排 error_info" "只能单独刻录" "缺失"
+else
+echo "  · 跳过 burn 多文件真实写入用例：检测到刻录机（刻录不可逆，门禁不写盘）"
+fi
 rm -f "${burn_multi_a}" "${burn_multi_b}" "${burn_iso_tmp}"
 
 # ── 7z 写入（2026-11-22 用户拍板：全量接入官方 C；bin/zpack 恒为完整版故不设能力门控）──

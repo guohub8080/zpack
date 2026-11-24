@@ -982,10 +982,13 @@ type BurnDevice struct {
 	Status  string `json:"status,omitempty"`
 }
 
-// BurnDevices 异步枚举刻录机（zpack burn devices；无光驱=空列表也算成功）
+// BurnDevices 异步枚举刻录机（zpack burn devices；无光驱=空列表也算成功）。
+// 回调一律在后台协程里给——调用方（刻录页）据此在回调里投递主线程
 func (service *Service) BurnDevices(callback func(devices []BurnDevice, errMsg string)) {
 	if service.zpackPath() == "" {
-		callback(nil, "未找到引擎")
+		// 与下面的枚举路径保持同为异步。此前这里是同步回调：在主线程上调用时，回调里的
+		// 「投递主线程」在无头测试环境下永远等不到主循环（2026-11-24 Windows 实测整套测试挂死在此）
+		go callback(nil, "未找到引擎")
 		return
 	}
 	go func() {
@@ -1011,25 +1014,35 @@ func (service *Service) BurnDevices(callback func(devices []BurnDevice, errMsg s
 }
 
 // StartBurn 起刻录任务（inputs=任意数量文件/文件夹——镜像单文件直烧；
-// multi=多区段可追加 / mastered=单区段定稿封盘）
-func (service *Service) StartBurn(inputs []string, deviceIndex int, speed, mode string, blank bool) *Task {
+// multi=多区段可追加 / mastered=单区段定稿封盘）。volumeName 非空才传 --volid——
+// 只有空白盘能起名，何时该传由调用方按介质状态决定（见 planBurnVolumeName）
+func (service *Service) StartBurn(inputs []string, deviceIndex int, speed, mode string, blank bool, volumeName string) *Task {
 	if len(inputs) == 0 {
 		return nil
 	}
-	arguments := []string{"burn"}
-	arguments = append(arguments, inputs...)
-	arguments = append(arguments, "--device", strconv.Itoa(deviceIndex))
-	if strings.TrimSpace(speed) != "" {
-		arguments = append(arguments, "--speed", strings.TrimSpace(speed))
-	}
-	arguments = append(arguments, "--mode", mode)
-	if blank {
-		arguments = append(arguments, "--blank")
-	}
+	arguments := burnArguments(inputs, deviceIndex, speed, mode, blank, volumeName)
 	title := "刻录 " + filepath.Base(inputs[0])
 	if len(inputs) > 1 {
 		title = "刻录 " + strconv.Itoa(len(inputs)) + " 项"
 	}
 	// 刻录没有产物文件：不出「显示」钮，摘要与失败文案按「刻录」组句
 	return service.startProcess(title, "刻录", arguments, "", "")
+}
+
+// burnArguments 拼刻录命令的参数（纯函数，可单测）。光盘名称去首尾空白后非空才传 --volid
+func burnArguments(inputs []string, deviceIndex int, speed, mode string, blank bool, volumeName string) []string {
+	arguments := []string{"burn"}
+	arguments = append(arguments, inputs...)
+	arguments = append(arguments, "--device", strconv.Itoa(deviceIndex))
+	if strings.TrimSpace(speed) != "" {
+		arguments = append(arguments, "--speed", strings.TrimSpace(speed))
+	}
+	if name := strings.TrimSpace(volumeName); name != "" {
+		arguments = append(arguments, "--volid", name)
+	}
+	arguments = append(arguments, "--mode", mode)
+	if blank {
+		arguments = append(arguments, "--blank")
+	}
+	return arguments
 }

@@ -242,10 +242,12 @@ zpack compress 目录/ --output out.zip > /dev/null 2>&1 && echo OK || echo FAIL
 zpack hash 文件.iso --expect <官方哈希> && echo 完整 || echo 损坏
 ```
 
-### 刻录光盘（M1：macOS/Linux 实作，Windows M2 IMAPI2）
-- `zpack burn devices` — 枚举刻录机+介质状态（Linux 走 xorriso -devices；缺 xorriso 报安装引导）
+### 刻录光盘（macOS=hdiutil / Linux=xorriso / Windows=系统自带 IMAPI2）
+- `zpack burn devices` — 枚举刻录机+介质状态（Linux 走 xorriso -devices，缺 xorriso 报安装引导；Windows 的 path 是盘符如 `E:\`，没放盘 status=no-media，封盘=full）
 - `zpack burn 镜像.iso` — 烧镜像；默认多区段可追加（Linux 痛点：默认不封盘），`--close` 封盘定稿
-- `zpack burn 目录/ --close` — 目录直刻（自动产临时 ISO：mac=hdiutil makehybrid -joliet，Linux=xorriso -as mkisofs）
-- `zpack burn 文件A 文件B 目录/` — 多输入刻录（任意数量；聚临时舞台产 ISO；.iso 混排拒绝）
-- `--mode multi|mastered|live` — live=优盘式 UDF 包写入（仅 Windows M2 计划，其余平台明确拒绝）；`--blank` 按介质自动擦除（DVD+RW 免擦）
+- `zpack burn 目录/ --close` — 目录直刻（Windows 由系统镜像库流式生成直烧、无临时 ISO；mac=hdiutil makehybrid -joliet，Linux=xorriso -as mkisofs 产临时 ISO）
+- `zpack burn 文件A 文件B 目录/` — 多输入刻录（任意数量；每项按唯一名进镜像根；.iso 混排拒绝）
+- `--speed N` 倍速（Windows 按介质支持的档位就近落档，超出会提示）；`--volid` 光盘名称（缺省：单个目录用目录名，其余用当前目录名；Windows 支持中文名；追加区段未给则沿用盘上名称，已封盘不能改）；`--no-eject` 刻完不弹出
+- `--mode multi|mastered|live` — live=优盘式 UDF 包写入（各平台均未接入，明确拒绝）；`--blank` 先擦除可擦写盘（一次写入盘报不可擦）
+- 追加区段时上一区段的文件在新区段保持可见（Windows 实测哈希一致）；**封盘后 Windows 要重新进盘才认新区段**——刻完缺省弹出
 

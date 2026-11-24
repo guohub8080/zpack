@@ -78,8 +78,8 @@
 | `ffmpeg <原版任意参数...>` | **契约唯一例外**：透明代理（进程内直调——ffmpeg CLI 的 main 符号改名后静态链入，`zpack ffmpeg` 即普通 C 函数调用，零释放零子进程，原理见「ffmpeg CLI 进程内直调」节）——stdout/stderr/exit code 均为 ffmpeg 原生语义（stdout 可为二进制媒体流，`pipe:1` 场景必需），不走 JSON 信封；纯构建报「需完整版」 | — |
 | `audio convert <输入> <输出> [--bitrate] [--sample-rate] [--mono]` | `{"is_success":true,"mode":"audio-only-output","audio":{"action":"encode","codec":"...","bitrate":N},"size_bytes":N,"ratio":N,"bitrate":N,"sample_rate":N,"mono":true}` | `{"error_info":"..."}` |
 | `audio compress <输入> [--bitrate] [--mono]` | 同上 + `"original_bitrate":N`；缺省目标=原始码率 50%（下限 32k）；目标≥原始明确拒绝 | 同上 |
-| `burn devices` | `{"is_success":true,"devices":[{"index":0,"path":"/dev/sr0","vendor":"...","product":"...","media":"CD-R","status":"blank"}]}`（无光驱=空数组也算成功） | `{"error_info":"..."}` |
-| `burn <镜像.iso\|目录\|文件...> [--device N] [--speed N] [--volid 卷标] [--mode multi\|mastered\|live] [--close] [--blank] [--no-eject]` | `{"is_success":true,"image":"<绝对路径>","size_bytes":N,"mode":"multi","close":false,"blank":false}` | 同上 |
+| `burn devices` | `{"is_success":true,"devices":[{"index":0,"path":"/dev/sr0","vendor":"...","product":"...","media":"CD-R","status":"blank"}]}`（无光驱=空数组也算成功；Windows 的 path 为盘符如 `E:\`，没放盘 status=`no-media`，封盘=`full`——见「Windows 刻录后端」节） | `{"error_info":"..."}` |
+| `burn <镜像.iso\|目录\|文件...> [--device N] [--speed N] [--volid 卷标] [--mode multi\|mastered\|live] [--close] [--blank] [--no-eject]` | `{"is_success":true,"image":"<绝对路径>","size_bytes":N,"mode":"multi","close":false,"blank":false}`（Windows：目录/散文件由系统镜像库流式生成直烧、无临时 ISO，size_bytes=本次写入的镜像字节数；mac/Linux 走 hdiutil/xorriso 临时 ISO） | 同上 |
 | `skill --install [目录]` | `{"is_success":true,"skill":"zpack","installed":["<绝对路径>"],"size_bytes":N}`（无目录参数=探测 `~/.claude/skills`/`~/.agents/skills` 等全部命中处） | 同上 |
 
 ### stderr 过程日志（可忽略，不影响结果判断）
@@ -233,6 +233,33 @@ bin/zpack-dev <命令>                                   # media/HDR/HEIC/ffmpeg
 
 **7z 写入直调引擎（2026-11-22 用户拍板「全量接入官方 C」）**：`build_cli/mac/sevenzip_static.sh`——ip7z/7zip tag 25.01 Alone2 bundle（全格式读+写引擎）铸 `internal/sevenzipcli/libs/libzpack_7zcli.a`（~3.7MB，311 对象）；许可=7-Zip LGPL + unRAR 特许（**Rar*.o 归档阶段剥除，unRAR 限制代码不入产物**）。直调形态同 ffmpeg（main 改名 `extern "C" zpack_7z_main` 进程内调用），差异=**7z 不 exit 正常返回退出码**。接线：`core/sevenz.go` sevenzCompress（@listfile+`-scsUTF-8 -spd` 清单进名、快路径 chdir 基目录保树/staging 硬链接克隆兜底、chdir 全程 mutex、已存在先删、退出码 ≥2=错误 1=警告容忍、分卷走通用切分器）；`.7z` 经 DetectWriteFormat 进 compress。**产线四坑**：①注册靠静态 ctor——普通 .a 按需拉取拉不到注册对象（E_NOTIMPL），`ld -r` 全对象合并单一可重定位对象再 ar 单成员归档（=whole-archive 语义；cgo 拒绝带路径的 -Wl,-force_load）；②DISABLE_RAR 只被 Format7zF 的 Arc_gcc.mak 认，Alone2+cmpl_*.mak 无视；③USE_ASM=1 撞 `and` 宏 × -Wc++-keyword（clang 把 .S 当 C++）+ var_*.mak 的 -Weverything 撞 C 代码——`USE_ASM= CFLAGS_WARN="-Wno-everything"` 双覆盖；④main 改名后可执行链接必败（预期，只要 .o）。已知限制：`--jobs`/`--password-table`/注释对 7z 忽略（logf 提示）；Windows 产线待铺（M2）。互操作：homebrew 7zz 26.05 交叉读 ✓；自家 extract（bodgit）连 mhe 加密头都解 ✓。
 
+**Windows 刻录后端（2026-11-24 交付；`internal/imapi2` 引擎胶水 + `cli/burn_windows.go` 命令面）**：用户定案「有现成成熟的库就不要造轮子」——全用系统现成能力：`imapi2.dll`（IDiscMaster2 设备枚举 / IDiscRecorder2 刻录机 / IDiscFormat2Data 数据写入 / IDiscFormat2Erase 擦除）+ `imapi2fs.dll`（IFileSystemImage 目录→镜像，ISO9660+Joliet+UDF 含多区段导入）+ shlwapi `SHCreateStreamOnFileEx`（文件流）；调用经 go-ole **按方法名走 IDispatch**，零新增依赖、纯 Go 构建（`CGO_ENABLED=0`）即可用。Go 生态无现成的 IMAPI2 调用封装（检索仅 deploymenttheory/go-bindings-win32 含生成的接口定义，2026-07 新建，未采用）。与 mac/Linux 的差异：目录/散文件流式生成直烧、**无临时 ISO**；单目录 → 镜像根装其内容，多输入 → 每项唯一名装入镜像根；`.iso/.img/.bin` 文件流直烧；`--speed` 按介质支持档位就近落档；光盘名称——未给 `--volid` 时单个目录输入用目录名、追加区段沿用盘上卷标，Windows 上中文名可用（规则见陷阱 9）；live（UDF 包写入）仍未接入。
+**陷阱清单（全部真机踩过：Win11 26200 + lenovo UltraslimDVD USB + DVD-R）**：
+1. **本机无 imapi2ms.dll（脚本封装层）**：ProgID（IMAPI2.MsftDiscMaster2 等）未注册，PowerShell `New-Object -ComObject` 报类未注册——按 **CLSID** 创建核心对象即可（取自注册表 HKCR\CLSID，与 SDK coclass 逐个核对）；核心对象自带类型信息，可按方法名解析。接口定义取自 microsoft/win32metadata 的 SDK IDL（`generation/WinSDK/RecompiledIdlHeaders/um/imapi2*.idl`、`imapi2*error.h`）——**别凭记忆写方法顺序**（实测与印象不同）。
+2. **go-ole 的边界**：`Item` 是带参属性（DISPID_VALUE）须 GetProperty；`VolumeNameISO9660/Joliet/UDF` 只读，只有 `VolumeName` 可写（各文件系统按自身上限自动截断：ISO9660 30 字符 / Joliet 16 字符）；go-ole 对 `*VARIANT` 只按引用传、不支持 VT_UNKNOWN，而数组参数（MultisessionInterfaces）与流参数（Write / AddFile）要求按值——`invokeRaw` 按值走同一条 IDispatch::Invoke 通道（自带 DISPPARAMS 镜像结构）。**按声明顺序数虚函数表槽位不可靠**（实测偏到别的方法、返回 IMPORT_SEEK_FAILURE），已弃用。
+3. **空白的一次写入盘上 `put_MultisessionInterfaces` 返回 IMAPI_E_IMPORT_SEEK_FAILURE（0xC0AAB156）**——官方文档注明的预期行为，容忍继续。
+4. **卷标**：`ImportedVolumeName` 对 UDF 盘带 dstring 压缩标识前导字节（实测读回 `"\bZPACK"`），原样写回被判「含无效字符」（IMAPI_E_INVALID_VOLUME_NAME）；且导入后镜像里卷标是空的，不显式沿用则新区段变时间戳卷标（实测盘名变成 `2026.11.24_0118`）→ `sanitizeVolumeName`（8 位剥前导；16 位按 UDF 规格大端还原，**未实盘验证**）+ `applyVolumeName`。
+5. **状态语义**：封盘的一次写入盘对外报只读介质类型并带写保护位（2026-11-24 真机实测封盘的 DVD-R：类型 DVD-ROM、状态 0xA000 = 写保护|不支持——**不含封盘位**，我曾把它误读成含封盘位）→ 「只读类型 + 写保护位」判为已封盘 / 只读（与压盘无法区分），只有可擦写类型上的写保护位才报写保护；没放盘时读介质类型报 E_IMAPI_RECORDER_MEDIA_NO_MEDIA（0xC0AA0202）而非空值 → 归一成 no-media。
+6. **首区段被引擎填充到约 193MB**（DVD-ROM 兼容模式，同资源管理器母盘式）：31MB 镜像实测刻了约 100 秒，下一可写位置在 93952 扇区。写速度表单位 kB/s（DVD-R 实测 `[5410 2705]` ≈ 4×/2×），`SetWriteSpeed` 单位是扇区/秒；CD 1×=176.4 kB/s → 基准按 0.1 kB/s 记，否则档位边界错位。
+7. **封盘后不弹出时 Windows 仍挂载上一区段的视图**（卷标、文件列表都是旧的；强制独占访问卸载再挂载也不刷新）——封盘内容须**重新进盘后校验**。原始扇区读免管理员可行（Go `os.Open` 打开 `\\.\E:` 设备路径；.NET FileStream 拒绝设备路径），但也只读得到系统已识别的区段范围。
+8. **验收脚本防真实刻录**：verify.sh 检出刻录机时跳过多文件真实写入用例（刻录不可逆；无刻录机的机器上用例数不变）。
+9. **光盘名称规则（2026-11-24 用户定案）**：名称属于最后一个区段——空白盘随意起；已有内容的盘缺省沿用、显式 `--volid` 才改；已封盘不能改。缺省名：单个目录输入用目录名，其余形态（镜像 / 多输入 / 单文件）沿用旧规则取当前目录名（`burnResolveVolumeName`）。**Windows 上中文名可用**——系统镜像库原生接受 Unicode（探针实测「备份」→ UDF/Joliet 原样、ISO9660 层变 `__`，Windows 读 UDF 故显示中文）；显式与缺省名都过 `burnWindowsVolumeName` 温和规范化：控制字符丢弃（引擎拒收）、路径非法字符换下划线（引擎会原样留在 UDF 卷标里）、截 32 字符（引擎不报错但 Joliet 截 16 / ISO9660 截 32）。mac/Linux 显式 `--volid` 仍原样交外部工具（旧行为），缺省名过 `burnSanitizeVolid`（只留 A-Z0-9_）。**GUI 刻录页「光盘名称」行**（`ui/gui/burnname.go` 的 `planBurnVolumeName` 纯函数）：仅空白盘（或勾了「先擦空再烧」）出输入框，其余状态一句话说明——非空白态不摆灰掉的输入框；起刻只在可改名且非空时传 `--volid`（`burnArguments` 纯函数）。输入框的占位文字不参与无头 `Find`：界面测试按标签位置点击、用 `TextInputActive` 判断是否落进输入框。
+10. **GUI 无头测试在 Windows 实测机上原本整套挂死**（2026-11-24）：`Service.BurnDevices` 的「未找到引擎」分支是同步回调，刻录页回调里的 `mygo.RunOnMain` 在无头环境永远等不到主循环——`TestLeadSentenceStaysReadableAtMinWidth` 的刻录页目标没预设 `burnQueried`，必挂（10 分钟超时被杀）。`go test` 程序在临时目录，`repoBin` 向上找不到仓库 bin，无头测试里引擎恒「未找到」。修法：回调一律异步。同批修掉 `TestConvertSummary` 在 Windows 的失败（测试把带反斜杠的路径直接拼进 JSON 串，整段信封解析失败）。修后 GUI 全套 32 过 / 4 跳过——跳过的是需要仓库 `bin/zpack` 的引擎生命周期测试（Windows 产物名带 .exe，`repoEngine` 没认）。**教训：Service 层给页面的回调必须在后台协程里给**（页面回调一律经 RunOnMain 投递）。
+真机验证记录（盘上文件逐个比对 SHA-256）：旧盘——区段 1（ISO 镜像 31MB）、区段 2（追加目录 15MB，导入 4 个旧文件）全部一致，最后一轮封盘未复核；新盘——区段 A（目录 6.1MB）一致，区段 B（两散文件 + 封盘 + 弹出）**重新进盘后 5 个文件全部一致**、卷标沿用 ZPACK、原始扇区可见两个区段各自的描述符（16 / 93968 扇区）。
+**未结项清单（2026-11-24 收尾时点——全部未完成；接手刻录相关改动先看这里）**：
+1. **【未做·被卡】中文名光盘与「目录名作缺省名」的真盘实刻**。已验到的程度：引擎对名称的接受规则在内存镜像上探针验证过（中文名可用、超长自截、控制字符拒收），CLI 规范化与 GUI 传参只有单测 / 无头测试。卡点：两张测试盘已封盘；之后放进光驱的两张新盘光驱认不出——引擎报 E_IMAPI_RECORDER_MEDIA_INCOMPATIBLE（0xC0AA0203「介质不兼容或为未知的物理格式」）、刻录机 CurrentProfiles 为空、READ_TOC 报「设备未就绪」、Windows MediaLoaded=False，连续观察半分钟不变；疑为盘型超出光驱能力（本机不支持蓝光）/ 放反 / 未卡牢，待用户检查。**拿到能识别的空白盘后，一张盘验三件事**：①单个中文目录名输入、不给 `--volid` → 盘名 = 目录名；②追加区段不给 `--volid` → 中文名保持不变（同时验证 `sanitizeVolumeName` 的 16 位 dstring 大端还原分支——目前只有单元测试）；③追加时显式 `--volid` → 改名生效。每步校验法同上（Windows 读 E:\ 比对哈希与卷标；封盘后须重新进盘再读）。
+2. **【未做】`--blank` 擦除路径未实跑**（手头没有可擦写盘）。连带风险：封盘后的可擦写盘若也被报成 ROM 类型，按类型表判的「可擦写」会失效——拿到 RW 盘后改为问引擎 `IDiscFormat2Erase::IsCurrentMediaSupported`。
+3. **【未做】mac/Linux 刻录路径本次未实跑**（只做了交叉编译与 vet）。这两个平台上缺省光盘名仍过 `burnSanitizeVolid`（中文名会变成 ZPACK），GUI 名称行的字符集提示也只做了交叉编译检查、未在真机看过。
+4. **【未做】刻录百分比进度未接入**（需自建 COM 事件接收器；现为每 5 秒一条心跳日志）。
+5. **【未做】live 优盘模式（UDF 包写入）未接入**——`--mode live` 在各平台均明确拒绝（Windows 计划走 IDiscFormat2RandomWrite）。
+6. **【建议·待拍板】盘读不出时提示误导**：引擎侧只给 `status=unknown` + note；GUI 刻录页显示「需空白光盘 / 放入空白光盘后可以设置名称」，而盘已经在光驱里；设备下拉也没有状态后缀。建议新增「无法识别」状态并给排查提示（盘型 / 放反 / 未卡牢 / 划伤）。
+7. **【建议·待拍板】盘已封盘或没放盘时 GUI 主按钮「刻录」仍可点**，点了才由引擎报错。未改的原因：要先想清 mac/Linux 的状态判定差异，避免误拦。
+8. **【未复核】第一张测试盘的最后一轮**（两散文件 + 封盘）没在重新进盘后复核；同机制的第二张盘已验证通过，风险低。
+9. **【环境缺口】GUI 测试在 Windows 上有 4 项跳过**：3 项引擎生命周期测试找不到仓库 `bin/zpack`（Windows 产物名带 .exe，`repoEngine` 没认）；1 项字体探针按需运行。
+10. **【未做】完整版产物未重铸**：`bin/zpack.exe` 仍是 2026-11-09 的旧构建，本次全部实测用的是纯 Go 开发版 `bin/zpack-dev.exe`。按「bin/zpack 恒为完整版」定案，交付前须跑 `build_cli/windows/build.sh` 重铸。
+
+真机只读回归：`ZPACK_IMAPI2_LIVE_TEST=1 go test ./internal/imapi2 -run TestLiveReadOnly`（不写盘）。
+
 **✅ Windows 首实测（2026-11-08，Win11 26200 x64 + Git Bash + Go 1.27.3 windows/amd64）**：纯 Go 构建通过（`CGO_ENABLED=0 go build` → 16.99MB/-s -w）；`go vet` 三平台（windows/linux/darwin）全过；`go test ./...` 全绿。**修复 7 个 Windows 特有潜伏 bug（mac 上全部无症状）**：
 1. **tar 读侧句柄泄漏**（`core/tar.go` openTarStream）：底层流开了只关解压层不关本体——Windows 删被占文件失败暴露（TempDir 清理报「being used by another process」）；closeChain 链式关闭（解压层→底层流）。
 2. **分卷创建「先删后关」**（`core/core.go` splitArchiveIntoVolumes）：`defer Close` 要到 return 后才执行，删原档时句柄还开着 → Windows 拒删；显式先 Close 再 Remove。教训同上——**Windows 上「关闭先于删除」是硬约束，defer 顺序不算数**。
@@ -293,7 +320,7 @@ build_cli/            ← 平台产线：mac/（ffmpeg_static.sh 全静态配料
 cli/                  ← CLI 命令面（顶层产品面）：root.go（装配）+ commands.go（旗标解析校验 → 调 core → 输出契约呈现）
 ui/                   ← UI 产品面（顶层）：聚合一切构建 UI 的产物——GUI 壳（gui/）+ 右键菜单（right-click/：macOS Finder/Windows Explorer/Linux 文件管理器）；全部是"启动器"，经 CLI 二进制契约干活（见 ui/doc.go 架构铁律）
 cmd/zpack/            ← CLI 二进制入口（薄 main；未来并排 cmd/zpack-ui）
-internal/             ← 纯管道：cmdutil（AppName + 旗标小件）+ output（输出契约层；cli 专用，core 禁用）
+internal/             ← 纯管道：cmdutil（AppName + 旗标小件）+ output（输出契约层；cli 专用，core 禁用）+ 引擎进程内直调层（ffmpegcli / sevenzipcli）+ imapi2（Windows 刻录引擎胶水——按方法名调系统自带 IMAPI2，见「Windows 刻录后端」节）
 verify/verify.sh      ← 行为门禁（纯 Go）；verify-media.sh ← 媒体门禁（需完整版）
 docs/                 ← 研究资料目录（本地私藏——逆向研究文档不入库）
 ```
