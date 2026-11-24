@@ -1085,6 +1085,7 @@ GUI 没有脚本门禁：`verify/verify.sh`、`verify-media.sh`、`verify-image.
 | `ui/gui/burnstate_test.go` | `TestBurnBlockReason` | 主按钮拦截规则（16 例：9 种状态、擦除放行、认不出不因擦除放行、mac / Linux 的空串与原样短语不拦） |
 | | `TestBurnMediaSuffix` | 设备下拉括注（12 例，含认不出不加括注） |
 | | `TestBurnBlockedByMedia` | 11 种状态下主按钮有手型与否与规则一致（置灰 = 去手型） |
+| | `TestBurnBlankResetsOnDeviceSwitch` | 换选刻录机时「先擦空再烧」复位（同一台上保持打开；去掉修复会失败） |
 | `ui/gui/burnname_test.go` | `TestPlanBurnVolumeName` | 光盘名称行规则（13 例：可否改名、副标、占位、是否传参、字符集提示） |
 | | `TestBurnArguments` | 刻录命令的参数拼装（名称空白不传 `--volid`） |
 | | `TestBurnVolumeNameRow` | 空白盘出输入框且能输入、输入框撑满控件列；已有内容的盘 / 没放盘 / 状态异常时不出输入框、有对应说明；光驱认不出时显示引擎的排查提示（引擎没带提示用缺省句；别的状态不因 note 改写） |
@@ -1237,3 +1238,4 @@ ZPACK_GUI_FONT_PROBE=1 go test -run TestFontProbe -count=1 -v .   # 字体探针
 | 2026-11-24 | 刻录页新增「写入提醒」行：镜像是刻录内容、所选盘已有内容（`appendable`）且没勾先擦空时，在主按钮上方提醒「不与原有文件合并」；只提醒不拦（2.6 规则四、6.7、8.1） | 510fe45 |
 | 2026-11-24 | 刻录页「写入模式」提示按平台如实区分（提成纯函数 `burnModeHint`）：macOS 的「可追加」不再说「还能继续追加」，改为说明 macOS 不会把新内容并入原有文件；Windows / Linux 文案不变。写入提醒行一节补充 macOS 的处理（2.6、8.1） | f9cff89 |
 | 2026-11-24 | 压缩台补「选择文件夹…」按钮（2026-11-24 用户定案）：空态 hero 与引导行各一处，与刻录页共用 `leadDirPickButton`；刻录空态 hero 也补上同一个按钮。压缩台引导行改为放不下才换行（多一个按钮后最小窗口里不换行会把句子挤成竖条）。反馈矩阵 73 → 76（2.3、2.4、8.1、8.4） | 39b71c4 |
+| 2026-11-24 | 修复：换选刻录机时「先擦空再烧」不随设备复位，`--blank` 会照传给另一台里没打算擦的盘——设备下拉之后调 `syncBurnDeviceSwitch` 复位；回归用例 `TestBurnBlankResetsOnDeviceSwitch`（6.6、8.1、9.2 #6）。不在当日用户拍板的 11 条之内，属于动到刻录页时顺手修的缺陷 | b43c013（代码与用例，随并行会话的 PDF 编辑器提交进了库）、9dca7b0（本 spec） |
