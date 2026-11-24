@@ -196,25 +196,31 @@ func NewService() *Service {
 	return &Service{}
 }
 
-// zpackPath 引擎定位：环境变量 > 自身 bundle Resources（打包态）> 仓库 bin（开发态）> FinderSync 宿主内嵌引擎（本机兜底）。
+// ENGINE_BINARY_NAMES 引擎可执行文件的名字，按优先级。2026-11-24 用户定案引擎改名 zpack-cli：GUI 自己叫
+// zpack、引擎叫 zpack-cli，两边不再同名——「与 GUI 同目录」这个候选从此不会等于 GUI 自己，装到仓库之外的
+// GUI 也能靠它找到引擎。旧名 zpack 留作兜底：改名之前装出去的包、之前铸的产物照常能用
+var ENGINE_BINARY_NAMES = []string{"zpack-cli", "zpack"}
+
+// DEV_ENGINE_BINARY_NAME 开发期快速循环的产物名（纯 Go 构建）。只在「仓库 bin」这一个位置、排在最后才认它：
+// 完整版才是交付物；从源码跑开发版 GUI 时手边往往只有它（AGENTS.md「双层开发节奏」）
+const DEV_ENGINE_BINARY_NAME = "zpack-dev"
+
+// ENGINE_EXECUTABLE_SUFFIX Windows 可执行文件的扩展名——Windows 产物带它，裸名不存在
+const ENGINE_EXECUTABLE_SUFFIX = ".exe"
+
+// FINDER_MENU_HOST_RESOURCES FinderSync 宿主（zpack Finder Menu.app）的资源目录：它内嵌了一份引擎，装机后的兜底
+const FINDER_MENU_HOST_RESOURCES = "/Applications/zpack Finder Menu.app/Contents/Resources"
+
+// ENGINE_REPO_BIN_SEARCH_DEPTH 从 GUI 可执行文件所在目录起，向上找「仓库 bin」的层数
+const ENGINE_REPO_BIN_SEARCH_DEPTH = 5
+
+// zpackPath 引擎定位：环境变量 > 与 GUI 同目录 > 自身 bundle 的 Resources（打包态）> 仓库 bin（开发态）>
+// FinderSync 宿主内嵌引擎（装机兜底）。候选由 engineCandidates 按顺序给出，取第一个过检查的
 func (service *Service) zpackPath() string {
 	service.once.Do(func() {
 		selfPath, _ := os.Executable()
-		engineName := "zpack"
-		if runtime.GOOS == "windows" {
-			engineName = "zpack.exe" // Windows 产物带扩展名——裸名 bin/zpack 不存在
-		}
-		candidates := []string{
-			os.Getenv("ZPACK_BIN"),
-			exeSibling(engineName),     // 开发态平铺布局（引擎与 GUI 同目录）
-			bundleResource(engineName), // 打包态：自身 .app Contents/Resources 内嵌引擎
-			repoBin(engineName),        // 开发态仓库 bin——必须先于 /Applications：装机引擎
-			// 可能旧于仓库（m05014 血案：dev GUI 拿旧引擎静默
-			// 覆盖桌面密钥，引擎覆盖守卫形同虚设）
-			"/Applications/zpack Finder Menu.app/Contents/Resources/zpack", // FinderSync 宿主内嵌引擎（装机兜底）
-		}
-		for _, candidate := range candidates {
-			// 自体防护：打包态 GUI 可执行名恰为 zpack，exeSibling 会返回自己——
+		for _, candidate := range engineCandidates(selfPath, os.Getenv("ZPACK_BIN"), runtime.GOOS) {
+			// 自体防护：拿旧名 zpack 时，打包态的 GUI 可执行名恰好也是 zpack，同目录候选会返回自己——
 			// 不挡住则把自己当引擎 exec，引擎命令变成再开一个 GUI 窗口
 			if candidate == "" || candidate == selfPath || !isExecutable(candidate) {
 				continue
@@ -226,32 +232,52 @@ func (service *Service) zpackPath() string {
 	return service.binary
 }
 
-// bundleResource 自身 .app 包内 Resources 伙伴文件（非打包形态返回空串语义由 isExecutable 兜住）。
-func bundleResource(name string) string {
-	exePath, err := os.Executable()
-	if err != nil {
-		return ""
+// engineCandidates 引擎的候选路径，按优先级（纯函数，规则可单测）。每个位置先找新名 zpack-cli、再找旧名 zpack
+// （新名在所有位置都排在旧名之前）；「仓库 bin」最后还认开发版 zpack-dev。仓库 bin 整体排在 FinderSync 宿主之前：
+// 装机位的引擎可能旧于仓库（m05014 血案：dev GUI 拿旧引擎静默覆盖桌面密钥，引擎覆盖守卫形同虚设）。
+// 找不到的候选是空串，由调用方跳过
+func engineCandidates(selfPath string, envValue string, goos string) []string {
+	names := engineBinaryNames(goos)
+	candidates := []string{envValue}
+	selfDir := filepath.Dir(selfPath)
+	resourcesDir := filepath.Join(filepath.Dir(selfDir), "Resources")
+	for _, name := range names {
+		candidates = append(candidates,
+			filepath.Join(selfDir, name),      // 开发态平铺布局：引擎与 GUI 同目录
+			filepath.Join(resourcesDir, name)) // 打包态：自身 .app 的 Contents/Resources
 	}
-	return filepath.Join(filepath.Dir(filepath.Dir(exePath)), "Resources", name)
+	repoNames := append(append([]string{}, names...), engineFileName(DEV_ENGINE_BINARY_NAME, goos))
+	for _, name := range repoNames {
+		candidates = append(candidates, findRepoBin(selfDir, name))
+	}
+	for _, name := range names {
+		candidates = append(candidates, filepath.Join(FINDER_MENU_HOST_RESOURCES, name))
+	}
+	return candidates
 }
 
-// exeSibling 可执行文件同目录的伙伴文件。
-func exeSibling(name string) string {
-	exePath, err := os.Executable()
-	if err != nil {
-		return ""
+// engineBinaryNames 当前平台上引擎可执行文件的文件名（按优先级）
+func engineBinaryNames(goos string) []string {
+	names := make([]string, 0, len(ENGINE_BINARY_NAMES))
+	for _, name := range ENGINE_BINARY_NAMES {
+		names = append(names, engineFileName(name, goos))
 	}
-	return filepath.Join(filepath.Dir(exePath), name)
+	return names
 }
 
-// repoBin 开发态：本仓库产线产物。
-func repoBin(name string) string {
-	exePath, err := os.Executable()
-	if err != nil {
-		return ""
+// engineFileName 引擎的文件名：Windows 产物带 .exe
+func engineFileName(name string, goos string) string {
+	if goos == "windows" {
+		return name + ENGINE_EXECUTABLE_SUFFIX
 	}
-	dir := filepath.Dir(exePath)
-	for depth := 0; depth < 5; depth++ {
+	return name
+}
+
+// findRepoBin 开发态：从 startDir 起（含）向上最多 ENGINE_REPO_BIN_SEARCH_DEPTH 层，各层的 bin/<名字>；
+// 找不到返回空串
+func findRepoBin(startDir string, name string) string {
+	dir := startDir
+	for depth := 0; depth < ENGINE_REPO_BIN_SEARCH_DEPTH; depth++ {
 		candidate := filepath.Join(dir, "bin", name)
 		if isExecutable(candidate) {
 			return candidate

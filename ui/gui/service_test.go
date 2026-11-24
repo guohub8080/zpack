@@ -191,15 +191,13 @@ func waitTask(t *testing.T, task *Task) TaskView {
 	}
 }
 
-// repoEngine 是仓库产线的完整版引擎；没有就跳过依赖它的用例。
+// repoEngine 仓库里能找到的引擎，与 GUI 的查找同一优先级：产线的 zpack-cli（完整版）> 旧名的 zpack（改名
+// 之前铸的完整版）> 开发版 zpack-dev；都没有就跳过依赖它的用例。
 // Windows 产物名带 .exe——此前只认裸名 bin/zpack，Windows 上三项引擎用例恒跳过（2026-11-24 补）
 func repoEngine() string {
-	candidates := []string{filepath.Join("..", "..", "bin", "zpack")}
-	if runtime.GOOS == "windows" {
-		candidates = append(candidates, filepath.Join("..", "..", "bin", "zpack.exe"))
-	}
-	for _, candidate := range candidates {
-		if isExecutable(candidate) {
+	names := append(engineBinaryNames(runtime.GOOS), engineFileName(DEV_ENGINE_BINARY_NAME, runtime.GOOS))
+	for _, name := range names {
+		if candidate := filepath.Join("..", "..", "bin", name); isExecutable(candidate) {
 			return candidate
 		}
 	}
@@ -210,7 +208,7 @@ func repoEngine() string {
 func TestTaskLifecycleWithEngine(t *testing.T) {
 	engine := repoEngine()
 	if engine == "" {
-		t.Skip("仓库 bin/zpack 不存在，跳过")
+		t.Skip("仓库 bin 里没有引擎（zpack-cli / zpack / zpack-dev），跳过")
 	}
 	service := &Service{binary: engine}
 	src := t.TempDir()
@@ -237,7 +235,7 @@ func TestTaskLifecycleWithEngine(t *testing.T) {
 func TestTaskCancelWithEngine(t *testing.T) {
 	engine := repoEngine()
 	if engine == "" {
-		t.Skip("仓库 bin/zpack 不存在，跳过")
+		t.Skip("仓库 bin 里没有引擎（zpack-cli / zpack / zpack-dev），跳过")
 	}
 	service := &Service{binary: engine}
 	src := t.TempDir()
@@ -290,7 +288,7 @@ func TestSamePaths(t *testing.T) {
 func TestRunToolStdinHyphen(t *testing.T) {
 	engine := repoEngine()
 	if engine == "" {
-		t.Skip("仓库 bin/zpack 不存在，跳过")
+		t.Skip("仓库 bin 里没有引擎（zpack-cli / zpack / zpack-dev），跳过")
 	}
 	service := &Service{binary: engine}
 	done := make(chan string, 1)
@@ -311,5 +309,79 @@ func TestRunToolStdinHyphen(t *testing.T) {
 		t.Fatalf("引擎报错: %s", errMsg)
 	case <-time.After(30 * time.Second):
 		t.Fatal("30 秒未返回")
+	}
+}
+
+// TestEngineCandidates 引擎候选路径的优先级（2026-11-24 用户定案：引擎改名 zpack-cli，旧名 zpack 兜底）：
+// 环境变量 > 与 GUI 同目录 > 自身 .app 的 Resources > 仓库 bin > FinderSync 宿主；新名在所有位置都排在旧名之前；
+// 仓库 bin 最后还认开发版 zpack-dev。改名的由头：GUI 与引擎不再同名，「与 GUI 同目录」不再等于 GUI 自己
+func TestEngineCandidates(t *testing.T) {
+	repo := t.TempDir()
+	guiDir := filepath.Join(repo, "ui", "gui", "build", "windows-amd64")
+	if err := os.MkdirAll(guiDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"zpack-cli.exe", "zpack.exe", "zpack-dev.exe"} {
+		if err := os.WriteFile(filepath.Join(repo, "bin", name), []byte("engine"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	selfPath := filepath.Join(guiDir, "zpack.exe")
+	join := func(elements ...string) string { return filepath.Join(elements...) }
+	host := func(name string) string { return join(FINDER_MENU_HOST_RESOURCES, name) }
+
+	// 三种引擎都在仓库 bin 里：新名排最前，其后才是旧名，开发版压轴
+	got := engineCandidates(selfPath, join(repo, "env-engine.exe"), "windows")
+	want := strings.Join([]string{
+		join(repo, "env-engine.exe"),
+		join(guiDir, "zpack-cli.exe"), join(guiDir, "..", "Resources", "zpack-cli.exe"),
+		join(guiDir, "zpack.exe"), join(guiDir, "..", "Resources", "zpack.exe"),
+		join(repo, "bin", "zpack-cli.exe"), join(repo, "bin", "zpack.exe"), join(repo, "bin", "zpack-dev.exe"),
+		host("zpack-cli.exe"), host("zpack.exe"),
+	}, "|")
+	if strings.Join(got, "|") != want {
+		t.Fatalf("候选顺序不符:\n got: %v\nwant: %s", got, strings.Split(want, "|"))
+	}
+	if got[1] == selfPath {
+		t.Fatal("新名的同目录候选不应等于 GUI 自己")
+	}
+	if got[3] != selfPath {
+		t.Fatal("旧名的同目录候选恰好是 GUI 自己（自体防护要挡住的那一个）——改名的由头")
+	}
+
+	// 没给环境变量：首位是空串，由调用方跳过
+	if first := engineCandidates(selfPath, "", "windows")[0]; first != "" {
+		t.Fatalf("没给 ZPACK_BIN 时首位应为空串，得到 %q", first)
+	}
+
+	// 仓库里只有旧名：新名那一项落空（空串），旧名照常找得到
+	if err := os.Remove(join(repo, "bin", "zpack-cli.exe")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(join(repo, "bin", "zpack-dev.exe")); err != nil {
+		t.Fatal(err)
+	}
+	got = engineCandidates(selfPath, "", "windows")
+	if got[5] != "" || got[6] != join(repo, "bin", "zpack.exe") || got[7] != "" {
+		t.Fatalf("只有旧名时仓库 bin 三项应为 [空, 旧名, 空]，得到 %v", got[5:8])
+	}
+
+	// 非 Windows 平台文件名不带扩展名；向上最多找 5 层，再深就找不到
+	deep := filepath.Join(repo, "a", "b", "c", "d", "e", "f", "gui")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	names := engineBinaryNames("darwin")
+	if strings.Join(names, "|") != "zpack-cli|zpack" {
+		t.Fatalf("非 Windows 的引擎文件名应为 [zpack-cli zpack]，得到 %v", names)
+	}
+	if found := findRepoBin(guiDir, "zpack.exe"); found != join(repo, "bin", "zpack.exe") {
+		t.Fatalf("向上 4 层应找得到仓库 bin，得到 %q", found)
+	}
+	if found := findRepoBin(filepath.Join(deep, "zpack"), "zpack.exe"); found != "" {
+		t.Fatalf("超出 5 层不应找到，得到 %q", found)
 	}
 }
