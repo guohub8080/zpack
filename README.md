@@ -21,6 +21,8 @@ go build -ldflags "-s -w" -o bin/zpack-cli ./cmd/zpack
 bash verify/verify.sh   # 行为门禁 91/91
 ```
 
+引擎的可执行文件叫 `zpack-cli`（2026-11-24 改名，与同名的 GUI 区分开）。本文档与 `specs/` 里写作 `zpack …` 的命令指的就是它——想直接敲 `zpack`，自己做个别名或改名即可。
+
 目录分层（产品三面顶层平铺）：`core/` 核心算法引擎（纯库）· `cli/` 命令面 · `ui/` UI 面（GUI 壳 + 右键菜单，路线图 #6；统一经 CLI 契约干活）；`cmd/zpack/` 二进制入口。
 
 规范与路线图见 [AGENTS.md](AGENTS.md)。

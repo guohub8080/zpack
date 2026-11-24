@@ -391,28 +391,31 @@ GUI 是薄壳：所有数据都经 `zpack` 二进制的 stdout JSON 契约，引
 
 ### 3.2 引擎二进制的查找顺序
 
-`Service.zpackPath`，ui/gui/service.go:200-227。按顺序取**第一个**通过检查的候选：
+`Service.zpackPath`，ui/gui/service.go；候选由纯函数 `engineCandidates` 按顺序给出，取**第一个**通过检查的。
+
+**引擎叫 `zpack-cli`**（2026-11-24 用户定案改名）：GUI 自己叫 `zpack`，引擎叫 `zpack-cli`，两边不再同名。每个位置都先找新名 `zpack-cli`、再找旧名 `zpack`——改名之前装出去的包、之前铸的产物照常能用。
 
 | 顺序 | 候选 | 用途 |
 |---|---|---|
 | 1 | 环境变量 `ZPACK_BIN` | 显式指定；无头测试用它指向一个替身文件 |
-| 2 | GUI 可执行文件**同目录**的 `zpack`（Windows 是 `zpack.exe`） | 开发态平铺布局 |
-| 3 | GUI 可执行文件**上两级**目录下的 `Resources/zpack-cli(.exe)` | 打包态：`<App>.app/Contents/MacOS/<可执行文件>` → `<App>.app/Contents/Resources/zpack-cli` |
-| 4 | 从 GUI 可执行文件所在目录起**向上最多 5 层**，各层的 `bin/zpack-cli(.exe)` | 开发态：仓库产线产物 |
-| 5 | `/Applications/zpack Finder Menu.app/Contents/Resources/zpack-cli` | 装机兜底：FinderSync 宿主里内嵌的引擎（路径写死，不带 `.exe`） |
+| 2 | GUI 可执行文件**同目录**的 `zpack-cli`（Windows 是 `zpack-cli.exe`），其次旧名 `zpack(.exe)` | 开发态平铺布局；**Windows / Linux 安装包里的引擎也在这里**（`inject-engine.sh` 经 `resources/<平台>/` 随包分发，见 7.4） |
+| 3 | GUI 可执行文件**上两级**目录下的 `Resources/zpack-cli(.exe)`，其次 `Resources/zpack(.exe)` | 打包态：`<App>.app/Contents/MacOS/<可执行文件>` → `<App>.app/Contents/Resources/zpack-cli` |
+| 4 | 从 GUI 可执行文件所在目录起**向上最多 5 层**，各层的 `bin/zpack-cli(.exe)`、`bin/zpack(.exe)`，最后 `bin/zpack-dev(.exe)` | 开发态：仓库产线产物（新名 → 旧名），都没有才拿开发版的纯 Go 构建 |
+| 5 | `/Applications/zpack Finder Menu.app/Contents/Resources/zpack-cli`，其次同目录的 `zpack` | 装机兜底：FinderSync 宿主里内嵌的引擎（路径写死，不带 `.exe`） |
 
 规则：
 
 - 整个进程只解析一次（`sync.Once`），之后不变。
-- 每个候选要过三关（ui/gui/service.go:216-224）：非空；**不等于 GUI 自己的可执行文件路径**；可执行——文件存在且不是目录，非 Windows 平台还要有执行位（Windows 没有执行位语义，存在即可，ui/gui/service.go:264-273）。`ZPACK_BIN` 也受这三关约束。
-- 「不等于自己」是自体防护：打包态的 GUI 可执行文件名恰好也是 `zpack`，同目录候选会返回它自己，不挡住就会把自己当引擎再 exec，引擎命令变成再开一个 GUI 窗口（ui/gui/service.go:217-219）。
-- 第 4 项必须排在第 5 项之前：装机位的引擎可能比仓库里的旧，开发版 GUI 拿旧引擎跑过一次静默覆盖桌面密钥的事故（ui/gui/service.go:211-213）。
-- 全部落空 → 空串，即「未找到引擎」：任务类调用返回 nil，界面 toast「未找到 zpack 引擎——请到「设置」查看引擎位置」（ui/gui/main.go:4960-4964）；短命令回调拿到「未找到 zpack 引擎」；设置页引擎路径行显示红字提示。
+- 每个候选要过三关（`zpackPath`）：非空；**不等于 GUI 自己的可执行文件路径**；可执行——文件存在且不是目录，非 Windows 平台还要有执行位（Windows 没有执行位语义，存在即可）。`ZPACK_BIN` 也受这三关约束。
+- 「不等于自己」是自体防护，留给旧名：拿旧名 `zpack` 找同目录时，打包态的 GUI 可执行文件名恰好也是 `zpack`，候选会返回它自己，不挡住就会把自己当引擎再 exec，引擎命令变成再开一个 GUI 窗口。新名 `zpack-cli` 不会撞上这一条——这正是改名的由头（9.2 第 1 条）。
+- 新名在所有位置都排在旧名之前：只要任何位置有 `zpack-cli`，就不会再去用旧名的。
+- 第 4 项（仓库 bin）必须排在第 5 项之前：装机位的引擎可能比仓库里的旧，开发版 GUI 拿旧引擎跑过一次静默覆盖桌面密钥的事故。
+- 找不到的候选是空串，跳过。全部落空 → 空串，即「未找到引擎」：任务类调用返回 nil，界面 toast「未找到 zpack 引擎——请到「设置」查看引擎位置」；短命令回调拿到「未找到 zpack 引擎」；设置页引擎路径行显示红字提示。
 
-两个由代码直接推出来、需要知道的后果：
+两个需要知道的后果：
 
-- **Windows 上第 2 项永远命不中**。Windows 的 GUI 产物名就是 `zpack.exe`（`ui/gui/build/windows-amd64/zpack.exe`），与引擎同名，同目录候选恒等于自己、被自体防护跳过。所以在 Windows 上引擎只能靠 `ZPACK_BIN` 或仓库的 `bin/zpack-cli.exe` 找到。而 Windows 安装器（mygo 自带的 NSIS 安装器，按用户装到 `%LocalAppData%\Programs\zpack\`）里只有 GUI 自己和 `resources/` 的副本，不含引擎。合起来的结果：**用安装器装到仓库之外后，GUI 找不到引擎**，除非设 `ZPACK_BIN`。仓库里没有 Windows 侧的引擎注入或安装脚本（`install.sh` 只有 mac 版）。【待确认】是否有仓库之外的做法在用（比如手工拷引擎、改 GUI 可执行文件名）。
-- **`go test` 里引擎恒为「未找到」**。测试程序在系统临时目录，向上 5 层碰不到仓库的 `bin`；所以依赖真实引擎的三个用例靠 `repoEngine()` 直接拼 `../../bin/zpack-cli(.exe)`（ui/gui/service_test.go:194-207），其余用例用 `ZPACK_BIN` 指向一个替身文件。
+- **Windows 安装包现在能自带引擎**（2026-11-24 起）。做法：`bash ui/gui/inject-engine.sh` 把产线的 `bin/zpack-cli.exe` 拷进 `ui/gui/resources/windows-amd64/`，再 `go tool mygo build`——mygo 把按平台命名的资源目录拷到 GUI 可执行文件旁边并打进安装器（本机实测：`resources/windows-amd64/zpack-cli.exe` 出现在 `build/windows-amd64/` 里），GUI 启动后按第 2 项找到它。引擎不入库（`.gitignore` 挡 `ui/gui/resources/*/zpack-cli*`）。Linux 同理（`inject-engine.sh linux-amd64`）。macOS 不走这条：引擎在 mygo 签名之后才注入，见 `install.sh`。改名之前这件事做不成——引擎与 GUI 同名，同目录候选恒等于自己。
+- **`go test` 里默认引擎是「未找到」**。测试程序在系统临时目录，向上 5 层碰不到仓库的 `bin`；所以依赖真实引擎的三个用例靠 `repoEngine()` 直接拼 `../../bin/<名字>`（`zpack-cli` → `zpack` → `zpack-dev`，ui/gui/service_test.go），其余用例用 `ZPACK_BIN` 指向一个替身文件。候选顺序本身由 `TestEngineCandidates` 用临时目录逐项断言。
 
 ### 3.3 调用的命令与旗标
 
@@ -1044,7 +1047,7 @@ go tool mygo build -skip-installer                                   # Windows �
 **mac 装机**：`bash ui/gui/install.sh`（ui/gui/install.sh:14-33）。
 
 1. `go tool mygo build`。
-2. 要求仓库的 `bin/zpack-cli` 存在且可执行，否则中止。
+2. 要求仓库的 `bin/zpack-cli`（旧名 `bin/zpack` 也认）存在且可执行，否则中止。
 3. 把引擎拷进 `.app/Contents/Resources/zpack-cli`，`xattr -cr` 清掉资源叉，adhoc 重签并校验——引擎是在 mygo 签名之后才注入的，不重签封装出来的包封印是坏的。
 4. 删掉旧的 `/Applications/zpack.app`，`ditto` 新包过去，再校验一次。
 
@@ -1052,7 +1055,8 @@ go tool mygo build -skip-installer                                   # Windows �
 
 **刷新引擎**：引擎代码动过之后，`bash ui/right-click/macos/refresh-engine.sh` 把新铸的 `bin/zpack-cli` 换进两个装机位并重签——GUI 本体 adhoc 签名；Finder 宿主用 Apple Development 证书 + 硬化运行时重签，所以这台机器的钥匙串里必须有证书。脚本最后还会检查扩展当前生效的路径是不是 `/Applications` 下的真身（ui/right-click/macos/refresh-engine.sh:20-45）。
 
-**Windows**：仓库里只有 `go tool mygo build` 的产物，没有引擎注入或装机步骤，安装器里不含引擎（3.2）。`resources/windows-amd64/` 这样的按平台资源目录是现成的随包分发通道，但目前没用上；即便用上也有两个障碍——引擎与 GUI 的可执行文件同名 `zpack.exe`，且查找顺序里没有对应的候选（9.2 第 1 条）。
+**Windows / Linux：引擎随安装包分发**（2026-11-24 起）：`bash ui/gui/inject-engine.sh`（跨平台打包时给 mygo 的平台目录名，如 `inject-engine.sh linux-amd64`）把产线的 `bin/zpack-cli[.exe]` 拷进 `ui/gui/resources/<平台>-<架构>/`，接着 `go tool mygo build`——按平台命名的资源目录会被拷到可执行文件旁边并打进安装器（本机实测，见 3.2），GUI 按「与 GUI 同目录」找到引擎。引擎取新名 `zpack-cli`、旧名 `zpack` 兜底，都缺就提示先跑产线；开发版的 `zpack-dev` 不给装机。`--remove` 撤掉。改名之前这条通道用不上：引擎与 GUI 的可执行文件同名 `zpack.exe`，同目录候选恒等于自己（9.2 第 1 条）。
+
 
 **右键菜单**：`bash ui/right-click/macos/build-xcode.sh`（首次、改了扩展或图标之后）；`bash ui/right-click/macos/quickaction.sh`（想要免签名的快速操作时）；`python3 ui/right-click/macos/gen-menu-icon.py`（改了菜单图标比例时）。没有卸载脚本。
 
@@ -1157,7 +1161,8 @@ ZPACK_GUI_FONT_PROBE=1 go test -run TestFontProbe -count=1 -v .   # 字体探针
 
 按影响从大到小。标「推出」的是从代码读出来、没有在真机上复现的。
 
-1. **Windows 装机后 GUI 找不到引擎**（3.2）：同目录候选恒被自体防护跳过，安装器里不含引擎，仓库里也没有 Windows 侧的引擎注入步骤。在仓库目录里直接跑 `ui/gui/build/windows-amd64/zpack.exe` 是能用的（向上找到仓库的 `bin/zpack-cli.exe`），装到别处就不行。
+1. ~~**Windows 装机后 GUI 找不到引擎**（3.2）~~ **已解决（2026-11-24，引擎改名 zpack-cli）**：引擎与 GUI 不再同名，「与 GUI 同目录」这个候选不再撞上自体防护；`inject-engine.sh` 经 `resources/<平台>/` 把引擎随安装包分发到 GUI 旁边（3.2、7.4）。遗留：Windows 侧只做了「注入 → 构建 → 产物里引擎在 exe 旁」这一段的实测，装到仓库之外再启动 GUI 的端到端还没有真人走过【待确认】；改名之前装出去的 GUI 仍找不到引擎（它的查找逻辑里只有旧名）。
+
 2. **macOS / Linux 上光盘名称永远填不了**。`planBurnVolumeName` 只在 `status == "blank"` 或勾了擦除时出输入框，而这两个平台的引擎在有盘时不报 `blank`（macOS 报空串）。除非盘是可擦写且勾了「先擦空再烧」，名称行恒为「需空白光盘 / 放入空白光盘后可以设置名称」——盘其实在光驱里（ui/gui/burnname.go:31-43；ui/gui/burnstate.go:4-5）。
 3. **选了「加密」但密码框留空，产出的包不加密**，界面没有任何提示（4.6）。
 4. **取消的清理范围**：只有压缩任务登记了清理；其它任务被杀后可能留半截产物。「杀进程后不等进程退出就删文件」的时序问题已修（3.5、6.6）。删除出错仍被忽略（ui/gui/service.go:169-177）：Windows 上若有别的程序短暂占着刚写出的归档（如杀毒软件在扫描），那一次删除会落空、留下半成品——这种情况没有实测过，遇到再说。
@@ -1221,7 +1226,8 @@ ZPACK_GUI_FONT_PROBE=1 go test -run TestFontProbe -count=1 -v .   # 字体探针
 
 写这份 spec 时没能核实的条目，不是定案：
 
-1. Windows 上除了设 `ZPACK_BIN`，有没有别的办法让装到仓库之外的 GUI 找到引擎（3.2、9.2 第 1 条）——仓库里看不到。
+1. ~~Windows 上除了设 `ZPACK_BIN`，有没有别的办法让装到仓库之外的 GUI 找到引擎（3.2、9.2 第 1 条）~~ **已定案（2026-11-24）**：引擎改名 zpack-cli + `inject-engine.sh` 随包分发（3.2、7.4）。剩下端到端那一步待真人验证（9.2 第 1 条）。
+
 2. 现在嵌入的 `MiSans-VF.ttf.gz` 是不是做过「Medium 380→450」手术的派生版（6.5）。
 3. macOS 的多选文件对话框选不到文件夹这一条，在 Windows 上是否成立（2.3）。
 4. ~~第一代 Objective-C 版右键菜单（`build.sh` + `src/`）是否已废弃、可否删除~~ **已定案（2026-11-24）**：删除，见 9.2 第 18 条。
@@ -1240,4 +1246,5 @@ ZPACK_GUI_FONT_PROBE=1 go test -run TestFontProbe -count=1 -v .   # 字体探针
 | 2026-11-24 | 刻录页「写入模式」提示按平台如实区分（提成纯函数 `burnModeHint`）：macOS 的「可追加」不再说「还能继续追加」，改为说明 macOS 不会把新内容并入原有文件；Windows / Linux 文案不变。写入提醒行一节补充 macOS 的处理（2.6、8.1） | f9cff89 |
 | 2026-11-24 | 压缩台补「选择文件夹…」按钮（2026-11-24 用户定案）：空态 hero 与引导行各一处，与刻录页共用 `leadDirPickButton`；刻录空态 hero 也补上同一个按钮。压缩台引导行改为放不下才换行（多一个按钮后最小窗口里不换行会把句子挤成竖条）。反馈矩阵 73 → 76（2.3、2.4、8.1、8.4） | 39b71c4 |
 | 2026-11-24 | 修复：换选刻录机时「先擦空再烧」不随设备复位，`--blank` 会照传给另一台里没打算擦的盘——设备下拉之后调 `syncBurnDeviceSwitch` 复位；回归用例 `TestBurnBlankResetsOnDeviceSwitch`（6.6、8.1、9.2 #6）。不在当日用户拍板的 11 条之内，属于动到刻录页时顺手修的缺陷 | b43c013（代码与用例，随并行会话的 PDF 编辑器提交进了库）、9dca7b0（本 spec） |
-| 2026-11-24 | 删除第一代 Objective-C 版右键菜单（用户定案 11 条之一）：`ui/right-click/macos/build.sh` 与 `src/` 下的 `ZpackSync.m`、`host_main.m`、`host-Info.plist`、`appex-Info.plist`；Xcode 版与快速操作不动（6.8、7、9.2 #18、9.3、9.4 #4） | （提交后回填） |
+| 2026-11-24 | 删除第一代 Objective-C 版右键菜单（用户定案 11 条之一）：`ui/right-click/macos/build.sh` 与 `src/` 下的 `ZpackSync.m`、`host_main.m`、`host-Info.plist`、`appex-Info.plist`；Xcode 版与快速操作不动（6.8、7、9.2 #18、9.3、9.4 #4） | 8a2a8f2 |
+| 2026-11-24 | 引擎改名 zpack-cli（用户定案）：GUI 查找每个位置先找新名、旧名 zpack 兜底，仓库 bin 最后还认开发版 zpack-dev；候选提成纯函数 `engineCandidates` 并补 `TestEngineCandidates`。Windows / Linux 新增 `inject-engine.sh`——经 `resources/<平台>/` 把引擎随安装包分发到 GUI 旁边，改名之前这条路被「同名」堵死（3.2、7.4、9.2 #1、9.4 #1） | 951fd19（查找与用例）、（脚本与文档，提交后回填） |

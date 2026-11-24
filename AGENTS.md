@@ -68,8 +68,10 @@ bash verify/verify-image.sh  # 图片门禁：纯 Go 即可（65 用例：格式
 
 > **产物定案（2026-11-22 用户拍板：无「纯 Go 心结」，一切以功能好用为基础）**：
 > `bin/zpack-cli` 与装机产物**恒为完整版**（`build_cli` 产线 CGO 构建——media/audio/HDR/HEIC/ffmpeg 直调全可用）；
+>
+> **引擎的可执行文件叫 `zpack-cli`**（2026-11-24 用户定案改名：GUI 自己叫 `zpack`，引擎叫 `zpack-cli`，两边不再同名——GUI 的「同目录」候选不再等于自己）。产线出 `bin/zpack-cli[.exe]`，旧名产物各脚本与 GUI 查找都还认；开发期快速构建仍是 `bin/zpack-dev`。文档示例里写作 `zpack …` 的命令指的就是它。给 Windows / Linux 打 GUI 包之前先 `bash ui/gui/inject-engine.sh`，引擎才会随安装包分发（specs/gui.md 7.4）。
 > 纯 Go 构建只是**开发期快速编译循环**的工具，不得作为交付/装机产物（纯 Go 下 media 族报「需完整版」——用户会当场撞墙）。
-> 每轮改动收尾时若动过引擎代码：跑产线重铸 bin/zpack-cli + 刷新两装机位——**用 `ui/right-click/macos/refresh-engine.sh`**（拷进 /Applications/zpack.app 与 zpack Finder Menu.app 各自 Resources/zpack 并重签）。**禁止手工 cp**：两个包都是已签名的，原地换文件封印即失效；Finder 宿主封印一坏系统就弃用真身、右键退回别处注册的旧副本（2026-11-23「右键图标又没了」即此因）。
+> 每轮改动收尾时若动过引擎代码：跑产线重铸 bin/zpack-cli + 刷新两装机位——**用 `ui/right-click/macos/refresh-engine.sh`**（拷进 /Applications/zpack.app 与 zpack Finder Menu.app 各自 Resources/zpack-cli 并重签）。**禁止手工 cp**：两个包都是已签名的，原地换文件封印即失效；Finder 宿主封印一坏系统就弃用真身、右键退回别处注册的旧副本（2026-11-23「右键图标又没了」即此因）。
 
 **纯 Go 循环（开发期快速编译——pdf/hash/压缩/图片标准格式等纯功能的日常迭代）**：
 ```bash
