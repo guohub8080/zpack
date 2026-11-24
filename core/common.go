@@ -61,6 +61,7 @@ type compressTask struct {
 
 // collectCompressTasks 收集待压缩条目：目录以目录名为根前缀递归、多文件按文件名平铺进
 // 包根、排除规则同源、目录项不写入（空目录不保留）。顺序即包内顺序（确定性）。
+// 多个输入在包里落成同名条目时报错——不自动改名（reportDuplicateEntries）。
 func collectCompressTasks(inputPaths []string, excludeItems []string, ignores []*ZpackIgnore) ([]compressTask, error) {
 	var tasks []compressTask
 	for _, inputPath := range inputPaths {
@@ -141,7 +142,8 @@ func collectCompressTasks(inputPaths []string, excludeItems []string, ignores []
 			return nil, fmt.Errorf("读取目录失败: %s", walkErr.Error())
 		}
 	}
-	return tasks, nil
+	// 多个输入在包里落成同名条目：不自动改名，直接报错（见 reportDuplicateEntries）
+	return tasks, reportDuplicateEntries(tasks)
 }
 
 // isUnsafeEntryPath 防路径穿越（zip-slip/tar-slip 同源）：反斜杠归一后含绝对路径、

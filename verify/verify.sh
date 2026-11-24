@@ -186,6 +186,21 @@ new_out=$("$NEW_CLI" compress "$mz_src" --output "$mz_out" --level 11 2>/dev/nul
 assert_equal "compress --level 越界 报错JSON" '{"is_success":false,"error_info":"--level 需要 0-9 的整数，收到: 11"}' "$new_out"
 new_out=$("$NEW_CLI" compress "$mz_src" --output "$mz_out" --jobs 0 2>/dev/null); new_exit=$?
 assert_equal "compress --jobs 越界 报错JSON" '{"is_success":false,"error_info":"--jobs 需要 1-64 的整数，收到: 0"}' "$new_out"
+# 多输入在包里同名：不自动改名，直接报错（2026-11-24 用户拍板）。zip / tar / 7z 共用同一条收集线，这里测 zip 与 tar
+dup_root="/tmp/zpack-verify-dup-$$"
+dup_out="/tmp/zpack-verify-dup-$$-out.zip"
+mkdir -p "$dup_root/甲" "$dup_root/乙" "$dup_root/丙/资料" "$dup_root/丁/资料"
+printf 'one' > "$dup_root/甲/x.txt"; printf 'two' > "$dup_root/乙/x.txt"; printf 'three' > "$dup_root/乙/y.txt"
+printf 'a' > "$dup_root/丙/资料/a.txt"; printf 'b' > "$dup_root/丁/资料/a.txt"
+new_out=$("$NEW_CLI" compress "$dup_root/甲/x.txt" "$dup_root/乙/x.txt" --output "$dup_out" 2>/dev/null); new_exit=$?
+assert_equal "compress 多输入同名拒绝 exit" 1 "$new_exit"
+echo "$new_out" | grep -q '多个输入在压缩包里会同名：x.txt（' && report_pass || report_fail "compress 多输入同名 error_info" "点名包内名 x.txt" "$new_out"
+if [ -e "$dup_out" ]; then report_fail "compress 多输入同名不产出归档" "无输出文件" "残留 $dup_out"; else report_pass; fi
+new_out=$("$NEW_CLI" compress "$dup_root/丙/资料" "$dup_root/丁/资料" --output "$dup_out.tar" 2>/dev/null); new_exit=$?
+assert_equal "compress 同名目录拒绝 exit（tar 同一规则）" 1 "$new_exit"
+new_out=$("$NEW_CLI" compress "$dup_root/甲/x.txt" "$dup_root/乙/y.txt" --output "$dup_out" 2>/dev/null); new_exit=$?
+assert_equal "compress 多输入不重名照常 exit" 0 "$new_exit"
+rm -rf "$dup_root" "$dup_out" "$dup_out.tar"
 new_out=$("$NEW_CLI" extract "$mz_out" --output 2>/dev/null); new_exit=$?
 assert_equal "extract --output 缺值 报错JSON" '{"is_success":false,"error_info":"--output 缺少值"}' "$new_out"
 new_out=$("$NEW_CLI" extract 2>/dev/null); new_exit=$?
