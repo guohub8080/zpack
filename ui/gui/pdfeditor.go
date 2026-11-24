@@ -132,14 +132,14 @@ func (a *app) editorOpen(docPath string) {
 		ed.selected = -1
 		ed.selection = ui.Selection[int]{}
 		ed.quitRender = make(chan struct{})
-		go ed.renderLoop(ed)
+		go a.renderEditorThumbs(ed)
 	})
 }
 
-// renderLoop 渲染协程：文档打开一次复用；首屏优先队列；退出靠 quitRender 关闭。
+// renderEditorThumbs 渲染协程：文档打开一次复用；首屏优先队列；退出靠 quitRender 关闭。
 // 非阻塞四定案（specs/gui.md 2.12）：网格立即可浏览（未渲页占位），缩略图到达即贴。
-func (ed *pdfEditorState) renderLoop(state *pdfEditorState) {
-	document, openErr := fitz.New(ed.docPath)
+func (a *app) renderEditorThumbs(state *pdfEditorState) {
+	document, openErr := fitz.New(state.docPath)
 	if openErr != nil {
 		a.toast("PDF 打开失败：" + openErr.Error())
 		return
@@ -155,7 +155,7 @@ func (ed *pdfEditorState) renderLoop(state *pdfEditorState) {
 	}
 	for _, srcPage := range queue {
 		select {
-		case <-ed.quitRender:
+		case <-state.quitRender:
 			return
 		default:
 		}
@@ -336,22 +336,10 @@ func (a *app) pagePdfEditor(c *ui.Context) {
 	column.Children(func() {
 		a.convertLeadRow(c, "PDF", ed.docPath, a.editorBrowse)
 
-		// 工具行：打开/旋转/删除/缩放/导出（经典排版：与转换族同一行高与间距）
+		// 工具行：旋转/删除/缩放/导出（经典排版：与转换族同一行高与间距；打开走 hero 的
+		// 浏览按钮——空态由 heroPane 接管，本函数只在 docPath 非空时被调用）
 		toolRow := ui.Row(c).Gap(6).AlignItems(ui.Center).Padding(0, 0, 8, 0)
 		toolRow.Children(func() {
-			if ed.docPath == "" {
-				open := ui.ButtonBase(c).Height(30).Padding(0, 14).Radius(8).
-					Border(1, t.Border).Cursor(ui.CursorPointer).Shrink(0)
-				pressFeedback(open, t)
-				open.Children(func() {
-					ui.Text(c, "打开 PDF").FontSize(13)
-				})
-				if open.Clicked() {
-					a.editorBrowse()
-				}
-				ui.Spacer(c)
-				return
-			}
 			editorToolButton(c, t, "旋转左 ⟲", func() { ed.editorRotate(ed.editorSelectedIndices(), false) })
 			editorToolButton(c, t, "旋转右 ⟳", func() { ed.editorRotate(ed.editorSelectedIndices(), true) })
 			editorToolButton(c, t, "删除所选", func() { ed.editorDelete(ed.editorSelectedIndices()) })
@@ -373,17 +361,6 @@ func (a *app) pagePdfEditor(c *ui.Context) {
 				a.editorExport()
 			}
 		})
-
-		if ed.docPath == "" {
-			// hero：拖入引导（拖入已接入整页拖放通则——dropZone/页面 switch 已接线）
-			hero := ui.Column(c).Gap(8).AlignItems(ui.Center).Grow(1).Center()
-			hero.Children(func() {
-				ui.Text(c, "拖入 PDF 开始页面编排").FontSize(16)
-				ui.Text(c, "重排 / 删页 / 旋转都在这里：拖拽缩略图重排，保存时按编辑序导出；也可点上方「打开 PDF」").
-					FontSize(13).TextColor(t.TextMuted)
-			})
-			return
-		}
 
 		// 状态行：文档名 + 页数 + 选择数
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {

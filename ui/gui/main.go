@@ -1059,6 +1059,8 @@ func (a *app) heroPage() bool {
 		return a.archivePath == ""
 	case pageBurn:
 		return len(a.burnInputs) == 0
+	case pagePdfEditor:
+		return a.pdfEd == nil || a.pdfEd.docPath == ""
 	}
 	return a.page == pageCompress && len(a.inputs) == 0
 }
@@ -1131,6 +1133,12 @@ func (a *app) heroPane(c *ui.Context) {
 		hero(c, "拖入 PDF 统一页面", "按纸型或自定义尺寸统一；文字页会体检拦截", func() {
 			if ui.Button(c, "浏览选择…").Cursor(ui.CursorPointer).Clicked() {
 				a.browsePdfResize()
+			}
+		}, t)
+	case pagePdfEditor:
+		hero(c, "拖入 PDF 开始页面编排", "重排 / 删页 / 旋转都在这里：拖拽缩略图重排，保存时按编辑序导出", func() {
+			if ui.Button(c, "浏览选择…").Cursor(ui.CursorPointer).Clicked() {
+				a.editorBrowse()
 			}
 		}, t)
 	case pageHash:
