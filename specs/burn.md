@@ -95,7 +95,7 @@
 | macOS | `drutil status` 里 `Type:` 一行的原文（cli/burn/burn.go:126-140） |
 | Linux | `xorriso -toc` 里 `Media current :` 一行的原文（cli/burn/burn.go:150-179） |
 
-`status` 的取值（词表的唯一来源：internal/imapi2/imapi2.go:80-90；GUI 侧照抄在 ui/gui/burnstate.go:3-6）：
+`status` 的取值（词表的唯一来源：internal/imapi2/imapi2.go:95-106；GUI 侧照抄在 ui/gui/burnstate.go:3-7）：
 
 | status | 含义 | Windows 怎么得到 | macOS | Linux 怎么得到 |
 |---|---|---|---|---|
@@ -107,12 +107,13 @@
 | `erase-required` | 须先擦除才能写 | 状态位含 ERASE_REQUIRED（0x800） | 不报 | 不报 |
 | `write-protected` | 写保护（仅可擦写类型） | 状态位含 WRITE_PROTECTED（0x2000）且介质类型不是只读类型 | 不报 | 不报 |
 | `unsupported` | 刻录机不支持在该介质上刻录 | 状态位含 UNSUPPORTED（0x8000） | 不报 | 不报 |
-| `unknown` | 介质查询失败，或状态位不属于以上任何一种 | 介质查询报错（此时 `note` 里是失败原因）；或没有任何已知位置位 | 不报 | 状态短语认不出时**原样透传**，不是 `unknown` |
+| `unrecognized` | 光驱认不出这张盘：读不出盘片身份，或读不出盘上的内容 | 读介质类型得到 `E_IMAPI_RECORDER_MEDIA_INCOMPATIBLE`（0xC0AA0203）；或盘被报成「只读类型 + 写保护」、而引擎读不出盘上任何受支持的数据文件系统（见 6.10）。此时 `note` 里是排查提示 | 不报 | 不报 |
+| `unknown` | 介质查询以别的原因失败，或状态位不属于以上任何一种 | 介质查询报了别的错（此时 `note` 里是失败原因）；或没有任何已知位置位 | 不报 | 状态短语认不出时**原样透传**，不是 `unknown` |
 
-- Windows 的判定顺序见 `StatusName`（internal/imapi2/imapi2.go:153-178）：无介质 → 已封盘 → 只读类型带写保护 → 写保护 → 不支持 → 损坏 → 须先擦除 → 空白 → 可追加 → 其他。
+- Windows 的判定顺序见 `StatusName`（internal/imapi2/imapi2.go）：无介质 → 无法识别 → 已封盘 → 只读类型带写保护 → 写保护 → 不支持 → 损坏 → 须先擦除 → 空白 → 可追加 → 其他。
 - Windows 上一台刻录机的介质查询失败不阻塞其余刻录机的枚举（internal/imapi2/engine_windows.go:113-129）；此时该条目是 `status:"unknown"` 加 `note:"<失败原因>"`。打不开这台刻录机时 `path` 是空串；能打开、只是读不了介质时 `path` 是盘符或引擎唯一标识（cli/burn/burn_windows.go:73-90）。
 - 状态位 NON_EMPTY_SESSION（0x1000，「上一区段写了一半」）没有独立的 status 取值：`burn devices` 里落进 `unknown`（除非同时带着别的位置位），但写入前会被拒绝（见 4.3）。
-- macOS / Linux 上「不报」表示 status 字段根本不出现，GUI 据此只对明确认识的状态下结论（ui/gui/burnstate.go:3-6）。
+- macOS / Linux 上「不报」表示 status 字段根本不出现，GUI 据此只对明确认识的状态下结论（ui/gui/burnstate.go:3-7）。
 
 ### 3.2 `zpack burn <输入...>` 成功（exit 0）
 
@@ -164,11 +165,12 @@
 | `error_info` | 平台 | 触发条件 | 出处 |
 |---|---|---|---|
 | `--device N 超出范围（共 M 台，见 zpack burn devices）` | Windows / Linux | 序号 ≥ 刻录机台数（没有刻录机时 M = 0）。macOS 不走这条，见下面的「macOS 多刻录机寻址」 | cli/burn/burn_windows.go:106-110，cli/burn/burn.go:663-665 |
-| `刻录机里没有光盘——请放入光盘后重试` | Windows | 刻录机里没有介质 | cli/burn/burn_windows.go:122-124 |
+| `刻录机里没有光盘——请放入光盘后重试` | Windows | 刻录机里没有介质 | cli/burn/burn_windows.go |
+| `光驱认不出这张光盘，无法写入；请检查：盘是否放反（标签面朝上）、是否卡牢、盘片类型是否超出刻录机能力（如蓝光盘放入 DVD 光驱）、盘片是否划伤或太脏` | Windows | 介质状态为 `unrecognized`（见 4.3、6.10） | cli/burn/burn_windows.go |
 | 见 4.3 的拒绝表 | Windows | 介质不可写 | cli/burn/burn_windows.go:126-128、187-207 |
 | `当前介质 <类型> 不可擦除（--blank 仅适用于 CD-RW / DVD±RW / DVD-RAM / BD-RE 等可擦写盘）` | Windows | 对一次性盘给了 `--blank` | cli/burn/burn_windows.go:130-133 |
 | `内容大小 <大小> 超过光盘剩余空间 <剩余>` | Windows | 待写镜像大于盘上剩余空间（仅当剩余扇区数 > 0 时才检查） | cli/burn/burn_windows.go:165-167 |
-| `打开文件为流失败: <路径>（0x<码>）` | Windows | 镜像文件（或多输入里的文件）打不开 | internal/imapi2/engine_windows.go:508-520 |
+| `打开文件为流失败: <路径>（0x<码>）` | Windows | 镜像文件（或多输入里的文件）打不开 | internal/imapi2/engine_windows.go:518-530 |
 | `<操作>失败: <系统给的本地化说明>（0x<引擎错误码>）`，或无说明时 `<操作>失败（0x<引擎错误码>）` | Windows | 任何一次引擎调用失败。`<操作>` 是代码里给每步起的名字：打开刻录机、读取介质类型、读取介质状态、设置写入速度、封盘设置、读取多区段接口、设置多区段接口、导入上一区段、卷标、加入目录、建目录、加入文件、生成镜像、**写入光盘**、**擦除光盘**、弹出光盘 等 | internal/imapi2/imapi2.go:252-264 |
 | `macOS 多刻录机寻址（-device OpenFirmware 路径）M2 交付；当前用默认设备（--device 0）` | macOS | `--device` > 0 | cli/burn/burn.go:636-638 |
 | `擦除失败（介质可能不可擦）: <drutil 输出>` | macOS | `--blank` 且 `drutil erase quick` 失败 | cli/burn/burn.go:639-643 |
@@ -217,7 +219,7 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 
 1. 整个枚举包在一次 COM 会话里（`WithSession`：钉住 OS 线程 + `CoInitializeEx(APARTMENTTHREADED)`，internal/imapi2/call_windows.go:21-30）。
 2. 用 `IDiscMaster2`（按 CLSID 创建）读刻录机数量，逐台取唯一标识，再创建 `IDiscRecorder2` 并 `InitializeDiscRecorder`，绑定一个 `IDiscFormat2Data` 数据写入器（`ForceOverwrite = true`、`ClientName = "zpack"`）。
-3. 对每台读介质：介质类型、状态位、剩余空间等（`Media`，internal/imapi2/engine_windows.go:202-235）。读介质类型若得到「没有介质」的错误码，归一成 `no-media`。
+3. 对每台读介质：介质类型、状态位、剩余空间等（`Media`，internal/imapi2/engine_windows.go）。读介质类型若得到「没有介质」的错误码，归一成 `no-media`；若得到「介质不兼容或为未知的物理格式」（0xC0AA0203），归一成 `unrecognized`——这是有盘但光驱认不出，不是查询失败。盘被报成「只读类型 + 写保护」时，再让引擎读一次盘上的文件系统：一个都读不出也算 `unrecognized`（见 6.10）。
 4. 输出条目：`index` = 枚举顺序，`path` = 盘符（`VolumePathNames[0]`），没有盘符时用引擎唯一标识，`vendor` / `product` 取自刻录机自报。
 5. 没有刻录机 = 空数组；某一台的介质查询失败只影响它自己那条（`status:"unknown"` + `note`）。刻录机与总线无关：内置、USB 外接一视同仁。
 
@@ -275,10 +277,10 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 
 - **镜像输入**：把文件打开成只读的系统文件流，整个文件原样交给写入器。**不走镜像库，不导入上一区段，不使用卷标**——盘上卷标就是镜像自带的。
 - **目录 / 多输入**：经 `IFileSystemImage` 在内存里建镜像的目录结构，文件内容在写入时才从磁盘按需读取，不落临时文件。
-  - 文件系统：ISO9660 + Joliet + UDF 三种全建，限于当前介质与多区段类型支持的范围（internal/imapi2/engine_windows.go:365-369）。
-  - 多区段：盘不是「启发式空白」时导入上一区段（`ImportFileSystem`），旧文件在新区段里保持可见（internal/imapi2/engine_windows.go:349-373）。
+  - 文件系统：ISO9660 + Joliet + UDF 三种全建，限于当前介质与多区段类型支持的范围（internal/imapi2/engine_windows.go:375-379）。
+  - 多区段：盘不是「启发式空白」时导入上一区段（`ImportFileSystem`），旧文件在新区段里保持可见（internal/imapi2/engine_windows.go:359-383）。
   - 单个目录 → 目录的**内容**加到镜像根（`AddTree`，引擎自己遍历，含空目录）。
-  - 多输入 → 每项按唯一名加到镜像根：文件用 `AddFile`，目录先建同名目录再把整棵树加进去（internal/imapi2/engine_windows.go:399-435）。
+  - 多输入 → 每项按唯一名加到镜像根：文件用 `AddFile`，目录先建同名目录再把整棵树加进去（internal/imapi2/engine_windows.go:409-445）。
   - 最后 `CreateResultImage` 得到结果镜像：`size_bytes` = `TotalBlocks × BlockSize`。
 
 #### 4.1.4 macOS 刻录流程（cli/burn/burn.go:283-312、596-655）
@@ -316,7 +318,7 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 
 目录名与当前目录名还要过一遍平台规范化（`burnPlatformVolumeName`，cli/burn/burn.go:561-566）：Windows 走 `burnWindowsVolumeName`，macOS / Linux 走 `burnSanitizeVolid`。
 
-**第二步，Windows 后端决定「真的写哪个」**（cli/burn/burn_windows.go:237-247，internal/imapi2/engine_windows.go:308-338、370-376）：
+**第二步，Windows 后端决定「真的写哪个」**（cli/burn/burn_windows.go:237-247，internal/imapi2/imapi2.go:354-367、engine_windows.go:333-348、380-386）：
 
 - 盘是空白盘（`HeuristicallyBlank`）→ 用第一步的名字。带 `--blank` 的盘擦完重读就是空白盘，同样可以起名。
 - 盘上已有内容且**没给** `--volid` → 第一步的名字作废，按下面的优先级沿用盘上原名：
@@ -400,6 +402,7 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 
 | 顺序 | 条件 | 不带 `--blank` 时的 `error_info` | 带 `--blank` 时 |
 |---|---|---|---|
+| 0 | 介质状态为「无法识别」（`unrecognized`，见 6.10） | `光驱认不出这张光盘，无法写入；请检查：盘是否放反（标签面朝上）、是否卡牢、盘片类型是否超出刻录机能力（如蓝光盘放入 DVD 光驱）、盘片是否划伤或太脏` | 同左，不放行 |
 | 1 | 状态位含「已封盘」（FINALIZED） | `光盘已封盘，无法继续写入` | 同左，不放行 |
 | 2 | 含「写保护」且介质类型是只读类型（CD-ROM / DVD-ROM / HD DVD-ROM / BD-ROM） | `光盘是只读盘（<类型>：压盘或已封盘），无法继续写入` | 同左，不放行 |
 | 3 | 含「写保护」，其余类型 | `光盘处于写保护状态，无法写入` | 同左，不放行 |
@@ -432,7 +435,7 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 | 外部依赖 | 无。代码只依赖 go-ole（纯 syscall），`CGO_ENABLED=0` 即可用 | 无（系统自带） | 需要自行安装 xorriso |
 | 设备枚举 | `IDiscMaster2` 取刻录机，数据写入器读介质状态 | `drutil list` + `drutil status` | `xorriso -devices` + 逐台 `-toc` |
 | `path` 字段 | 盘符（`E:\`）；没有挂载点时是引擎唯一标识 | 空串 | 设备路径（`/dev/sr0`） |
-| 能报出的 status | `blank` `appendable` `full` `no-media` `damaged` `erase-required` `write-protected` `unsupported` `unknown` | 只有 `no-media`（有盘时不报） | `blank` `appendable` `full` `no-media`；认不出的短语原样透传 |
+| 能报出的 status | `blank` `appendable` `full` `no-media` `damaged` `erase-required` `write-protected` `unsupported` `unrecognized` `unknown` | 只有 `no-media`（有盘时不报） | `blank` `appendable` `full` `no-media`；认不出的短语原样透传 |
 | 目录 / 多输入 | 系统镜像库流式生成后直烧，无临时 ISO | `hdiutil makehybrid` 产临时 ISO；多输入先聚舞台（目录逐文件硬链接克隆） | `xorriso -as mkisofs` 产临时 ISO；多输入先聚舞台（目录挂符号链接 + `-f`） |
 | 镜像输入 | 系统文件流直烧 | `hdiutil burn` | `xorriso -as cdrecord` |
 | 追加时导入上一区段 | 引擎 `ImportFileSystem`，旧文件在新视图里可见（实测） | 不导入。旧文件在新视图里是否可见【待确认】 | 不导入（没有用 mkisofs 的 `-M`）。旧文件在新视图里是否可见【待确认】 |
@@ -497,11 +500,11 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
   - `VolumeNameISO9660` / `VolumeNameJoliet` / `VolumeNameUDF` 只读，只有 `VolumeName` 可写；各文件系统按自身上限自动截断（AGENTS.md 陷阱 #2 记为 ISO9660 30 字符 / Joliet 16 字符；陷阱 #9 与代码注释则按 ISO9660 32 字符取上限——以哪个为准【待确认】）。
   - go-ole 对 `*VARIANT` 只按引用传、不支持 `VT_UNKNOWN`，而数组参数（`MultisessionInterfaces`）与流参数（`Write` / `AddFile`）要求**按值**。解法是 `invokeRaw`：自带一份 `DISPPARAMS` 镜像结构，按值走同一条 `IDispatch::Invoke` 通道，参数自右向左排列（internal/imapi2/call_windows.go:32-100）。「接口指针按值传入」的编组有真机只读测试守着（internal/imapi2/imapi2_live_windows_test.go:77-87）。
   - **按声明顺序数虚函数表槽位不可靠**——实测偏到了别的方法上、返回 `IMPORT_SEEK_FAILURE`，已弃用。整个包不出现任何虚函数表偏移（internal/imapi2/call_windows.go:4-5）。
-- **陷阱 #3：空白的一次写入盘上，设置 `MultisessionInterfaces` 返回 `IMAPI_E_IMPORT_SEEK_FAILURE`（0xC0AAB156）**。官方文档注明的预期行为（没有上一区段可导入）。代码只在「盘是启发式空白 **且** 错误码正是它」时容忍并继续，其余情况照样报错（internal/imapi2/engine_windows.go:355-360，internal/imapi2/imapi2.go:71-73）。
+- **陷阱 #3：空白的一次写入盘上，设置 `MultisessionInterfaces` 返回 `IMAPI_E_IMPORT_SEEK_FAILURE`（0xC0AAB156）**。官方文档注明的预期行为（没有上一区段可导入）。代码只在「盘是启发式空白 **且** 错误码正是它」时容忍并继续，其余情况照样报错（internal/imapi2/engine_windows.go:365-370，internal/imapi2/imapi2.go:71-73）。
 - **COM 是每线程初始化的**：`WithSession` 钉住 OS 线程再 `CoInitializeEx(APARTMENTTHREADED)`。goroutine 被调度器迁到没初始化的线程上会报错——office 引擎 2026-11-08 踩过同一个坑（internal/imapi2/call_windows.go:19-30）。所有引擎调用都要在同一个会话闭包里完成。
 - **错误收敛**：go-ole 的调用错误统一收敛成 `CallError{Operation, HResult, SCode, Message}`。外层 `HResult` 多是 `DISP_E_EXCEPTION`，`EXCEPINFO` 里的 `SCode` 才是引擎真实错误码；说明文字取系统给的本地化文案，引擎没给就为空（internal/imapi2/call_windows.go:102-136）。**按错误码识别错误**（`IsSCode`），不要比对文案。
 - **`ForceOverwrite = true`**：可覆写介质（DVD±RW / BD-RE）非空白时写入的前提；一次性介质上没有这个语义。代码是无条件设置的，真机刻一次性盘没有受到影响（internal/imapi2/engine_windows.go:159-163）。
-- **多区段接口必须先设**：`MultisessionInterfaces` 要来自已绑定刻录机的写入器，并且先于其他配置设置（internal/imapi2/engine_windows.go:348-355）。
+- **多区段接口必须先设**：`MultisessionInterfaces` 要来自已绑定刻录机的写入器，并且先于其他配置设置（internal/imapi2/engine_windows.go:358-365）。
 
 ### 6.4 介质状态语义（陷阱 #5、#11）
 
@@ -521,12 +524,13 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 | UNSUPPORTED | 0x8000 | 数据写入器不支持该介质 |
 
 - **陷阱 #5：封盘的一次写入盘不报「已封盘」位**。真机实测封盘后的 DVD-R：介质类型报成 `DVD-ROM`，状态是 `0xA000` = 写保护 | 不支持，**不含封盘位**（当时把它误读成含封盘位）。所以判定规则是「只读介质类型 + 写保护位 → 已封盘或只读」，与压盘无法区分；只有可擦写类型上的写保护位才报「写保护」（internal/imapi2/imapi2.go:159-164、186-196）。
-- **没放盘不是空值而是错误码**：读介质类型返回 `E_IMAPI_RECORDER_MEDIA_NO_MEDIA`（0xC0AA0202），归一成 `no-media`（internal/imapi2/engine_windows.go:204-207）。
+- **没放盘不是空值而是错误码**：读介质类型返回 `E_IMAPI_RECORDER_MEDIA_NO_MEDIA`（0xC0AA0202），归一成 `no-media`（internal/imapi2/engine_windows.go:220-223）。
 - **空白 DVD-R 的实测状态是 BLANK | APPENDABLE**，所以「空白」的优先级要排在「可追加」之前。
 - **覆写介质（DVD±RW 等）带着数据时的常态是 OVERWRITE_ONLY**，视同可追加（随机写多区段）。
 - **陷阱 #11：内置光驱与外接光驱没有区别，盘不可写时先查盘**（2026-11-24 用户要求「不要区分外接 / 内置」；Win10 22H2 + 内置 HL-DT-ST DVD-RAM GHC0N）。枚举走 `IDiscMaster2`，与总线无关——厂商、型号、盘符、介质类型、写速表全部正常，空白盘刻录与追加区段均通过。同一台机器上另一张 Windows 刻录过的 DVD-R（UDF、日期卷标、含两个扫描 PDF）被引擎判 `damaged`（0x400，官方注释「not usable by this interface, might require an erase or other recovery」）：上一区段地址 -1、容量 0、多区段导入报 `IMAPI_E_NO_COMPATIBLE_MULTISESSION_TYPE`（0xC0AAB15C），跳过导入强行 `Write` 报 `E_IMAPI_DF2DATA_INVALID_MEDIA_STATE`（0xC0AA0402）。SCSI 直通只读探针看到这张盘 `GET CONFIGURATION` 返回空、`READ DISC INFORMATION` 自相矛盾（可擦除 + 盘状态空 + 末区段未关闭）——**光驱认不出盘的规格，读得到数据区但无法记录，软件层面无解，只能换盘**。
-- **新盘光驱也可能认不出**：曾出现两张新放进去的盘被报 `E_IMAPI_RECORDER_MEDIA_INCOMPATIBLE`（0xC0AA0203「介质不兼容或为未知的物理格式」）、刻录机 `CurrentProfiles` 为空、`READ_TOC` 报「设备未就绪」、Windows `MediaLoaded=False`，连续观察半分钟不变；疑为盘型超出光驱能力（那台机器不支持蓝光）、放反或没卡牢。换了盘之后不再出现。遇到类似现象先怀疑盘，不是代码回归。
-- **改动含义**：新增或调整 status 取值时，要同时改三处——`StatusName`（internal/imapi2/imapi2.go:153-178）、`burnMediaRefusal`（cli/burn/burn_windows.go:187-207）、GUI 的 `burnBlockReason` / `burnMediaSuffix` / `planBurnVolumeName`（ui/gui/burnstate.go、burnname.go）。三处各有表驱动单测守着。
+- **新盘光驱也可能认不出**：曾出现两张新放进去的盘被报 `E_IMAPI_RECORDER_MEDIA_INCOMPATIBLE`（0xC0AA0203「介质不兼容或为未知的物理格式」）、刻录机 `CurrentProfiles` 为空、`READ_TOC` 报「设备未就绪」、Windows `MediaLoaded=False`，连续观察半分钟不变；疑为盘型超出光驱能力（那台机器不支持蓝光）、放反或没卡牢。换了盘之后不再出现。遇到类似现象先怀疑盘，不是代码回归。2026-11-24 起这种盘归一成 `unrecognized`，`note` 与写入拒绝文案都带排查提示。
+- **「只读类型 + 写保护」要再读一次文件系统才能定性**：读不出内容的盘有两种形态——上面这种直接报「介质不兼容」；另一种是被报成 `DVD-ROM / full`，但从第 0 扇区起就是读错误（6.10）。所以 `Media` 在「只读类型 + 写保护位」时追加一次 `IdentifyFileSystemsOnDisc`：一个受支持的数据文件系统都读不出、且不是因为盘上本来就没有（音频 CD 之类）才算 `unrecognized`；读得出就还是 `full`。**这条追加读取未实盘验证**——写它的时候手边没有这种形态的盘，只有前一种。
+- **改动含义**：新增或调整 status 取值时，要同时改三处——`StatusName`（internal/imapi2/imapi2.go:170-197）、`burnMediaRefusal`（cli/burn/burn_windows.go:195-218）、GUI 的 `burnBlockReason` / `burnMediaSuffix` / `planBurnVolumeName`（ui/gui/burnstate.go、burnname.go）。三处各有表驱动单测守着。
 
 ### 6.5 写入前的拒绝（不可写介质的统一处理）
 
@@ -535,9 +539,9 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 - **原则**：任何异常状态都不得走到 `Write`。可擦写盘的异常状态（损坏 / 须先擦除 / 上一区段写了一半）擦除即恢复，所以带 `--blank` 时交给擦除流程、**擦完重读介质再判**；一次性盘没有擦除这条路，当场拒绝并提示换盘。
 - **实测**：补拦之后，在那张 `damaged` 的盘上，目录、`--blank`、镜像三条路径都在写入前返回了明确的 `error_info`。
 - **GUI 侧的对应规则**（纯函数在 ui/gui/burnstate.go 与 ui/gui/burnname.go，表驱动单测守着；GUI 本身的细节见 gui spec）：
-  - 设备下拉按状态加括注（`burnMediaSuffix`：`（空白）` `（可追加）` `（已满）` `（无介质）` `（状态异常）` `（需先擦除）` `（写保护）` `（不支持）`），认不出的状态不加括注。
+  - 设备下拉按状态加括注（`burnMediaSuffix`：`（空白）` `（可追加）` `（已满）` `（无介质）` `（状态异常）` `（需先擦除）` `（写保护）` `（不支持）` `（认不出）`），认不出的状态不加括注。
   - 光盘名称行按状态给说明（`planBurnVolumeName`，见 6.6）。
-  - 主按钮置灰并写明原因（`burnBlockReason`：`光盘已封盘` / `未放入光盘` / `光盘状态异常` / `光盘需先擦除` / `光盘被写保护` / `不支持这张光盘`）。**只拦明确认识的状态**：macOS 有盘时 status 为空、Linux 可能是原样短语、Windows 的 `unknown`，都不拦，交给引擎裁决——这样就不会误拦 mac / Linux。可擦写盘勾了「先擦空再烧」时 `damaged` 与 `erase-required` 放行。
+  - 主按钮置灰并写明原因（`burnBlockReason`：`光盘已封盘` / `未放入光盘` / `光盘状态异常` / `光盘需先擦除` / `光盘被写保护` / `不支持这张光盘` / `光驱认不出这张光盘`）。**只拦明确认识的状态**：macOS 有盘时 status 为空、Linux 可能是原样短语、Windows 的 `unknown`，都不拦，交给引擎裁决——这样就不会误拦 mac / Linux。可擦写盘勾了「先擦空再烧」时 `damaged` 与 `erase-required` 放行。
 - **改动含义**：以后新增任何写路径（比如 live 模式），第一件事是过 `burnMediaRefusal`。
 
 ### 6.6 光盘名称（陷阱 #4、#9）
@@ -545,16 +549,16 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 **规则**（2026-11-24 用户定案）：名称属于最后一个区段——空白盘随意起；已有内容的盘缺省沿用、显式 `--volid` 才改；已封盘的不能改。行为见 4.1.6，下面是来龙去脉。
 
 - **缺省名取目录名**：单个目录输入用目录名（目录叫「照片备份」，刻出来盘名就是「照片备份」，真机验证过），其余形态（镜像 / 多输入 / 单文件）沿用最初的做法取当前目录名（`burnResolveVolumeName`，cli/burn/burn.go:541-557）。
-- **陷阱 #4（上半）：引擎导入上一区段后不沿用卷标**。导入之后镜像里的卷标是空的，不显式沿用，新区段就变成时间戳卷标——实测追加一次之后盘名由 `ZPACK_TEST_VOLUME` 变成了 `2026.11.24_0118`。解法：`applyVolumeName` 显式把卷标写回去（internal/imapi2/engine_windows.go:320-338）。
+- **陷阱 #4（上半）：引擎导入上一区段后不沿用卷标**。导入之后镜像里的卷标是空的，不显式沿用，新区段就变成时间戳卷标——实测追加一次之后盘名由 `ZPACK_TEST_VOLUME` 变成了 `2026.11.24_0118`。解法：`applyVolumeName` 显式把卷标写回去（internal/imapi2/engine_windows.go:330-348）。
 - **陷阱 #4（下半）：`ImportedVolumeName` 不能原样写回，对中文名根本不可靠**。这个属性对 UDF 盘带着 dstring 的「压缩标识」前导字节（实测读回 `"\bZPACK"`），原样写回被判「含无效字符」（`IMAPI_E_INVALID_VOLUME_NAME`）。
   - 第一版假设：「16 位码元被按小端解读」，据此做还原（`sanitizeVolumeName`）。
   - **2026-11-24 二轮更正：这个假设是错的。** 实测引擎对 `ImportedVolumeName` 是**一个字节一个字符**地给出的，而且经过了本机 ANSI 代码页转换——「照片备份」里的 0xFD 读回成了 `?`。按旧假设还原得到的是乱码「焀最爀䜀夀一㼀」，**并且被写成了盘名**（还会在 0x00 处截断，实测读回只剩 `\x10q`）。
-  - 现在的做法：沿用盘名**以 Windows 显示的卷标为准**——`mountedVolumeLabel` 调 `GetVolumeInformation`，Unicode 无损（internal/imapi2/engine_windows.go:286-303）。读不到盘符时才退回引擎读回值，且只在能确定无损时才还原（`sanitizeVolumeName`），否则放弃沿用、不写乱码（`chooseVolumeName`，internal/imapi2/engine_windows.go:308-318）。
-  - `sanitizeVolumeName` 的无损判定（internal/imapi2/imapi2.go:278-324）：带压缩标识的字节串——8 位形态不许有被代码页合并出的字符（≥ 0x100，说明字节边界已错位），带高位字节时又不许出现 `?`（丢失的字节正是变成了它）；16 位形态里 `?` 也可能是合法的低字节，分不清丢没丢，所以只认「纯 ASCII 且没有 `?`」的字节串。不带压缩标识的普通字符串只清理控制字符。
+  - 现在的做法：沿用盘名**以 Windows 显示的卷标为准**——`mountedVolumeLabel` 调 `GetVolumeInformation`，Unicode 无损（internal/imapi2/engine_windows.go:311-328）。读不到盘符时才退回引擎读回值，且只在能确定无损时才还原（`sanitizeVolumeName`），否则放弃沿用、不写乱码（`chooseVolumeName`，internal/imapi2/imapi2.go:354-367）。
+  - `sanitizeVolumeName` 的无损判定（internal/imapi2/imapi2.go:297-343）：带压缩标识的字节串——8 位形态不许有被代码页合并出的字符（≥ 0x100，说明字节边界已错位），带高位字节时又不许出现 `?`（丢失的字节正是变成了它）；16 位形态里 `?` 也可能是合法的低字节，分不清丢没丢，所以只认「纯 ASCII 且没有 `?`」的字节串。不带压缩标识的普通字符串只清理控制字符。
   - **实测**：修复后，不给 `--volid` 追加目录 → 中文名保持不变；显式 `--volid` 追加 → 改名生效；`TestLiveReadOnly` 在有内容的盘上断言「沿用名 = Windows 卷标」通过。
 - **Windows 上中文名可用**：系统镜像库原生接受 Unicode（探针实测「备份」→ UDF / Joliet 原样、ISO9660 层变成 `__`，Windows 读 UDF 所以显示中文）。所以 Windows 不做字符集过滤，只做温和规范化 `burnWindowsVolumeName`（控制字符丢弃、路径非法字符换下划线、截 32 字符；规则表见 4.1.6）。真机验证：显式 `--volid` 含路径非法字符 → 全部换成下划线（`a_b_c_d_e_f_g_h_i_j`）；40 个汉字的盘名截到 32 个。
 - **macOS / Linux 没有跟进这套规则**：Linux 上显式 `--volid` 原样交给 xorriso（旧行为），macOS 上根本没有传给任何工具；缺省名都过 `burnSanitizeVolid`（只留 `A-Z0-9_`）；追加区段也不会沿用盘上名称。这两个平台的刻录路径没有真机跑过（AGENTS.md 未结项 #3）。
-- **GUI 刻录页的「光盘名称」行**（`planBurnVolumeName`，ui/gui/burnname.go:26-53）：只有空白盘（或勾了「先擦空再烧」——擦完就是空白盘）才出输入框；其余状态直接一句话说明为什么不能改（「这张盘已有内容，名称保持不变」「这张盘已封盘，不能再写入」…），不摆一个灰掉的输入框。起刻只在可改名且输入非空时才传 `--volid`（`burnArguments`，ui/gui/service.go:1033-1048）。非 Windows 平台在输入框下方提示「macOS/Linux 下只保留字母、数字和下划线」。
+- **GUI 刻录页的「光盘名称」行**（`planBurnVolumeName`，ui/gui/burnname.go:30-57）：只有空白盘（或勾了「先擦空再烧」——擦完就是空白盘）才出输入框；其余状态直接一句话说明为什么不能改（「这张盘已有内容，名称保持不变」「这张盘已封盘，不能再写入」…），不摆一个灰掉的输入框。起刻只在可改名且输入非空时才传 `--volid`（`burnArguments`，ui/gui/service.go:1034-1049）。非 Windows 平台在输入框下方提示「macOS/Linux 下只保留字母、数字和下划线」。
 - **改动含义**：不要再依赖 `ImportedVolumeName` 取中文名；`mountedVolumeLabel` 只在盘有盘符时可用，没有盘符的盘（比如封盘后没被挂载）只能靠引擎读回值，中文名此时多半放弃沿用。
 
 ### 6.7 写入速度与首区段填充（陷阱 #6）
@@ -583,8 +587,9 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 
 2026-11-24 实测：光驱里放了一张读不出来的盘，引擎报 `DVD-ROM / full`，从第 0 扇区起就是 CRC 数据错误，Windows 挂不上。此时：
 
-- `zpack burn <目录>` 在写入前被拒，`error_info` 是「光盘是只读盘（DVD-ROM：压盘或已封盘），无法继续写入」。
-- 这条文案对「盘放反 / 没卡牢 / 划伤 / 盘型不支持」这几种情况是有误导性的——用户看到的不是「盘坏了或放错了」，而是「盘已经封了」。已记入第 9 节。
+- `zpack burn <目录>` 在写入前被拒。2026-11-24 之后的 `error_info` 是「光驱认不出这张光盘，无法写入；请检查：…」（这种盘现在归一成 `unrecognized`）；在此之前是「光盘是只读盘（DVD-ROM：压盘或已封盘），无法继续写入」。
+- 旧文案对「盘放反 / 没卡牢 / 划伤 / 盘型不支持」这几种情况有误导性——用户看到的不是「盘坏了或放错了」，而是「盘已经封了」。2026-11-24 用户拍板新增 `unrecognized` 状态：`burn devices` 的 `status` 与 `note`、GUI 的括注与拦截原因、写入拒绝文案，四处都按「认不出」处理（见 3.1、4.3、6.4）。
+- 辨别靠 `Media` 里的追加读取（6.4）：真的一个受支持的数据文件系统都读不出才报 `unrecognized`；压盘和已封盘的盘仍然报 `full`。软件层面只能分到「读得出 / 读不出」，分不出是放反、划伤还是盘型不支持——排查提示把这几种都列出来。
 - 和 6.4 里那张 `damaged` 的盘对照：同样是「写不了」，引擎给出的形态可以完全不同（一张 `damaged`，一张 `DVD-ROM / full`）。所以**盘不可写时先查盘**（陷阱 #11），不要把一条拒绝文案当成对盘况的准确诊断。
 
 ### 6.11 临时文件、print 即 exit 与清理
@@ -619,7 +624,7 @@ GUI 不直连引擎，全部经这两条命令的 stdout JSON 驱动（见 gui s
 
 - **`devices[]` 的字段是 GUI 的硬依赖**。GUI 里有一份镜像结构体 `BurnDevice`（ui/gui/service.go:976-983），只认 `index` / `path` / `vendor` / `product` / `media` / `status`——**没有 `note`**。所以 Windows 上「`unknown` + `note` 里的失败原因」在 GUI 里是看不到的。字段改名或改类型是破坏性变更。
 - **status 词表三处同步**：`StatusName`（引擎）、`burnMediaRefusal`（CLI）、`burnBlockReason` / `burnMediaSuffix` / `planBurnVolumeName`（GUI）。GUI 的下拉显示名是「`index+1` · 厂商 型号（状态括注）」，并用显示名对应选中项（ui/gui/main.go:5478-5480、5542-5549）——状态文案一变，选中态也会跟着变。
-- **GUI 起刻时拼的参数**（`burnArguments`，ui/gui/service.go:1033-1048）：`burn <输入...> --device N [--speed N] [--volid 名称] --mode multi|mastered [--blank]`。GUI **不传** `--close` 与 `--no-eject`——封盘用 `--mode mastered` 表达。速度档位固定为 自动 / 4 / 8 / 16 / 24 / 32 / 48。
+- **GUI 起刻时拼的参数**（`burnArguments`，ui/gui/service.go:1034-1049）：`burn <输入...> --device N [--speed N] [--volid 名称] --mode multi|mastered [--blank]`。GUI **不传** `--close` 与 `--no-eject`——封盘用 `--mode mastered` 表达。速度档位固定为 自动 / 4 / 8 / 16 / 24 / 32 / 48。
 - **GUI 对成功输出的消费很有限**：只看 `is_success`，摘要固定是「刻录完成」（`convertSummary` 读的是 `data.output`，刻录输出里没有这个字段，ui/gui/service.go:709-720）；失败取 `error_info`。刻录任务没有产物文件，任务卡不出「显示」钮（ui/gui/service.go:675-676）。
 - **陷阱 #10：Service 层给页面的回调必须在后台协程里给**（2026-11-24）。`Service.BurnDevices` 的「未找到引擎」分支原本是同步回调，刻录页回调里的 `mygo.RunOnMain` 在无头测试环境里永远等不到主循环——`TestLeadSentenceStaysReadableAtMinWidth` 的刻录页目标没预设 `burnQueried`，必挂（10 分钟超时被杀）。`go test` 的程序在临时目录，`repoBin` 向上找不到仓库的 bin，无头测试里引擎恒为「未找到」。修法：回调一律异步（ui/gui/service.go:985-993）。同批修掉 `TestConvertSummary` 在 Windows 上的失败（测试把带反斜杠的路径直接拼进 JSON 串，整段信封解析失败）。**写涉及刻录页的 GUI 测试时，要预设 `burnQueried = true` 来跳过设备枚举**（ui/gui/burnstate_test.go:65、ui/gui/burnname_test.go:78）。
 - **容量写法两份各自实现**：`burnFormatBytes`（cli/burn/burn.go:334-358）与 GUI 的 `humanSize` 是同一约定（整数位不带小数、否则一位小数、数字与单位之间不留空格），改一个要改另一个。
@@ -760,7 +765,7 @@ ZPACK_IMAPI2_LIVE_TEST=1 go test ./internal/imapi2 -run TestLiveReadOnly
 - **macOS 上 `--volid` 没有任何效果**：`hdiutil makehybrid` 与 `hdiutil burn` 都没有传卷标（cli/burn/burn.go:619、644-654）。是有意保留的旧行为还是遗漏【待确认】。
 - **macOS / Linux 追加区段时不沿用盘上名称**：目录 / 多输入恒把第一步算出的名字（目录名、当前目录名或显式值）作 `-volid`（Linux），macOS 上干脆不定。与「已有内容的盘缺省沿用」的定案不符——这套规则目前只在 Windows 后端里实现。盘上的实际表现【待确认】（这两个平台没实跑过）。
 - **macOS / Linux 的 `size_bytes` 不是写入量**：是非目录输入的文件大小之和；输入全是目录时是第一个输入 `os.Stat` 的大小（没有意义）。`image` 是已经删除的临时 ISO 路径。两个字段在这两个平台上的语义与 Windows 不同，也没有文档说明过是否有意如此。
-- **「光盘是只读盘（DVD-ROM：压盘或已封盘），无法继续写入」对读不出来的盘有误导性**：光驱里放一张读不出来的盘（放反、没卡牢、划伤、盘型不支持等）时，引擎同样报 `DVD-ROM / full`，用户看到的却是「压盘或已封盘」（见 6.10）。更早的同类问题（盘读不出时 GUI 提示「放入空白光盘」）已经靠分状态文案解决，但这一条还留着。可以考虑在 `burn devices` 里新增一种「无法识别」状态并给排查提示。
+- ~~**「光盘是只读盘（DVD-ROM：压盘或已封盘），无法继续写入」对读不出来的盘有误导性**~~ **已解决（2026-11-24 用户拍板）**：新增 `unrecognized` 状态，读不出的盘在 `burn devices`、GUI、写入拒绝文案里都按「光驱认不出这张光盘」处理并带排查提示（见 3.1、4.3、6.4、6.10）。遗留一点：软件层面分不出是放反、划伤还是盘型不支持，排查提示只能把这几种都列出来；「只读类型 + 写保护」形态的追加读取还没有实盘验证过。
 - **擦除之后仍然异常时的提示绕**：带 `--blank` 擦完重读仍异常时，拒绝文案里的提示还是「加 --blank 先擦除再刻」——用户已经加过了（cli/burn/burn_windows.go:141-144、209-215）。
 - **Windows 上往有数据的盘追加镜像时不导入上一区段**：镜像输入走的是整文件直烧（cli/burn/burn_windows.go:220-235），不经过镜像库的 `ImportFileSystem`。镜像之后再追加镜像，旧区段的文件在新视图里是否还可见【待确认】（没有实测过；「镜像区段之后追加目录」是验证过的，旧文件仍在）。
 - **macOS / Linux 上外部工具的 stderr 没有时间戳**，是原样透传的（cli/burn/burn.go:690）；`error_info` 里只有「… 刻录失败: exit status N」，看不到工具给的真正原因。
@@ -803,10 +808,11 @@ ZPACK_IMAPI2_LIVE_TEST=1 go test ./internal/imapi2 -run TestLiveReadOnly
 | 8 | 空目录在 macOS / Linux 上是否保留 | 只在 Windows 上验证过 |
 | 9 | `StatusName` 与 `burnMediaRefusal` 的判定顺序不完全一致（`DAMAGED` 与 `UNSUPPORTED` 同时置位时，一边报 `unsupported`、一边报「状态异常」）是有意还是巧合 | 代码没有注释说明 |
 | 10 | macOS / Linux 追加区段后，旧区段的文件在新视图里是否还可见 | 没有实测；代码不导入上一区段，只能按 ISO9660 的一般行为推断 |
-| 11 | 光驱里放着读不出来的盘时，`burn devices` 的 `path` 是盘符还是引擎标识 | 实测记录里只有 `DVD-ROM / full` 这一项；盘没被 Windows 挂载，按代码推断没有盘符，但没留下当时的输出 |
+| 11 | 光驱里放着读不出来的盘时，`burn devices` 的 `path` 是盘符还是引擎标识 | 直接报「介质不兼容」的形态：2026-11-24 实测是盘符（`E:\`），Windows 当时也没有挂载它。被报成 `DVD-ROM / full` 的那种形态没有留下输出，按代码推断也是盘符（盘符跟刻录机走，不跟盘走） |
 
 ## 变更记录
 
 | 日期 | 改了什么 | 同步的代码（提交） |
 |---|---|---|
 | 2026-11-24 | 初版：从代码与 AGENTS.md 整理 | 40fb9e7 |
+| 2026-11-24 | 新增 `unrecognized` 状态：光驱认不出的盘（读不出身份，或被报成只读盘但读不出任何文件系统）在 `burn devices`、GUI、写入拒绝文案里都按「认不出」处理并带排查提示（3.1、3.3、4.1.1、4.3、5、6.4、6.5、6.10、9） | （提交后回填） |

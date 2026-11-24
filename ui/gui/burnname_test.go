@@ -32,6 +32,7 @@ func TestPlanBurnVolumeName(t *testing.T) {
 		{"须先擦除的盘", "erase-required", "备份", true, false, false, "需先擦除", "", ""},
 		{"写保护的盘", "write-protected", "备份", true, false, false, "写保护", "", ""},
 		{"不支持的盘", "unsupported", "备份", true, false, false, "不支持该盘", "", ""},
+		{"光驱认不出这张盘", "unrecognized", "备份", true, false, false, "认不出此盘", "", ""},
 		{"macOS 有盘时状态原样透传：同样不可命名", "DVD-R", "备份", true, false, false, "需空白光盘", "", ""},
 		{"计划先擦空的可擦写盘可命名", "appendable", "备份", false, true, true, "仅空白盘可设", "留空用默认名", "备份"},
 	}
@@ -158,5 +159,31 @@ func TestBurnVolumeNameRow(t *testing.T) {
 	}
 	if damaged.HasText("放入空白光盘后可以设置名称") {
 		t.Error("盘已在光驱里时不应再提示放入空白光盘")
+	}
+
+	// 盘在光驱里但光驱认不出：名称行直接给引擎的排查提示（放反 / 没卡牢 / 盘型 / 划伤，比缺省句全），
+	// 不出输入框
+	unrecognized := newBurnApp("unrecognized")
+	unrecognized.burnDevices[0].Note = "请检查：盘是否放反"
+	unrecognized.burnDevStr = burnDeviceLabel(unrecognized.burnDevices[0])
+	tester = render(unrecognized)
+	if focusField(tester) {
+		t.Error("认不出的盘不应出输入框")
+	}
+	if !tester.HasText("光驱读不出这张光盘。请检查：盘是否放反") {
+		t.Error("认不出的盘应显示引擎的排查提示")
+	}
+	if hint, found := tester.Find("认不出此盘"); !found || hint.H >= HINT_ONE_LINE_TOP {
+		t.Errorf("副标应存在且恒一行: found=%v 高=%.0f", found, hint.H)
+	}
+	// 引擎没带提示时用缺省句
+	if got := newBurnApp("unrecognized").burnVolumeNamePlan().lockedText; got != BURN_UNRECOGNIZED_LOCKED_TEXT {
+		t.Errorf("引擎没带排查提示时应用缺省句，实际 %q", got)
+	}
+	// 别的盘的说明不因引擎带了 note 而被改写
+	appendableWithNote := newBurnApp("appendable")
+	appendableWithNote.burnDevices[0].Note = "请检查：盘是否放反"
+	if got := appendableWithNote.burnVolumeNamePlan().lockedText; got != "这张盘已有内容，名称保持不变" {
+		t.Errorf("可追加的盘的说明不应被 note 改写，实际 %q", got)
 	}
 }

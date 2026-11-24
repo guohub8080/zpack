@@ -27,6 +27,10 @@ func TestBurnDeviceEntry(t *testing.T) {
 			Recorder:   imapi2.Recorder{Index: 0, UniqueID: "usb#1"},
 			MediaError: "读取介质类型失败: x",
 		}, BurnDevice{Index: 0, Path: "usb#1", Status: "unknown", Note: "读取介质类型失败: x"}},
+		{"光驱认不出的盘（实测：引擎报介质不兼容）：带排查提示", imapi2.Device{
+			Recorder: imapi2.Recorder{Index: 0, UniqueID: "usb#1", VolumePath: `E:\`},
+			Media:    imapi2.Media{Unrecognized: true},
+		}, BurnDevice{Index: 0, Path: `E:\`, Status: "unrecognized", Note: imapi2.UNRECOGNIZED_MEDIA_HINT}},
 		{"已封盘且无盘符时路径用引擎标识", imapi2.Device{
 			Recorder: imapi2.Recorder{Index: 2, UniqueID: "usb#3"},
 			Media:    imapi2.Media{Type: imapi2.MEDIA_TYPE_CDR, State: imapi2.MEDIA_STATE_FINALIZED},
@@ -52,6 +56,12 @@ func TestBurnMediaRefusal(t *testing.T) {
 		{"空白 DVD-R 可写", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_DVDDASHR, State: imapi2.MEDIA_STATE_BLANK | imapi2.MEDIA_STATE_APPENDABLE, SupportedByWriter: true,
 		}, false, ""},
+		{"光驱认不出的盘（实测：引擎报介质不兼容）", imapi2.Media{Unrecognized: true},
+			false, "光驱认不出这张光盘，无法写入；" + imapi2.UNRECOGNIZED_MEDIA_HINT},
+		{"认不出但被报成只读盘的：先按认不出报，不因请求擦除而换一条", imapi2.Media{
+			Unrecognized: true, Type: imapi2.MEDIA_TYPE_DVDROM,
+			State: imapi2.MEDIA_STATE_WRITE_PROTECTED | imapi2.MEDIA_STATE_UNSUPPORTED,
+		}, true, "光驱认不出这张光盘，无法写入；" + imapi2.UNRECOGNIZED_MEDIA_HINT},
 		{"带封盘位的介质", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_DVDPLUSR, State: imapi2.MEDIA_STATE_FINALIZED | imapi2.MEDIA_STATE_APPENDABLE,
 		}, false, "光盘已封盘，无法继续写入"},

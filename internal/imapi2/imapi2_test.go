@@ -46,11 +46,20 @@ func TestMediaStatusName(t *testing.T) {
 		{"须先擦除", Media{Type: MEDIA_TYPE_DVDDASHRW, State: MEDIA_STATE_ERASE_REQUIRED}, STATUS_ERASE_REQUIRED},
 		{"损坏", Media{Type: MEDIA_TYPE_CDROM, State: MEDIA_STATE_DAMAGED}, STATUS_DAMAGED},
 		{"不支持", Media{Type: MEDIA_TYPE_DVDROM, State: MEDIA_STATE_UNSUPPORTED}, STATUS_UNSUPPORTED},
+		{"光驱认不出的盘（实测：引擎报介质不兼容）", Media{Unrecognized: true}, STATUS_UNRECOGNIZED},
+		{"认不出优先于它被报成的只读状态", Media{
+			Unrecognized: true, Type: MEDIA_TYPE_DVDROM,
+			State: MEDIA_STATE_WRITE_PROTECTED | MEDIA_STATE_UNSUPPORTED,
+		}, STATUS_UNRECOGNIZED},
 	}
 	for _, testCase := range cases {
 		if got := testCase.media.StatusName(); got != testCase.want {
 			t.Errorf("%s: %q ≠ %q", testCase.name, got, testCase.want)
 		}
+	}
+	// 认不出的盘也算「有盘」——写入路径靠 Present() 与「没放盘」分开
+	if !(Media{Unrecognized: true}).Present() {
+		t.Error("认不出的盘应算有介质")
 	}
 }
 

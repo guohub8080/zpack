@@ -1,16 +1,19 @@
 package main
 
 // 刻录页的介质状态规则（纯函数，规则可单测）。status 是 burn devices 输出里的 status：
-// Windows 引擎报 blank / appendable / full / no-media / damaged / erase-required / write-protected / unsupported；
-// macOS 只报 no-media（有盘时为空）；Linux 是 xorriso 状态短语归一后的值，认不出的原样透传。
-// 所以只有明确认识的状态才下结论，其余一律不拦、不起名提示也不改——交给引擎裁决，避免误拦 mac/Linux。
+// Windows 引擎报 blank / appendable / full / no-media / damaged / erase-required / write-protected /
+// unsupported / unrecognized（光驱认不出这张盘）；macOS 只报 no-media（有盘时为空）；Linux 是 xorriso
+// 状态短语归一后的值，认不出的原样透传。所以只有明确认识的状态才下结论，其余一律不拦、不起名提示
+// 也不改——交给引擎裁决，避免误拦 mac/Linux
 
 // burnBlockReason 选中刻录机的介质挡住刻录的原因（可刻返回空串）。erase=勾了「先擦空再烧」：
-// 可擦写盘的异常状态擦除即恢复，不再拦截
+// 可擦写盘的异常状态擦除即恢复，不再拦截；认不出的盘擦除也无从谈起，同样拦
 func burnBlockReason(status string, erase bool) string {
 	switch status {
 	case "full":
 		return "光盘已封盘"
+	case "unrecognized":
+		return "光驱认不出这张光盘"
 	case "no-media":
 		return "未放入光盘"
 	case "damaged":
@@ -50,6 +53,8 @@ func burnMediaSuffix(status string) string {
 		return "（写保护）"
 	case "unsupported":
 		return "（不支持）"
+	case "unrecognized":
+		return "（认不出）"
 	}
 	return ""
 }

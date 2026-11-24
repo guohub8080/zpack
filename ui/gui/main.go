@@ -5548,11 +5548,16 @@ func (a *app) burnSelectedDevice() (BurnDevice, bool) {
 	return BurnDevice{}, false
 }
 
-// burnVolumeNamePlan 光盘名称行的显示与传参规则——按选中刻录机的介质状态与刻录内容形态定
+// burnVolumeNamePlan 光盘名称行的显示与传参规则——按选中刻录机的介质状态与刻录内容形态定。
+// 认不出的盘：引擎带了排查提示（放反 / 没卡牢 / 盘型超出光驱能力 / 划伤）就整句显示，比缺省句更全
 func (a *app) burnVolumeNamePlan() burnVolumeNamePlan {
 	selected, _ := a.burnSelectedDevice()
 	singleDir := len(a.burnInputs) == 1 && burnInputIsDir(a.burnInputs[0])
-	return planBurnVolumeName(selected.Status, a.burnVolumeName, singleDir, a.burnBlank)
+	plan := planBurnVolumeName(selected.Status, a.burnVolumeName, singleDir, a.burnBlank)
+	if plan.lockedText == BURN_UNRECOGNIZED_LOCKED_TEXT && selected.Note != "" {
+		plan.lockedText = "光驱读不出这张光盘。" + selected.Note
+	}
+	return plan
 }
 
 // clearBurn 清空刻录内容

@@ -21,6 +21,10 @@ type burnVolumeNamePlan struct {
 // BURN_VOLUME_NAME_CHARSET_NOTE 非 Windows 平台的字符集提示——引擎在 mac/Linux 上只保留字母、数字、下划线
 const BURN_VOLUME_NAME_CHARSET_NOTE = "macOS/Linux 下只保留字母、数字和下划线"
 
+// BURN_UNRECOGNIZED_LOCKED_TEXT 光驱认不出这张盘时名称行的说明（引擎没带排查提示时的缺省句；
+// 带了就换成引擎那句更全的——见 app.burnVolumeNamePlan）
+const BURN_UNRECOGNIZED_LOCKED_TEXT = "光驱读不出这张光盘，请检查是否放反或卡牢"
+
 // planBurnVolumeName 按选中刻录机的介质状态定名称行。status 是 burn devices 输出里的 status；
 // name 是输入框当前内容；singleDir=刻录内容恰好是一个文件夹；erase=勾了「先擦空再烧」
 func planBurnVolumeName(status, name string, singleDir, erase bool) burnVolumeNamePlan {
@@ -39,6 +43,8 @@ func planBurnVolumeName(status, name string, singleDir, erase bool) burnVolumeNa
 			plan.hint, plan.lockedText = "写保护", "这张盘处于写保护状态，无法写入"
 		case "unsupported":
 			plan.hint, plan.lockedText = "不支持该盘", "当前刻录机不支持这张光盘"
+		case "unrecognized":
+			plan.hint, plan.lockedText = "认不出此盘", BURN_UNRECOGNIZED_LOCKED_TEXT
 		}
 		return plan
 	}

@@ -76,6 +76,21 @@ const SCODE_IMPORT_SEEK_FAILURE uint32 = 0xC0AAB156
 // 读介质类型等属性返回它而非空值（2026-11-24 真机实测）
 const SCODE_MEDIA_NO_MEDIA uint32 = 0xC0AA0202
 
+// SCODE_MEDIA_INCOMPATIBLE 引擎错误码 E_IMAPI_RECORDER_MEDIA_INCOMPATIBLE（SDK imapi2error.h）——
+// 盘在光驱里、光驱却认不出它的身份时读介质类型返回它（盘型超出光驱能力 / 放反 / 没卡牢 / 划伤都会这样；
+// 2026-11-24 真机实测）。这是「有盘但认不出」，不是查询失败
+const SCODE_MEDIA_INCOMPATIBLE uint32 = 0xC0AA0203
+
+// SCODE_EMPTY_DISC 引擎错误码 IMAPI_E_EMPTY_DISC（SDK imapi2fserror.h）——盘读得到、上面没有东西
+const SCODE_EMPTY_DISC uint32 = 0xC0AAB150
+
+// SCODE_NO_SUPPORTED_FILE_SYSTEM 引擎错误码 IMAPI_E_NO_SUPPORTED_FILE_SYSTEM（SDK imapi2fserror.h）——
+// 盘读得到、但没有本引擎认识的数据文件系统（音频 CD 之类）
+const SCODE_NO_SUPPORTED_FILE_SYSTEM uint32 = 0xC0AAB151
+
+// UNRECOGNIZED_MEDIA_HINT 光驱认不出盘时的排查提示。软件层面分不出是哪一种，只能把常见的都列出来
+const UNRECOGNIZED_MEDIA_HINT = "请检查：盘是否放反（标签面应朝上）、是否卡牢、盘片类型是否超出刻录机能力（如蓝光盘放入 DVD 光驱）、盘片是否划伤或太脏"
+
 // 介质状态对外名称（burn devices 输出契约的 status 字段）
 const (
 	STATUS_NO_MEDIA        = "no-media"        // 无介质
@@ -86,6 +101,7 @@ const (
 	STATUS_ERASE_REQUIRED  = "erase-required"  // 须先擦除
 	STATUS_DAMAGED         = "damaged"         // 损坏
 	STATUS_UNSUPPORTED     = "unsupported"     // 不支持该介质
+	STATUS_UNRECOGNIZED    = "unrecognized"    // 光驱认不出这张盘（读不出身份，或读不出内容）
 	STATUS_UNKNOWN         = "unknown"         // 其他
 )
 
@@ -137,11 +153,12 @@ type Media struct {
 	PhysicallyBlank    bool    // 刻录机报告为物理空白
 	HeuristicallyBlank bool    // 启发式判定为空白（DVD+RW/DVD-RAM 等覆写介质主要看它）
 	SupportedByWriter  bool    // 数据写入器支持当前介质
+	Unrecognized       bool    // 光驱认不出这张盘：读不出身份，或读不出内容（有盘，但无从得知类型与状态）
 }
 
-// Present 是否有介质
+// Present 是否有介质（认不出的盘也算有盘）
 func (media Media) Present() bool {
-	return media.Type != MEDIA_TYPE_UNKNOWN
+	return media.Type != MEDIA_TYPE_UNKNOWN || media.Unrecognized
 }
 
 // TypeName 介质类型名
@@ -152,6 +169,8 @@ func (media Media) TypeName() string {
 // StatusName 介质状态名（blank / appendable / full / no-media …）
 func (media Media) StatusName() string {
 	switch {
+	case media.Unrecognized:
+		return STATUS_UNRECOGNIZED
 	case !media.Present():
 		return STATUS_NO_MEDIA
 	case media.State&MEDIA_STATE_FINALIZED != 0:
@@ -330,4 +349,19 @@ func cleanVolumeName(units []rune) string {
 		return ""
 	}
 	return trimmed
+}
+
+// chooseVolumeName 这次写入用哪个卷标（空串=交给引擎自定）。显式指定的名字优先；追加区段未指定时沿用盘上原名——
+// 先取 Windows 显示的卷标，取不到再还原引擎读回的字节串（见 sanitizeVolumeName，还原不出就放弃沿用，不写乱码）；
+// 空白盘未指定则交给引擎自定。纯函数，与平台无关，所以放在这里而不是 engine_windows.go（单测在各平台都要能编译）
+func chooseVolumeName(explicit, mounted, imported string, appended bool) string {
+	switch {
+	case explicit != "":
+		return explicit
+	case !appended:
+		return ""
+	case mounted != "":
+		return mounted
+	}
+	return sanitizeVolumeName(imported)
 }

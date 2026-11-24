@@ -80,6 +80,10 @@ func burnDeviceEntry(entry imapi2.Device) BurnDevice {
 	case entry.MediaError != "":
 		device.Status = imapi2.STATUS_UNKNOWN
 		device.Note = entry.MediaError
+	case entry.Media.Unrecognized:
+		// 光驱认不出这张盘——note 直接给排查提示，不让用户去猜「介质不兼容」是什么意思
+		device.Status = imapi2.STATUS_UNRECOGNIZED
+		device.Note = imapi2.UNRECOGNIZED_MEDIA_HINT
 	case !entry.Media.Present():
 		device.Status = imapi2.STATUS_NO_MEDIA
 	default:
@@ -122,7 +126,11 @@ func burnWindowsInner(inputs []string, flags burnFlags) (int64, error) {
 	if !media.Present() {
 		return 0, errors.New("刻录机里没有光盘——请放入光盘后重试")
 	}
-	stdout.LoggerInfo(fmt.Sprintf("介质: %s（%s），剩余 %s", media.TypeName(), media.StatusName(), burnFormatBytes(media.FreeBytes())))
+	if media.Unrecognized {
+		stdout.LoggerInfo("介质: 光驱认不出这张光盘")
+	} else {
+		stdout.LoggerInfo(fmt.Sprintf("介质: %s（%s），剩余 %s", media.TypeName(), media.StatusName(), burnFormatBytes(media.FreeBytes())))
+	}
 	if refusal := burnMediaRefusal(media, flags.blank); refusal != nil {
 		return 0, refusal
 	}
@@ -186,6 +194,9 @@ func burnWindowsInner(inputs []string, flags burnFlags) (int64, error) {
 // （2026-11-24 内置光驱实测：damaged 的 DVD-R 上，镜像直烧路径此前会直接调到 Write）
 func burnMediaRefusal(media imapi2.Media, erasing bool) error {
 	switch {
+	case media.Unrecognized:
+		// 认不出的盘先于一切状态位：它的类型与状态位都不可信（可能只是被报成了只读盘）
+		return errors.New("光驱认不出这张光盘，无法写入；" + imapi2.UNRECOGNIZED_MEDIA_HINT)
 	case media.State&imapi2.MEDIA_STATE_FINALIZED != 0:
 		return errors.New("光盘已封盘，无法继续写入")
 	case media.State&imapi2.MEDIA_STATE_WRITE_PROTECTED != 0 && imapi2.IsRomMediaType(media.Type):

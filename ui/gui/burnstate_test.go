@@ -24,6 +24,8 @@ func TestBurnBlockReason(t *testing.T) {
 		{"须先擦除", "erase-required", false, "光盘需先擦除"},
 		{"写保护", "write-protected", false, "光盘被写保护"},
 		{"不支持该介质", "unsupported", false, "不支持这张光盘"},
+		{"光驱认不出这张盘", "unrecognized", false, "光驱认不出这张光盘"},
+		{"认不出的盘不因擦除放行", "unrecognized", true, "光驱认不出这张光盘"},
 		{"状态异常的可擦写盘勾了先擦空：放行", "damaged", true, ""},
 		{"须先擦除的盘勾了先擦空：放行", "erase-required", true, ""},
 		{"写保护不因擦除放行", "write-protected", true, "光盘被写保护"},
@@ -46,6 +48,7 @@ func TestBurnMediaSuffix(t *testing.T) {
 	}{
 		{"blank", "（空白）"}, {"appendable", "（可追加）"}, {"full", "（已满）"}, {"no-media", "（无介质）"},
 		{"damaged", "（状态异常）"}, {"erase-required", "（需先擦除）"}, {"write-protected", "（写保护）"}, {"unsupported", "（不支持）"},
+		{"unrecognized", "（认不出）"},
 		{"", ""}, {"unknown", ""}, {"DVD-R", ""},
 	}
 	for _, testCase := range cases {
@@ -89,6 +92,7 @@ func TestBurnBlockedByMedia(t *testing.T) {
 	}{
 		{"blank", false}, {"appendable", false},
 		{"full", true}, {"no-media", true}, {"damaged", true}, {"erase-required", true}, {"write-protected", true}, {"unsupported", true},
+		{"unrecognized", true},
 		{"", false}, {"unknown", false},
 	} {
 		clickable, label := primaryClickable(testCase.status)

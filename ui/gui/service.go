@@ -15,7 +15,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
+
+// KILL_WAIT_TIMEOUT 取消任务时等子进程真正退出的上限
+const KILL_WAIT_TIMEOUT = 5 * time.Second
 
 // Task 是一条任务（一个 zpack 子进程）。
 type Task struct {
@@ -333,12 +337,21 @@ func (service *Service) runTask(task *Task, arguments []string) (raw []byte, exi
 	cmd := exec.Command(service.zpackPath(), arguments...)
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
+	exited := make(chan struct{}) // 进程收尾完毕（cmd.Wait 已返回，或根本没起来）时关闭
 	task.setKill(func() {
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
+		// 等子进程真正退出，再让 Cancel 去清半成品。Windows 上 Kill 返回不等于进程已退出——
+		// 此刻它还握着输出文件，紧跟其后的删除会报「文件被占用」而留下半个归档
+		// （2026-11-24 Windows 实测，约六成复现）。进程迟迟不退时到点照常去删，不无限等
+		select {
+		case <-exited:
+		case <-time.After(KILL_WAIT_TIMEOUT):
+		}
 	})
 	if err := cmd.Start(); err != nil {
+		close(exited)
 		task.finish(TaskFailed, "启动引擎失败："+err.Error())
 		return nil, 0, false
 	}
@@ -386,6 +399,7 @@ func (service *Service) runTask(task *Task, arguments []string) (raw []byte, exi
 	}
 	_ = cmd.Wait()
 	<-done
+	close(exited)
 	return raw, cmd.ProcessState.ExitCode(), true
 }
 
@@ -980,6 +994,7 @@ type BurnDevice struct {
 	Product string `json:"product,omitempty"`
 	Media   string `json:"media,omitempty"`
 	Status  string `json:"status,omitempty"`
+	Note    string `json:"note,omitempty"` // 引擎附带的说明（如光驱认不出盘时的排查提示）
 }
 
 // BurnDevices 异步枚举刻录机（zpack burn devices；无光驱=空列表也算成功）。

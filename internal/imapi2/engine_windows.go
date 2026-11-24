@@ -198,12 +198,33 @@ func (writer *DataWriter) Close() {
 	}
 }
 
-// Media 查询当前介质（无介质时返回 Type=MEDIA_TYPE_UNKNOWN 的零值信息）
+// discUnreadable 让引擎读一遍盘上的文件系统：一个受支持的数据文件系统都读不出才算「读不出」。
+// 读得到但上面没有东西（IMAPI_E_EMPTY_DISC）、或有盘但没有本引擎认识的数据文件系统（音频 CD 之类，
+// IMAPI_E_NO_SUPPORTED_FILE_SYSTEM）都不算——那是一张读得出的只读盘。引擎对象建不出来时不下结论
+func discUnreadable(recorder *ole.IDispatch) bool {
+	image, err := createObject(CLSID_FILE_SYSTEM_IMAGE)
+	if err != nil {
+		return false
+	}
+	defer image.Release()
+	identifyErr := callVoid(image, "IdentifyFileSystemsOnDisc", "识别盘上文件系统", recorder)
+	if identifyErr == nil || IsSCode(identifyErr, SCODE_EMPTY_DISC) || IsSCode(identifyErr, SCODE_NO_SUPPORTED_FILE_SYSTEM) {
+		return false
+	}
+	return true
+}
+
+// Media 查询当前介质（无介质时返回 Type=MEDIA_TYPE_UNKNOWN 的零值信息；认不出的盘 Unrecognized=true）
 func (writer *DataWriter) Media() (Media, error) {
 	media := Media{PreviousSession: -1}
 	mediaType, err := getInt(writer.writer, "CurrentPhysicalMediaType", "介质类型")
 	if IsSCode(err, SCODE_MEDIA_NO_MEDIA) {
 		return media, nil // 没放盘：引擎以错误码报告，归一成「无介质」
+	}
+	if IsSCode(err, SCODE_MEDIA_INCOMPATIBLE) {
+		// 有盘、光驱认不出它的身份：同样是错误码报告，归一成「认不出」而不是当成查询失败
+		media.Unrecognized = true
+		return media, nil
 	}
 	if err != nil {
 		return media, err
@@ -214,6 +235,10 @@ func (writer *DataWriter) Media() (Media, error) {
 	}
 	if media.State, err = getInt(writer.writer, "CurrentMediaStatus", "介质状态"); err != nil {
 		return media, err
+	}
+	// 「只读类型 + 写保护位」有两种可能：真是压盘 / 已封盘，或光驱读不出内容的盘——再读一次文件系统才能分开
+	if media.State&MEDIA_STATE_WRITE_PROTECTED != 0 && IsRomMediaType(media.Type) && discUnreadable(writer.recorder) {
+		media.Unrecognized = true
 	}
 	// 其余为辅助信息：个别介质 / 刻录机不支持某项查询时留空，不算失败
 	media.PhysicallyBlank, _ = getBool(writer.writer, "MediaPhysicallyBlank", "空白判定")
@@ -300,21 +325,6 @@ func (writer *DataWriter) mountedVolumeLabel() string {
 		return ""
 	}
 	return cleanVolumeName([]rune(windows.UTF16ToString(nameBuffer[:])))
-}
-
-// chooseVolumeName 这次写入用哪个卷标（空串=交给引擎自定）。显式指定的名字优先；追加区段未指定时沿用盘上原名——
-// 先取 Windows 显示的卷标，取不到再还原引擎读回的字节串（见 sanitizeVolumeName，还原不出就放弃沿用，不写乱码）；
-// 空白盘未指定则交给引擎自定
-func chooseVolumeName(explicit, mounted, imported string, appended bool) string {
-	switch {
-	case explicit != "":
-		return explicit
-	case !appended:
-		return ""
-	case mounted != "":
-		return mounted
-	}
-	return sanitizeVolumeName(imported)
 }
 
 // applyVolumeName 定卷标并返回最终使用的卷标（空串=交给引擎自定）：规则见 chooseVolumeName
