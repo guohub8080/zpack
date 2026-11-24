@@ -5727,18 +5727,8 @@ func (a *app) pageBurn(c *ui.Context) {
 		})
 
 		// 写入模式（可追加=引擎 multi 不封盘——Linux DAO 封死空盘的痛点；一次性=mastered 封盘）
-		// 平台差异化提示（用户定案 m06432/m06508）：可追加各平台能做的事不一样，写明白
-		modeHint := "封盘定稿，这张盘之后不能再写；老 DVD 机/车机兼容最好"
-		if a.burnModeStr == "可追加" {
-			switch runtime.GOOS {
-			case "windows":
-				modeHint = "不封盘，之后还能继续追加；Windows 后续将支持真 UDF 优盘式（可删改）"
-			case "darwin":
-				modeHint = "不封盘，之后还能继续追加；已写入的内容不能删"
-			default:
-				modeHint = "不封盘，之后还能继续追加；已写入的内容不能删"
-			}
-		}
+		// 平台差异化提示（规则见 burnModeHint）：可追加各平台能做的事不一样，写明白
+		modeHint := burnModeHint(a.burnModeStr, runtime.GOOS)
 		openSettingRow(c, t, "写入模式", "封盘=不能再写", func() {
 			// 下拉+平台提示行（分卷提示同款范式：提示独立成行，随选中与平台变）
 			ui.Column(c).Grow(1).Children(func() {

@@ -162,3 +162,26 @@ func TestBurnImageCautionRow(t *testing.T) {
 		t.Error("空白盘不应有「写入提醒」")
 	}
 }
+
+// TestBurnModeHint 写入模式下方的提示（表驱动）：一次性烧录三平台同文；可追加按平台如实区分——
+// macOS 的 hdiutil 不并入原有文件，不能跟着说「还能继续追加」
+func TestBurnModeHint(t *testing.T) {
+	mastered := "封盘定稿，这张盘之后不能再写；老 DVD 机/车机兼容最好"
+	cases := []struct {
+		platform string
+		mode     string
+		want     string
+	}{
+		{"windows", "可追加", "不封盘，之后还能继续追加；Windows 后续将支持真 UDF 优盘式（可删改）"},
+		{"linux", "可追加", "不封盘，之后还能继续追加；已写入的内容不能删"},
+		{"darwin", "可追加", "不封盘，但 macOS 不会把新内容并入这张盘原有的文件：已有内容的盘，写入后通常只看得到这次刻入的内容"},
+		{"windows", "一次性烧录", mastered},
+		{"linux", "一次性烧录", mastered},
+		{"darwin", "一次性烧录", mastered},
+	}
+	for _, testCase := range cases {
+		if got := burnModeHint(testCase.mode, testCase.platform); got != testCase.want {
+			t.Errorf("%s / %s: %q ≠ %q", testCase.platform, testCase.mode, got, testCase.want)
+		}
+	}
+}

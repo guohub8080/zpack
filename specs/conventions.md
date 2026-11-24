@@ -148,4 +148,4 @@ zpack compress 目录/ --output out.zip > /dev/null 2>&1 && echo "OK" || echo "F
 | 2026-11-24 | 初版：从代码与 AGENTS.md 整理 | fb313db |
 | 2026-11-24 | 数值严格校验补漏：crypto / bench 改用 `ParseIntStrict`（此前 `--length 5abc` 被当成 5） | 6016f9b |
 | 2026-11-24 | 命令面按功能拆子包；过程日志去向改为按调用参数判定，pdf / audio 的 `--quiet` 生效 | 6d31586、40fb9e7 |
-| 2026-11-24 | 启用一直预留着的警告级别：`[WARN]` 标签行（`LoggerWarn`），只给「照常继续、后果不可逆且不直观」的提醒用；首例是往有数据的盘写镜像（burn.md 3.4） | （提交后回填） |
+| 2026-11-24 | 启用一直预留着的警告级别：`[WARN]` 标签行（`LoggerWarn`），只给「照常继续、后果不可逆且不直观」的提醒用；首例是往有数据的盘写镜像（burn.md 3.4） | 510fe45 |

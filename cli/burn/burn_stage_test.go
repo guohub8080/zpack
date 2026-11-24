@@ -3,7 +3,6 @@ package burn
 import (
 	"errors"
 	"os"
-	osexec "os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,19 +12,14 @@ import (
 )
 
 // TestBurnStageInputsISO 多输入聚台 → 临时 ISO → 引擎解回交叉验证（无刻录机也能
-// 验证多输入语义的正确性；darwin 走 makehybrid，linux 需 xorriso 才跑）。
+// 验证多输入语义的正确性；只有 darwin 走这条路）。
 //
 // 注：自家 ISO 读取层暂按 ISO9660 基础层读名（大写、无 CJK——Joliet 层在盘上且
 // Windows 可见，但 core 的 Joliet 支持未做，AGENTS 已录局限）。故交叉验证用
 // ASCII 文件名 + 大写期望。
 func TestBurnStageInputsISO(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("windows 无 hdiutil/xorriso——刻录走系统镜像库，见 internal/imapi2")
-	}
-	if runtime.GOOS == "linux" {
-		if _, err := osexec.LookPath("xorriso"); err != nil {
-			t.Skip("无 xorriso")
-		}
+	if runtime.GOOS != "darwin" {
+		t.Skip("只有 macOS 还走临时 ISO；Linux 走 xorriso 原生增量（命令行拼装见 TestBurnLinuxTreeArguments），Windows 走系统镜像库")
 	}
 
 	source := t.TempDir()
@@ -114,7 +108,7 @@ func TestBurnStageInputsMountsAndCleansUp(t *testing.T) {
 
 	var stageDir string
 	staged := map[string]string{}
-	buildISO := func(mountedDir string, _ burnFlags, _ bool) (string, func(), error) {
+	buildISO := func(mountedDir string, _ burnFlags) (string, func(), error) {
 		stageDir = mountedDir
 		collectErr := filepath.WalkDir(mountedDir, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
@@ -204,7 +198,7 @@ func TestBurnStageInputsCleansUpOnISOFailure(t *testing.T) {
 		}
 	}
 	wantErr := errors.New("强制失败")
-	buildISO := func(mountedDir string, _ burnFlags, _ bool) (string, func(), error) {
+	buildISO := func(mountedDir string, _ burnFlags) (string, func(), error) {
 		// 失败发生在舞台挂满之后——确认本测试没被「根本没暂存」架空
 		mounted, readErr := os.ReadDir(mountedDir)
 		if readErr != nil || len(mounted) != len(inputs) {

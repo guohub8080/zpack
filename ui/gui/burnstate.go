@@ -85,3 +85,20 @@ func burnImageCaution(status string, inputs []string, erase bool) string {
 	}
 	return BURN_IMAGE_ON_USED_DISC_CAUTION
 }
+
+// burnModeHint 写入模式下方的提示。「可追加」各平台能做到的事不一样，如实写（用户定案 m06432/m06508；
+// 2026-11-24 修订）：Windows 与 Linux 会把新内容并入原有文件（Linux 自改走 xorriso 原生增量之后才是真的）；
+// macOS 的 hdiutil 没有这个能力——不封盘，但每次刻录各自独立，已有内容的盘通常只看得到最后刻入的内容
+func burnModeHint(mode string, platform string) string {
+	if mode != "可追加" {
+		return "封盘定稿，这张盘之后不能再写；老 DVD 机/车机兼容最好"
+	}
+	switch platform {
+	case "windows":
+		return "不封盘，之后还能继续追加；Windows 后续将支持真 UDF 优盘式（可删改）"
+	case "darwin":
+		return "不封盘，但 macOS 不会把新内容并入这张盘原有的文件：已有内容的盘，写入后通常只看得到这次刻入的内容"
+	default:
+		return "不封盘，之后还能继续追加；已写入的内容不能删"
+	}
+}

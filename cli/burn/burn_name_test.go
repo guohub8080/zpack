@@ -38,6 +38,7 @@ func TestBurnResolveVolumeName(t *testing.T) {
 		{"单个目录带尾分隔符同样取目录名", []string{photos + string(filepath.Separator)}, burnFlags{}, platformName("Photos", "PHOTOS")},
 		{"单个文件不是目录 → 当前目录名", []string{loose}, burnFlags{}, cwdName},
 		{"多输入里含目录 → 当前目录名", []string{loose, photos}, burnFlags{}, cwdName},
+		{"显式 --volid 给空串：三个平台一致回退 ZPACK", []string{photos}, burnFlags{volid: "", volidGiven: true}, "ZPACK"},
 		{"显式 --volid", []string{photos}, burnFlags{volid: "我的:盘", volidGiven: true}, platformName("我的_盘", "我的:盘")},
 	}
 	for _, testCase := range cases {

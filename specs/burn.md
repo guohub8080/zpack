@@ -14,7 +14,7 @@
 - **不做什么**（明确的边界）
   - 不做 `--mode live`（UDF 包写入的「优盘模式」）：三个平台都明确拒绝（cli/burn/burn.go:253-254、716-718）。
   - 只刻数据盘：没有音乐 CD、视频 DVD、启动盘制作。
-  - 不产出可留存的镜像文件：macOS / Linux 生成的临时 ISO 用完即删（cli/burn/burn.go:310），Windows 根本不落镜像文件。
+  - 不产出可留存的镜像文件：Windows（系统镜像库流式直烧）与 Linux（xorriso 原生增量）根本不落镜像文件；macOS 的临时 ISO 用完即删。
   - 没有独立的「擦除」命令：擦除只是 `--blank` 的前置步骤。
   - 不区分内置光驱与外接光驱（2026-11-24 用户要求「不要区分外接 / 内置」，AGENTS.md 陷阱 #11）：枚举与总线无关，盘不可写时先查盘。
   - 没有刻录百分比进度（只有每 5 秒一条心跳日志）；没有「中途打断后恢复」的逻辑（实测不需要，见 6.9）。
@@ -30,7 +30,7 @@
 |---|---|
 | `zpack burn devices` | 枚举刻录机与介质状态。无刻录机 = 成功 + 空数组 `[]` |
 | `zpack burn <镜像.iso\|.img\|.bin> [旗标]` | 镜像原样直烧。只认扩展名（不分大小写），不检查文件内容 |
-| `zpack burn <目录> [旗标]` | 目录的**内容**刻进镜像根。Windows 由系统镜像库流式生成后直烧、无临时 ISO；macOS / Linux 先生成临时 ISO |
+| `zpack burn <目录> [旗标]` | 目录的**内容**刻进镜像根。Windows 由系统镜像库流式生成后直烧、Linux 由 xorriso 原生增量直接写入，都不落临时 ISO；macOS 先生成临时 ISO |
 | `zpack burn <文件\|目录 ...> [旗标]`（两项及以上） | 多输入：文件与目录可任意混排，每项按唯一名装进镜像根；目录整树装入同名目录 |
 | `zpack burn --help` / `-h` | 打印帮助，exit 0（经 `helpAwareRun`，internal/cliutil/help.go:15-23）。帮助是 Short 加一段 Long：六条示例（枚举、烧镜像、目录直刻并封盘、选设备与速度、先擦再烧、起光盘名）以及模式、光盘名称、输出形态各一句说明 |
 
@@ -118,18 +118,18 @@
 ### 3.2 `zpack burn <输入...>` 成功（exit 0）
 
 ```json
-{"is_success":true,"data":{"blank":false,"close":false,"image":"E:\\data\\photos","mode":"multi","size_bytes":6396314}}
+{"is_success":true,"data":{"image":"E:\\data\\photos","size_bytes":6396314,"mode":"multi","close":false,"blank":false}}
 ```
 
 | 字段 | 类型 | 含义 |
 |---|---|---|
-| `image` | string | Windows：**第一个输入的绝对路径**——目录输入时就是那个目录的路径，并不是一个镜像文件（Windows 没有临时 ISO）。macOS / Linux：临时镜像的路径（`<系统临时目录>/zpack-burn-<pid>.iso`），返回时已经删除（cli/burn/burn.go:285-312、599） |
-| `size_bytes` | int | Windows：本次写入的字节数——镜像输入 = 镜像文件大小；目录 / 多输入 = 生成镜像的 `TotalBlocks × BlockSize`（cli/burn/burn_windows.go:234、278-283）。macOS / Linux：**不是**写入量，而是所有非目录输入的文件大小之和；输入全是目录时等于第一个输入 `os.Stat` 的大小（目录自身的元数据大小，没有参考意义）（cli/burn/burn.go:224-238、269-273） |
+| `image` | string | **三个平台同义**：第一个输入的绝对路径——目录输入时就是那个目录的路径，并不是一个镜像文件（Windows 没有临时 ISO；macOS 的临时 ISO 用完即删；Linux 不落临时 ISO）。2026-11-24 之前 macOS / Linux 给的是那个已经删掉的临时镜像路径（`burnWriteResult`，cli/burn/burn.go） |
+| `size_bytes` | int | **三个平台同义**（2026-11-24 用户拍板：统一）：本次写入光盘的字节数。镜像输入 = 镜像文件大小。目录 / 多输入：Windows = 生成镜像的 `TotalBlocks × BlockSize`；macOS = 临时 ISO 的大小；Linux = xorriso 会话日志里这个区段的扇区数 × 2048（读不到日志时为 0，见 4.1.5）。2026-11-24 之前 macOS / Linux 给的不是写入量，而是输入文件大小之和 |
 | `mode` | string | `multi` 或 `mastered`（`live` 走不到成功） |
 | `close` | bool | 是否封盘（`--close` 或 `--mode mastered`） |
 | `blank` | bool | 是否请求了擦除（只反映旗标，不反映盘是否真的被擦） |
 
-键序：这个载荷是 map，经 `Deterministic(true)` 按键名字母序输出，实际顺序是 `blank`、`close`、`image`、`mode`、`size_bytes`（cli/burn/burn.go:274-280，internal/stdout/log.go:40）。消费方不应依赖键序；这个顺序与 AGENTS.md 输出表、与 `zpack burn --help` 里印的示例都不同（见第 9 节）。
+键序：载荷是 struct `burnWriteResult`，按声明序输出——`image`、`size_bytes`、`mode`、`close`、`blank`（cli/burn/burn.go，internal/stdout/log.go）。2026-11-24 之前它是一个 map，经 `Deterministic(true)` 按键名字母序输出（`blank`、`close`、`image`、`mode`、`size_bytes`）；消费方本就不该依赖键序，GUI 按字段名解析，不受影响。
 
 输出里没有卷标、没有刻进了多少文件、没有用的哪台刻录机——这些只在 stderr 日志里。
 
@@ -164,26 +164,28 @@
 
 | `error_info` | 平台 | 触发条件 | 出处 |
 |---|---|---|---|
-| `--device N 超出范围（共 M 台，见 zpack burn devices）` | Windows / Linux | 序号 ≥ 刻录机台数（没有刻录机时 M = 0）。macOS 不走这条，见下面的「macOS 多刻录机寻址」 | cli/burn/burn_windows.go:106-110，cli/burn/burn.go:663-665 |
-| `刻录机里没有光盘——请放入光盘后重试` | Windows | 刻录机里没有介质 | cli/burn/burn_windows.go |
+| `--device N 超出范围（共 M 台，见 zpack burn devices）` | Windows / Linux | 序号 ≥ 刻录机台数（没有刻录机时 M = 0）。macOS 不走这条，见下面的「暂不支持 macOS」 |
+| `刻录机里没有光盘——请放入光盘后重试` | Windows / Linux | 刻录机里没有介质（Linux 看 `burn devices` 归一出的 `no-media`，`burnStatusRefusal`） |
+| `光盘已封盘，无法继续写入` | Windows / Linux | 盘已封盘（Linux 看 `full`；带了 `--blank` 也不放行） |
 | `光驱认不出这张光盘，无法写入；请检查：盘是否放反（标签面朝上）、是否卡牢、盘片类型是否超出刻录机能力（如蓝光盘放入 DVD 光驱）、盘片是否划伤或太脏` | Windows | 介质状态为 `unrecognized`（见 4.3、6.10） | cli/burn/burn_windows.go |
 | 见 4.3 的拒绝表 | Windows | 介质不可写 | cli/burn/burn_windows.go:126-128、187-207 |
 | `当前介质 <类型> 不可擦除（--blank 仅适用于 CD-RW / DVD±RW / DVD-RAM / BD-RE 等可擦写盘）` | Windows | 对一次性盘给了 `--blank` | cli/burn/burn_windows.go:130-133 |
 | `内容大小 <大小> 超过光盘剩余空间 <剩余>` | Windows | 待写镜像大于盘上剩余空间（仅当剩余扇区数 > 0 时才检查） | cli/burn/burn_windows.go:165-167 |
 | `打开文件为流失败: <路径>（0x<码>）` | Windows | 镜像文件（或多输入里的文件）打不开 | internal/imapi2/engine_windows.go:518-530 |
 | `<操作>失败: <系统给的本地化说明>（0x<引擎错误码>）`，或无说明时 `<操作>失败（0x<引擎错误码>）` | Windows | 任何一次引擎调用失败。`<操作>` 是代码里给每步起的名字：打开刻录机、读取介质类型、读取介质状态、设置写入速度、封盘设置、读取多区段接口、设置多区段接口、导入上一区段、卷标、加入目录、建目录、加入文件、生成镜像、**写入光盘**、**擦除光盘**、弹出光盘 等 | internal/imapi2/imapi2.go:252-264 |
-| `macOS 多刻录机寻址（-device OpenFirmware 路径）M2 交付；当前用默认设备（--device 0）` | macOS | `--device` > 0 | cli/burn/burn.go:636-638 |
-| `擦除失败（介质可能不可擦）: <drutil 输出>` | macOS | `--blank` 且 `drutil erase quick` 失败 | cli/burn/burn.go:639-643 |
-| `未找到 hdiutil（darwin 侧镜像生成引擎）` | macOS | 目录 / 多输入要生成镜像，但找不到 `hdiutil`（正常系统上不会发生） | cli/burn/burn.go:604-615 |
-| `未找到 xorriso（linux 侧镜像生成引擎）——请安装：sudo apt install xorriso / sudo dnf install xorriso / sudo pacman -S xorriso` | Linux | 目录 / 多输入要生成镜像，但找不到 `xorriso` | cli/burn/burn.go:604-615 |
-| `未找到 xorriso（Linux 刻录引擎）——请安装：sudo apt install xorriso` | Linux | 刻录阶段找不到 `xorriso`（镜像直烧时只会在这一步报） | cli/burn/burn.go:659-661 |
-| `生成临时镜像失败: <工具输出>` | macOS / Linux | `hdiutil makehybrid` 或 `xorriso -as mkisofs` 失败 | cli/burn/burn.go:628-630 |
-| `创建刻录暂存目录失败: <原因>` / `暂存刻录内容失败: <原因>` | macOS / Linux | 多输入聚台时建不了临时目录，或某项输入挂不进舞台 | cli/burn/burn.go:368-382 |
-| `hdiutil 刻录失败: <Go 的 exec 错误>` / `xorriso 刻录失败: <Go 的 exec 错误>` | macOS / Linux | 刻录命令退出码非 0（通常形如 `exit status 1`；工具自己的报错原文在 stderr 里，不进 JSON） | cli/burn/burn.go:687-701 |
+| `暂不支持 macOS：多刻录机寻址（--device 大于 0）尚未接入，目前只能用默认刻录机（--device 0）` | macOS | `--device` > 0。不悄悄换到默认刻录机——刻录不可逆，烧错设备比报错糟得多（2026-11-24 改写：旧文案说「当前用默认设备」，实际却是直接失败） | `burnDarwinImage`，cli/burn/burn.go |
+| `擦除失败（介质可能不可擦）: <drutil 输出>` | macOS | `--blank` 且 `drutil erase quick` 失败 | `burnDarwinImage`，cli/burn/burn.go |
+| `未找到 hdiutil（darwin 侧镜像生成引擎）` | macOS | 目录 / 多输入要生成镜像，但找不到 `hdiutil`（正常系统上不会发生） | `burnStageISO`，cli/burn/burn.go |
+| `未找到 xorriso（Linux 刻录引擎）——请安装：sudo apt install xorriso` | Linux | 刻录阶段找不到 `xorriso`（镜像直烧、目录 / 多输入都在这一步报；它排在任何临时文件之前） | `burnLinuxDevice`，cli/burn/burn.go |
+| `读取镜像大小失败: <原因>` | macOS / Linux | 镜像输入在入口检查通过之后、直烧之前读不到大小（极少见） | `burnImageSize`，cli/burn/burn.go |
+| `创建会话日志失败: <原因>` | Linux | 目录 / 多输入刻录前建不出临时的会话日志文件 | `burnLinuxTree`，cli/burn/burn.go |
+| `生成临时镜像失败: <工具输出>` | macOS | `hdiutil makehybrid` 失败 | `burnStageISO`，cli/burn/burn.go |
+| `创建刻录暂存目录失败: <原因>` / `暂存刻录内容失败: <原因>` | macOS | 多输入聚台时建不了临时目录，或某项输入挂不进舞台 | `burnStageInputs`，cli/burn/burn.go |
+| `hdiutil 刻录失败: <Go 的 exec 错误>` / `xorriso 刻录失败: <Go 的 exec 错误>`，后面可带 `：<一句原因>` | macOS / Linux | 刻录命令退出码非 0（`<Go 的 exec 错误>` 通常形如 `exit status 1`）。`<一句原因>` 取自工具的 stderr：最后一条带严重级别的 `FAILURE` / `FATAL` / `MISHAP` / `SORRY`（xorriso），一条都没有就取最后一个非空行；超过 240 个字符截断；stderr 全空则没有这一段（`burnFailureDetail`，cli/burn/burn.go。2026-11-24 之前只有 `exit status N`，看不到真正的原因） |
 
-路径类失败（`filepath.Abs`、`os.Stat`）在 Windows 后端里返回的是 Go 原始错误文案，没有加工（cli/burn/burn_windows.go:221-228、254-270）。
+路径类失败（`filepath.Abs`、`os.Stat`）在 Windows 后端里返回的是 Go 原始错误文案，没有加工（cli/burn/burn_windows.go）。
 
-刻录失败不会改变已经写到盘上的数据，也没有回滚；临时文件（macOS / Linux 的舞台目录与临时 ISO）在失败路径上照样清理（见 4.1.8）。
+刻录失败不会改变已经写到盘上的数据，也没有回滚；临时文件（macOS 的舞台目录、临时 ISO，Linux 的会话日志）在失败路径上照样清理（见 4.1.8）。2026-11-24 之前 macOS / Linux 的刻录函数在几个分支里直接 `ErrorPrint`——print 即 exit，调用方的清理被跳过，临时 ISO 和舞台目录会留在磁盘上；现在这一层只返回 error。
 
 ### 3.4 stderr 过程日志
 
@@ -196,7 +198,8 @@
 | `介质: <类型>（<状态>），剩余 <容量>` | Windows | 读到介质之后 |
 | `快速擦除光盘…` | Windows | 带了 `--blank` 且介质可擦写 |
 | `擦除中… 已用 N 秒` | Windows | 擦除期间，每 5 秒一条 |
-| `[WARN] 这张盘已有内容，而镜像是原样写进新区段的，不会与盘上原有文件合并——…`（全文见 4.1.3） | Windows | **镜像输入，且盘不是空白**（擦除之后重读再判）。只警告、不拦截，照常写入 |
+| `[WARN] 这张盘已有内容，而镜像是原样写进新区段的，不会与盘上原有文件合并——…`（全文见 4.1.3） | Windows / Linux | **镜像输入，且盘上有数据**。只警告、不拦截，照常写入。Windows 按「不是启发式空白」判（擦除之后重读再判）；Linux 按 `burn devices` 的 `appendable` 判（带了 `--blank` 不警告）。macOS 读不到介质状态，没有这条 |
+| `提示：macOS 的 hdiutil 不会把新内容并入盘上原有的文件。这张盘若已有内容，写入后电脑上通常只看得到这次刻入的文件` | macOS | 目录 / 多输入刻录，每次都提示（读不到盘是不是空白，没法只在有数据时才说）。不带 `[WARN]` 标签——多数情况下盘是空白的，不该每次都报警 |
 | `写入速度: N×` / `写入速度: 请求 N× 超出当前介质/刻录机支持的范围，按 M× 刻录` / `写入速度设置未生效（<原因>），按刻录机默认速度刻录` | Windows | 给了 `--speed` |
 | `镜像文件: <绝对路径>（<大小>）` | Windows | 镜像输入 |
 | `光盘名称: <名称>` | Windows | 目录 / 多输入，且最终使用的卷标非空 |
@@ -206,9 +209,9 @@
 | `<工具> <参数…>`（即将执行的完整命令行） | macOS / Linux | 执行刻录命令之前。镜像生成与擦除命令不记 |
 | `<外部工具 stdout 的每一行>` | macOS / Linux | 刻录命令的 stdout 逐行加时间戳前缀转记 |
 
-容量的人读写法（`burnFormatBytes`，cli/burn/burn.go:334-358）：整数位不带小数（`3GB` / `5MB`），否则一位小数（`2.3MB`），数字与单位之间不留空格，1024 进制。
+容量的人读写法（`burnFormatBytes`，cli/burn/burn.go）：整数位不带小数（`3GB` / `5MB`），否则一位小数（`2.3MB`），数字与单位之间不留空格，1024 进制。
 
-macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己的 stderr 是**原样透传**的，没有时间戳前缀，这是刻录功能对统一日志格式的唯一偏离（cli/burn/burn.go:690）。
+macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso`）自己的 stderr 是**原样透传**的，没有时间戳前缀，这是刻录功能对统一日志格式的唯一偏离（`burnRunCommand`）。同时 stderr 会留一份在内存里，命令失败时从中挑一句放进 `error_info`（3.3）。
 
 ## 4. 行为细则
 
@@ -291,26 +294,70 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
   - 多输入 → 每项按唯一名加到镜像根：文件用 `AddFile`，目录先建同名目录再把整棵树加进去（internal/imapi2/engine_windows.go:409-445）。
   - 最后 `CreateResultImage` 得到结果镜像：`size_bytes` = `TotalBlocks × BlockSize`。
 
-#### 4.1.4 macOS 刻录流程（cli/burn/burn.go:283-312、596-655）
+#### 4.1.4 macOS 刻录流程（`burnUnix` → `burnDarwinTree` / `burnDarwinImage`，cli/burn/burn.go）
 
-1. 准备镜像文件：
-   - 镜像输入 → 直接用。
+> 这条路径**没有实跑过**（手头没有 macOS 机器；只做了交叉编译与 vet）。hdiutil 的能力边界取自其手册：`-[no]forceclose`（缺省不封盘）、`-[no]eject`（缺省弹出）、`-erase`；`makehybrid` 与 `burn` 都**没有**任何并入已有区段的选项。
+
+1. 镜像输入 → 直接用，写入量 = 镜像文件大小。目录 / 多输入 → 先生成临时镜像：
    - 单个目录 → `hdiutil makehybrid -iso -joliet -ov -o <临时 ISO> <目录>`（长文件名走 Joliet）。
    - 多输入 → 先把各项挂进一个临时「舞台目录」再 makehybrid（4.1.8）。
-2. `--device` 只支持 0；大于 0 直接报错（多刻录机寻址未做）。
-3. 带了 `--blank` → 先 `drutil erase quick`（`drutil` 用的是默认光驱；此时 `--device` 只可能是 0）。
-4. `hdiutil burn <镜像> [-speed N] [-forceclose] [-noeject]`。缺省不封盘，可追加。
-5. 刻完删临时镜像与舞台目录。
+   - 写入量 = 临时 ISO 的大小（刻完即删）。
+2. 目录 / 多输入刻录前打一行提示（3.4）：hdiutil 不会并入原有文件。
+3. `--device` 只支持 0；大于 0 直接报错（多刻录机寻址未做）。
+4. 带了 `--blank` → 先 `drutil erase quick`（`drutil` 用的是默认光驱；此时 `--device` 只可能是 0）。
+5. `hdiutil burn <镜像> [-speed N] [-forceclose] [-noeject]`。缺省不封盘。
+6. 刻完（无论成败）删临时镜像与舞台目录。
 
-#### 4.1.5 Linux 刻录流程（cli/burn/burn.go:657-683）
+**「可追加」在 macOS 上的实际含义**（2026-11-24 用户定案「原生能做到是什么就是什么」，如实标注）：不封盘，盘还能再写；但每次刻录是一个**各自独立**的区段，新区段里只有这次刻入的内容。系统挂载光盘时读最后一个区段，所以往有数据的盘上再刻一次之后，电脑上通常只看得到**这次**刻入的文件；原有文件数据还在盘上，但一般的工具读不到。要把内容追加到原有文件之后，macOS 上请换一张空白盘。macOS 读不到盘是不是空白，所以命令行给不出「只在该警告时才出现」的警告，GUI 也判不出该不该出「写入提醒」行——只能每次都提示（3.4、gui.md 2.6）。
 
-1. 准备镜像文件，同 macOS，只是生成命令换成 `xorriso -as mkisofs -volid <卷标> [-f] -joliet -rational-rock -o <临时 ISO> <目录>`；`-f` 只在多输入的舞台目录上加（跟随符号链接）。
-2. 重新枚举设备（`xorriso -devices`），把 `--device` 序号换成设备路径；越界 → 「--device N 超出范围…」。
-3. `xorriso -as cdrecord -v dev=<设备路径> [speed=N] [blank=as_needed] [-multi] [-eject] <镜像>`。
-   - 不封盘时加 `-multi`（可追加）；`--close` / `mastered` 时不加（封盘）。
-   - `--blank` → `blank=as_needed`，由 xorriso 按介质自动选擦除方式。
-   - `--no-eject` → 不加 `-eject`。
-4. 刻完删临时镜像与舞台目录。
+#### 4.1.5 Linux 刻录流程（`burnUnix` → `burnLinuxTree` / `burnLinuxImage`，cli/burn/burn.go）
+
+> 这条路径**没有实跑过**（本机是 Windows；只做了交叉编译、vet 与命令行拼装的单测 `TestBurnLinuxTreeArguments`）。每一项都按 xorriso 手册核对过，依据记在下面。
+
+**公共部分**
+
+1. 取设备（`burnLinuxDevice`）：PATH 里没有 `xorriso` → 报错带安装引导；重新枚举设备（`xorriso -devices` + 逐台 `-toc`），把 `--device` 序号换成设备路径；越界 → 「--device N 超出范围…」。这一步排在任何临时文件之前。
+2. 写入前拒绝（`burnStatusRefusal`）：`burn devices` 归一出的状态是 `no-media` → 「刻录机里没有光盘——请放入光盘后重试」；`full` → 「光盘已封盘，无法继续写入」（带了 `--blank` 也不放行）。判不出状态的不拦，交给 xorriso。
+3. 刻录命令一律 `-no_rc` 开头（必须是第一个参数才生效）：不读用户的 xorriso 配置，行为只由这里给的参数决定。
+
+**镜像输入**（`burnLinuxImage`）：与 2026-11-24 之前相同——
+
+```
+xorriso -no_rc -as cdrecord -v dev=<设备路径> [speed=N] [blank=as_needed] [-multi] [-eject] <镜像>
+```
+
+- 不封盘时加 `-multi`（可追加）；`--close` / `mastered` 时不加（封盘）。
+- `--blank` → `blank=as_needed`，由 xorriso 按介质自动选擦除方式。
+- `--no-eject` → 不加 `-eject`。
+- 镜像不经过 xorriso 的 ISO 库，**不会并入上一区段**：介质状态是 `appendable` 且没带 `--blank` 时先打 `[WARN]`（同 Windows，见 4.1.3），然后照常写入。写入量 = 镜像文件大小。
+
+**目录 / 多输入**（`burnLinuxTree`，xorriso 原生增量；2026-11-24 用户拍板「原生能做到是什么就是什么」）：
+
+```
+xorriso -no_rc -session_log <临时日志> -dev <设备路径> \
+        [-blank as_needed] [-volid <卷标>] -joliet on \
+        -map <目录> /            （单个目录：目录的内容进镜像根）
+        | -map <项> /<唯一名> …  （多输入：每项按唯一名进镜像根） \
+        -find / -exec mkisofs_r -- [-speed N] -close on|as_needed -commit_eject all | -commit
+```
+
+参数顺序即 xorriso 的执行顺序（`burnLinuxTreeArguments`，纯函数，有表驱动单测）：
+
+| 参数 | 依据（xorriso 手册）与取舍 |
+|---|---|
+| `-dev <设备>` | 输入、输出是同一个驱动器，写法定为 growing：「盘上有 ISO 就读进来；没有就新建一个空白的」。经 libburn 直接读上一个区段，不经过可能带缓存的 CD-ROM 驱动（手册在多区段例子里专门提醒过那条路的坑） |
+| `-blank as_needed` | 只动了输出驱动器；此刻镜像还没改动，不会触发「同一驱动器上既改又擦」的 FAILURE。紧跟 `-dev` |
+| `-volid` | 光盘名称规则（4.1.6、6.6）在 Linux 上的落地，`burnLinuxVolumeID`：显式给了 `--volid` → 用它；没给 → 盘是空白（或先擦除）才给缺省名，`appendable` 的盘**不给**（xorriso 在卷标为缺省值时加载镜像，盘上已有的卷标自动沿用），判不出介质状态时按旧行为给缺省名。放在 `-dev` 之后：镜像加载盖不掉它 |
+| `-joliet on` | 原生模式缺省只出 Rock Ridge；加 Joliet 给不认 Rock Ridge 的读者（与原先的 mkisofs `-J` 一致） |
+| `-map` | 「disk_path 是目录时整棵子树进镜像」。单个目录映射到 `/`——目录的内容进镜像根，目录名本身不进盘；多输入每项映射到 `/<唯一名>`（`burnUniqueEntryNames`，与 Windows 同规则）。顶层路径先解析符号链接（`burnRealPath`，与入口处 `os.Stat` 跟随链接一致）；目录内部的链接原样保留。往已有的盘上追加时，同名目录会合并；文件撞名由 xorriso 的 `-overwrite`（缺省拒绝）报 FAILURE，写入之前就失败 |
+| `-find / -exec mkisofs_r --` | 与原先的 mkisofs `-r` 同义：属主归零、人人可读、不可写——盘拿到别的机器上也读得了 |
+| `-close on` / `-close as_needed` | 封盘；或「可追加」。`as_needed`：个别盘型（DVD-R DL、快速除格式的 DVD-RW）只能封盘写，交给 xorriso 按介质取舍——宁可封盘，不让「可追加」在这种盘上直接失败 |
+| `-commit_eject all` / `-commit` | 写完不重新加载镜像、直接弹出；`--no-eject` 时只提交 |
+| `-session_log <临时日志>` | 每个区段写完追加一行 `timestamp start_lba size volume-id`。写入量 = 最后一行的 `size × 2048`（`burnSessionLogSize`）。**【待确认】**`size` 按 2048 字节扇区计是依 xorriso 一贯的按 2 KiB 扇区计推断的，手册那一句没写单位；第一次在 Linux 上实跑时要拿 `size_bytes` 对一下 `-toc`。读不出日志时给 0，不影响刻录结果 |
+
+不落临时 ISO：文件内容在写入时直接从磁盘读。会话日志是临时文件，成败都由 `burnLinuxTree` 清掉。
+
+**效果**：往有数据的盘上追加目录 / 文件，新区段带着「旧文件 + 新文件」的完整目录树，系统挂载最后一个区段——**旧文件照常可见**。这是 xorriso growing 的本义（手册 Session model 一节），2026-11-24 之前代码并没有用到它（那时每次都是全新生成的 ISO，见第 9 节）。
 
 #### 4.1.6 光盘名称（卷标）
 
@@ -341,7 +388,7 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 | 平台 | 卷标怎么到盘上 |
 |---|---|
 | Windows | 写进镜像库的 `VolumeName`。三种文件系统各自按自身上限截断，中文名在 UDF / Joliet 层原样保留，ISO9660 层变成下划线——Windows 读 UDF，所以显示中文 |
-| Linux | 作为 `-volid` 交给 `xorriso -as mkisofs`。**追加区段时不沿用盘上名称**：新卷标恒是第一步算出的名字（目录名 / 当前目录名 / 显式值） |
+| Linux | 目录 / 多输入走 xorriso 原生增量，卷标作为 `-volid` 交给它。**给不给**由 `burnLinuxVolumeID` 定（2026-11-24 起与 Windows 同规则）：显式给了 `--volid` → 给；没给 → 盘是空白（或先擦除）才给第一步的缺省名，`appendable` 的盘**不给**，xorriso 自动沿用盘上已有的卷标；判不出介质状态时按旧行为给缺省名。镜像输入走 cdrecord 兼容模式，不用卷标 |
 | macOS | `hdiutil makehybrid` 与 `hdiutil burn` 都没有传卷标的参数，`--volid` 在 macOS 上**没有任何效果**【待确认】是有意保留的旧行为还是遗漏 |
 
 **Windows 的温和规范化**（`burnWindowsVolumeName`，cli/burn/burn_windows.go:21-51；显式与缺省名都过）：
@@ -365,24 +412,26 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
   - 速度表为空时按请求值原样设置。
   - 真机例：DVD-R 的速度表是 `[5410 2705]`（约 4× / 2×）——请求 8× 落到 4×，请求 1× 升到 2×，请求 3× 取 2×。
 - macOS：`hdiutil burn -speed N`，直接交给工具。
-- Linux：`xorriso -as cdrecord speed=N`，直接交给工具。
+- Linux：目录 / 多输入 `xorriso -speed N`（原生模式），镜像 `xorriso -as cdrecord speed=N`，都直接交给工具。
 
 #### 4.1.8 临时文件与清理
 
 | 平台 | 会产生什么 | 在哪 |
 |---|---|---|
 | Windows | 无 | — |
-| macOS / Linux，目录或多输入 | 临时 ISO | `<系统临时目录>/zpack-burn-<pid>.iso` |
-| macOS / Linux，多输入 | 舞台目录（名字以 `.zpack-burn-stage-` 开头） | 输入们的最长公共祖先目录（同卷才能硬链接）；公共祖先不可写时回退系统临时目录 |
+| macOS，目录或多输入 | 临时 ISO | `<系统临时目录>/zpack-burn-<pid>.iso` |
+| macOS，多输入 | 舞台目录（名字以 `.zpack-burn-stage-` 开头） | 输入们的最长公共祖先目录（同卷才能硬链接）；公共祖先不可写时回退系统临时目录 |
+| Linux，目录 / 多输入 | xorriso 的会话日志 | `<系统临时目录>/zpack-burn-session-<随机>.log` |
+| Linux，镜像输入 | 无 | — |
 
-多输入的舞台怎么搭（`burnStageInputs` / `burnLinkEntry`，cli/burn/burn.go:366-453）：
+多输入的舞台只有 macOS 还在搭（`burnStageInputs` / `burnLinkEntry`，cli/burn/burn.go；Linux 的多输入 2026-11-24 起走 xorriso 原生 `-map`，不聚台）：
 
-- 顶层条目名按输入顺序取基名，重名依次加 `-2`、`-3`（序号加在扩展名之前，每次从原名起算，不会出现 `a-2-3.txt`）。这套命名 mac/Linux 的舞台和 Windows 的镜像库**共用**（`burnUniqueEntryNames`，cli/burn/burn.go:316-331）。
+- 顶层条目名按输入顺序取基名，重名依次加 `-2`、`-3`（序号加在扩展名之前，每次从原名起算，不会出现 `a-2-3.txt`）。这套命名 macOS 的舞台、Linux 的 `-map` 目标名和 Windows 的镜像库**共用**（`burnUniqueEntryNames`，cli/burn/burn.go）。
 - 散文件：先试硬链接（零拷贝），失败（跨卷、权限等）回退拷贝。
-- 目录：macOS 逐文件硬链接克隆整棵树（跨卷文件回退拷贝，符号链接 / 设备等非常规文件不进盘）；Linux 直接建符号链接，靠 `-f` 让 mkisofs 跟随。
+- 目录：macOS 逐文件硬链接克隆整棵树（跨卷文件回退拷贝，符号链接 / 设备等非常规文件不进盘）。`burnLinkEntry` 里还留着 Linux 的符号链接分支（原先靠 mkisofs `-f` 跟随），现在只有单测在用。
 - 舞台建在公共祖先目录而不是系统临时目录，是为了让硬链接同卷生效。
 
-清理是**显式调用**的，不靠 `defer`：输出函数一调用进程就退出，外层 `defer` 不会执行（cli/burn/burn.go:310）。任何失败路径都会清：舞台搭到一半失败、镜像生成失败，由 `burnStageInputs` 自己清场并把错误**返回**给调用方（不在里面直接输出——那样调用方就无从清理了，cli/burn/burn.go:364、597、686）。
+清理是**显式调用**的，不靠 `defer`：输出函数一调用进程就退出，外层 `defer` 不会执行。macOS / Linux 这一层（`burnUnix` 及其下）只返回 error、不 `ErrorPrint`，由 `runBurnWrite` 统一输出——2026-11-24 之前刻录函数里有几处直接输出，临时 ISO 和舞台目录会留在磁盘上。任何失败路径都会清：舞台搭到一半失败、镜像生成失败，由 `burnStageInputs` 自己清场并把错误**返回**给调用方；刻录失败由 `burnDarwinTree` 清；Linux 的会话日志成败都由 `burnLinuxTree` 清。
 
 ### 4.2 边界与退化输入
 
@@ -393,16 +442,17 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 | 重名的多输入 | 后来的落为 `名字-2`、`名字-3`（扩展名之前），内容各归各；目录重名同理（`资料-2`） |
 | 空目录 | Windows 保留（真机验证过空文件夹进了盘） |
 | 超长 / 中文 / 带空格的文件名 | Windows 经 Joliet + UDF 保留：52 字符中文长文件名、60 字符文件名、带空格文件名、三层深路径都完整（真机验证） |
-| `--volid ""`（显式给空串） | Windows 规范化后回退 `ZPACK`。Linux 上 `burnStageISO` 见到空卷标会改用目录名的规范化结果（cli/burn/burn.go:600-603）：单个目录时就是目录名；多输入时是临时舞台目录名，卷标会变成形如 `ZPACKBURNSTAGE123456789` 的字符串。macOS 本来就不传卷标 |
+| `--volid ""`（显式给空串） | 三个平台一致，回退 `ZPACK`（2026-11-24 起；此前 Linux 上空白盘会得到 xorriso 自己的缺省名）。macOS 本来就不传卷标 |
 | 一次性盘 + `--blank` | Windows 直接报「当前介质 <类型> 不可擦除…」，**即使盘是空白的**也不继续 |
 | `--speed -1`、`--device -1` | 负值被当成下一个旗标，静默忽略，取缺省 |
 | 旗标后面没跟值 | 该旗标静默忽略，取缺省 |
 | 输入路径以 `-` 开头 | 没法表达：没有 `--` 分隔符，会被当成旗标 |
-| 没有刻录机 | `burn devices` 成功 + 空数组；`burn <输入>` 失败：「--device 0 超出范围（共 0 台，见 zpack burn devices）」。macOS / Linux 上这个错误发生在临时镜像生成**之后**（镜像照样会清理） |
-| 刻录机里没放盘 | Windows：「刻录机里没有光盘——请放入光盘后重试」；macOS / Linux 由外部工具报错 |
-| 内容超过盘容量 | Windows 写入前预检并报错；macOS / Linux 不预检，由 hdiutil / xorriso 报错 |
+| 没有刻录机 | `burn devices` 成功 + 空数组；`burn <输入>` 失败：「--device 0 超出范围（共 0 台，见 zpack burn devices）」。Linux 上这个错误发生在任何临时文件之前；macOS 上临时镜像照样会先生成、失败后清理 |
+| 刻录机里没放盘 | Windows / Linux：「刻录机里没有光盘——请放入光盘后重试」；macOS 由外部工具报错 |
+| 内容超过盘容量 | Windows 写入前预检并报错；macOS / Linux 不预检，由 hdiutil / xorriso 报错（失败原因现在会挑进 `error_info`，见 3.3） |
 | `.bin` 文件的内容其实不是光盘镜像 | 照样直烧，不校验内容；刻出来的盘能不能读由内容决定 |
-| 输入是符号链接 | 按 `os.Stat` 的结果分类（跟随链接）。Windows 上目录内部的符号链接 / 联接点如何进盘由引擎决定，未实测【待确认】 |
+| 输入是符号链接 | 按 `os.Stat` 的结果分类（跟随链接）。Linux 上顶层路径先解析成真实路径再交给 xorriso（目录内部的链接原样保留）；Windows 上目录内部的符号链接 / 联接点如何进盘由引擎决定，未实测【待确认】 |
+| 往有数据的盘上追加 | Windows / Linux 的目录 / 多输入：并入原有文件，旧文件照常可见。镜像输入：不并入，先 `[WARN]` 再写（4.1.3）。macOS：一律不并入（4.1.4） |
 
 ### 4.3 错误处理
 
@@ -433,7 +483,7 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 - 写入之前失败：盘没有被动过。
 - 写入途中失败或进程被杀：已写部分留在盘上，没有回滚。一次性盘上这种「半截区段」会怎样见 6.9（实测强杀进程后引擎把它当空白盘）。
 - macOS / Linux：刻录命令的报错原文在 stderr 里，`error_info` 只有「… 刻录失败: exit status N」。
-- macOS / Linux 的舞台目录与临时 ISO：成功、失败都清理。
+- macOS 的舞台目录与临时 ISO、Linux 的会话日志：成功、失败都清理。
 - 弹出失败不算失败：exit 0，stderr 里有一行「光盘已刻录完成，但弹出未成功: …」。
 
 ## 5. 平台差异
@@ -445,25 +495,25 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 | 设备枚举 | `IDiscMaster2` 取刻录机，数据写入器读介质状态 | `drutil list` + `drutil status` | `xorriso -devices` + 逐台 `-toc` |
 | `path` 字段 | 盘符（`E:\`）；没有挂载点时是引擎唯一标识 | 空串 | 设备路径（`/dev/sr0`） |
 | 能报出的 status | `blank` `appendable` `full` `no-media` `damaged` `erase-required` `write-protected` `unsupported` `unrecognized` `unknown` | 只有 `no-media`（有盘时不报） | `blank` `appendable` `full` `no-media`；认不出的短语原样透传 |
-| 镜像写进有数据的盘时的 `[WARN]` | 有（4.1.3） | 没有：刻录流程不读介质状态，不知道盘是不是空白 | 没有：同左 |
-| 目录 / 多输入 | 系统镜像库流式生成后直烧，无临时 ISO | `hdiutil makehybrid` 产临时 ISO；多输入先聚舞台（目录逐文件硬链接克隆） | `xorriso -as mkisofs` 产临时 ISO；多输入先聚舞台（目录挂符号链接 + `-f`） |
+| 镜像写进有数据的盘时的 `[WARN]` | 有（4.1.3） | 没有：读不到介质状态，不知道盘是不是空白 | 有（4.1.5）：按 `burn devices` 的 `appendable` 判 |
+| 目录 / 多输入 | 系统镜像库流式生成后直烧，无临时 ISO | `hdiutil makehybrid` 产临时 ISO；多输入先聚舞台（目录逐文件硬链接克隆） | xorriso 原生增量：`-dev` + `-map` + `-commit`，不落临时 ISO（4.1.5） |
 | 镜像输入 | 系统文件流直烧 | `hdiutil burn` | `xorriso -as cdrecord` |
-| 追加时导入上一区段 | 目录 / 多输入：引擎 `ImportFileSystem`，旧文件在新视图里可见（实测）。镜像输入不导入，写进有数据的盘时先警告（4.1.3） | 不导入。旧文件在新视图里是否可见【待确认】 | 不导入（没有用 mkisofs 的 `-M`）。旧文件在新视图里是否可见【待确认】 |
+| 追加时导入上一区段 | 目录 / 多输入：引擎 `ImportFileSystem`，旧文件在新视图里可见（实测）。镜像输入不导入，写进有数据的盘时先警告（4.1.3） | 不导入：hdiutil 没有这个能力。往有数据的盘上再刻，新视图里通常只有这次刻入的内容（依手册与 ISO9660 多区段的一般行为推断，未实跑） | 目录 / 多输入：并入（xorriso growing，2026-11-24 起；按手册，未实跑）。镜像输入不导入，先警告（4.1.5） |
 | 缺省卷标 | 目录名 / 当前目录名，**可以用中文** | 目录名 / 当前目录名，只保留 `A-Z` `0-9` `_` | 同 macOS |
-| 显式 `--volid` | 温和规范化后生效 | 没有传给任何工具，没有效果【待确认】 | 原样作 `-volid` 交给 mkisofs |
-| 追加区段沿用盘上名称 | 是（以 Windows 显示的卷标为准） | 否 | 否 |
+| 显式 `--volid` | 温和规范化后生效 | 没有传给任何工具，没有效果（hdiutil 没有传卷标的参数，是原生能力的边界） | 原样作 `-volid` 交给 xorriso（显式给空串时三个平台一致回退 `ZPACK`） |
+| 追加区段沿用盘上名称 | 是（以 Windows 显示的卷标为准） | 不适用（不传卷标） | 是（不给 `-volid`，xorriso 自动沿用盘上卷标；2026-11-24 起） |
 | `--device` | 任意序号 | 只支持 0 | 任意序号 |
-| `--speed` | 落到介质与刻录机支持的档位 | 原样 `-speed N` | 原样 `speed=N` |
-| `--blank` | 快速擦除（`IDiscFormat2Erase`）；一次性盘报错 | `drutil erase quick` | `blank=as_needed` |
-| 封盘 | `ForceMediaToBeClosed` | `-forceclose` | 不加 `-multi` |
-| 不弹出 | 不调 `EjectMedia` | `-noeject` | 不加 `-eject` |
+| `--speed` | 落到介质与刻录机支持的档位 | 原样 `-speed N` | 目录 / 多输入 `-speed N`，镜像 `speed=N`，都原样交给 xorriso |
+| `--blank` | 快速擦除（`IDiscFormat2Erase`）；一次性盘报错 | `drutil erase quick` | 镜像 `blank=as_needed`；目录 / 多输入 `-blank as_needed` |
+| 封盘 | `ForceMediaToBeClosed` | `-forceclose` | 镜像不加 `-multi`；目录 / 多输入 `-close on`，可追加时 `-close as_needed`（个别只能封盘写的盘型交给 xorriso 按介质取舍） |
+| 不弹出 | 不调 `EjectMedia` | `-noeject` | 镜像不加 `-eject`；目录 / 多输入用 `-commit` 而不是 `-commit_eject all` |
 | 容量预检 | 有（写入前） | 无 | 无 |
 | 进度 | 每 5 秒一条心跳日志 | 工具自己的输出 | 工具自己的输出 |
-| 临时文件 | 无 | 临时 ISO（多输入另有舞台目录） | 临时 ISO（多输入另有舞台目录） |
-| 成功 JSON 的 `image` | 第一个输入的绝对路径 | 临时 ISO 的路径（已删除） | 同 macOS |
-| 成功 JSON 的 `size_bytes` | 本次写入的字节数 | 非目录输入的文件大小之和，不是写入量 | 同 macOS |
-| 写入前拒绝 | 有（按介质状态） | 无（交给外部工具） | 无（交给外部工具） |
-| 真机验证 | 已实盘验证（见 6.12） | 未实跑，只做过交叉编译与 vet | 未实跑，只做过交叉编译与 vet |
+| 临时文件 | 无 | 临时 ISO（多输入另有舞台目录） | xorriso 的会话日志（用完即删） |
+| 成功 JSON 的 `image` | 第一个输入的绝对路径 | 同 Windows（2026-11-24 起） | 同 Windows |
+| 成功 JSON 的 `size_bytes` | 本次写入的字节数 | 本次写入的字节数（临时 ISO 的大小；2026-11-24 起） | 本次写入的字节数（会话日志里的区段大小 × 2048；单位【待确认】） |
+| 写入前拒绝 | 有（按介质状态，4.3） | 无（交给外部工具） | 有两种：没放盘、已封盘（2026-11-24 起）；其余交给 xorriso |
+| 真机验证 | 已实盘验证（见 6.12） | 未实跑，只做过交叉编译与 vet | 未实跑，只做过交叉编译、vet 与命令行拼装的单测（`TestBurnLinuxTreeArguments`） |
 
 **纯 Go 构建与完整版（cgo 构建）在本功能上没有差别。** Windows 后端只经 go-ole 调系统 DLL，`CGO_ENABLED=0` 的产物就能刻录（AGENTS.md:237）。构建约束只在文件层：
 
@@ -486,9 +536,9 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 
 ### 6.2 模式语义与多输入（两条用户定案）
 
-- **缺省不封盘**。用户痛点：Linux 上常见的做法默认 DAO 封盘，连空白盘都只能烧一次。所以 `--mode multi` 是缺省——区段不封盘，烧完可继续追加；`--close` 才显式封盘（最大兼容，老设备只认终章）；`--mode mastered` = 单区段定稿，等价于 multi + 封盘（cli/burn/burn.go:14-18）。
+- **缺省不封盘**。用户痛点：Linux 上常见的做法默认 DAO 封盘，连空白盘都只能烧一次。所以 `--mode multi` 是缺省——区段不封盘，烧完可继续追加；`--close` 才显式封盘（最大兼容，老设备只认终章）；`--mode mastered` = 单区段定稿，等价于 multi + 封盘。**「可追加」在各平台上的实际含义**（2026-11-24 修订）：Windows 与 Linux 的目录 / 多输入是真追加——新内容并入原有文件；镜像输入在哪个平台都不并入（先警告）；macOS 两次刻录互不相干，通常只看得到最后刻入的内容（4.1.4）。
 - **`live` 没做**：UDF 包写入的「优盘模式」三个平台都没接入，如实报不支持；Windows 上计划走 `IDiscFormat2RandomWrite`。
-- **多输入**（2026-11-22 用户定案）：像 compress 一样接受任意数量的文件 / 文件夹——单 `.iso` 镜像直烧；单目录产 ISO；多输入 / 散文件先聚成临时舞台目录再产 ISO（cli/burn/burn.go:207-208）。镜像不能与其他内容混排，Windows 上它甚至不经过镜像库而是整文件直烧（cli/burn/burn_windows.go:220-235），技术上没法再和别的文件装进同一个根。
+- **多输入**（2026-11-22 用户定案）：像 compress 一样接受任意数量的文件 / 文件夹——单 `.iso` 镜像直烧；单目录的内容进镜像根；多输入每项按唯一名进镜像根。各平台的做法：Windows 系统镜像库直接建镜像；Linux xorriso 原生 `-map`；macOS 先聚成临时舞台目录再生成镜像（`burnDarwinStage`）。镜像不能与其他内容混排：三个平台上它都是整文件直烧、不经过镜像库，技术上没法再和别的文件装进同一个根。
 
 ### 6.3 Windows 引擎的调用方式（陷阱 #1–#3）
 
@@ -604,12 +654,12 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 
 ### 6.11 临时文件、print 即 exit 与清理
 
-- **print 即 exit，外层 defer 不运行**（conventions.md 第 6 节）。刻录的 macOS / Linux 路径上有两样要清理的东西（舞台目录、临时 ISO），全部靠**显式调用** `cleanup()`（cli/burn/burn.go:310）。
+- **print 即 exit，外层 defer 不运行**（conventions.md 第 6 节）。macOS 路径上有两样要清理的东西（舞台目录、临时 ISO），Linux 有会话日志，全部靠**显式调用**清理（`burnDarwinTree`、`burnLinuxTree`）。2026-11-24 的教训：这一层若有任何一处直接 `ErrorPrint`，清理就被跳过、临时文件留在磁盘上——现在这一层只返回 error。
 - **踩过的坑一：多输入的舞台目录泄漏**（2026-11-23 Windows 实测）。镜像生成失败时直接 `ErrorPrint`，进程当场退出，调用方没机会清理，舞台目录连同里面的硬链接一起留在用户目录里。修法：`burnStageISO` / `burnStageInputs` 失败时**返回 error**、自己清场，由最外层统一输出（cli/burn/burn.go:360-365、596-597）。回归测试 `TestBurnStageInputsCleansUpOnISOFailure` 三平台同跑（cli/burn/burn_stage_test.go:195-232）。
 - **踩过的坑二：没有后端的平台上先暂存再拒绝**（同日）。目录 / 多输入会先生成镜像，报出冒号后面空白的「生成临时镜像失败: 」，还把舞台目录遗留在用户目录。修法：平台检查提到任何暂存动作之前（cli/burn/burn.go:247-251）。
-- **踩过的坑三：引擎缺席时错误文案空白**。找不到 hdiutil / xorriso 时，调用方只拿到「生成临时镜像失败: 」。修法：生成镜像前先 `LookPath` 点名缺的是哪个引擎，并附安装引导（cli/burn/burn.go:608-615）。
+- **踩过的坑三：引擎缺席时错误文案空白**。找不到 hdiutil 时，调用方只拿到「生成临时镜像失败: 」。修法：生成镜像前先 `LookPath` 点名缺的是哪个引擎（`burnStageISO`）；Linux 的 xorriso 缺席由设备枚举与 `burnLinuxDevice` 报，带安装引导。
 - **Windows 路径上的清理**：`writer.Close()` 与数据流的 `cleanup()` 用 `defer`，因为它们在 `burnWindowsInner` 这个闭包里——闭包先返回、外层才输出 JSON，defer 来得及执行（cli/burn/burn_windows.go:114、164）。
-- **小出入**：`burnRunCommand` 的注释说「不在此 ErrorPrint——会跳过调用方 defer 的临时镜像清理」，而调用方实际上是用显式 `cleanup()` 而不是 `defer`。结论不变（错误必须返回给调用方），只是注释里的「defer」与代码不一致（cli/burn/burn.go:685-686）。
+- ~~**小出入**：`burnRunCommand` 的注释说「会跳过调用方 defer 的临时镜像清理」，而调用方用的是显式 `cleanup()`~~ **已解决（2026-11-24）**：注释改准了（「print 即 exit 会跳过调用方的清理」）。
 
 ### 6.12 真机验证记录（Windows）
 
@@ -674,7 +724,7 @@ GUI 不直连引擎，全部经这两条命令的 stdout JSON 驱动（见 gui s
 
 | 部分 | 路径 | 说明 |
 |---|---|---|
-| 命令面（公共 + macOS / Linux） | `cli/burn/burn.go` | 命令定义与帮助、旗标解析、输入形态判定、macOS / Linux 后端、多输入舞台与临时 ISO、缺省卷标规则、平台与 live 拒绝 |
+| 命令面（公共 + macOS / Linux） | `cli/burn/burn.go` | 命令定义与帮助、旗标解析、输入形态判定、macOS 后端（临时 ISO）、Linux 后端（xorriso 原生增量）、多输入舞台、光盘名称规则、平台与 live 拒绝 |
 | 命令面（Windows） | `cli/burn/burn_windows.go` | Windows 刻录流程、写入前拒绝 `burnMediaRefusal`、卷标规范化 `burnWindowsVolumeName`、设备条目映射、心跳日志 |
 | 命令面（占位） | `cli/burn/burn_other.go` | 非 Windows 平台上 Windows 分支的占位，仅为可编译 |
 | 命令面（包文档） | `cli/burn/doc.go` | 包注释：平台矩阵、模式语义 |
@@ -725,7 +775,11 @@ GUI 不直连引擎，全部经这两条命令的 stdout JSON 驱动（见 gui s
 |---|---|
 | `TestBurnStageInputsMountsAndCleansUp` | 多输入聚台：重名加序号、目录按目录名为根、清理函数回收镜像与舞台且不伤源文件（镜像生成器注入假产物，三平台都跑） |
 | `TestBurnStageInputsCleansUpOnISOFailure` | 镜像生成失败时舞台目录必须清干净（6.11 的回归） |
-| `TestBurnStageInputsISO` | 聚台 → 临时 ISO → 用自家 `core.Extract` 解回交叉验证；Windows 上跳过，Linux 上没有 xorriso 也跳过 |
+| `TestBurnStageInputsISO` | 聚台 → 临时 ISO → 用自家 `core.Extract` 解回交叉验证；只有 macOS 跑（Linux 不再产临时 ISO，Windows 走系统镜像库） |
+| `TestBurnLinuxTreeArguments` | Linux 目录 / 多输入的 xorriso 命令行（7 例 + 1）：执行顺序、卷标给不给的规则、封盘 / 弹出 / 限速各归其位、以 `--` 开头的路径原样作参数 |
+| `TestBurnSessionLogSize` | xorriso 会话日志 → 写入字节数（7 例）：取最后一个区段、读不出给 0 |
+| `TestBurnFailureDetail` | 外部工具 stderr → `error_info` 里的一句原因（7 例）：取最后一条带级别的，没有就取最后一行，过长截断 |
+| `TestBurnStatusRefusal` | 按介质状态的写入前拒绝（7 例）：只有没放盘、已封盘 |
 | `TestBurnUnsupportedPlatform` | 无后端平台的拒绝文案点名平台 |
 | `TestBurnUniqueEntryNames` | 重名规则（表驱动） |
 | `TestBurnFormatBytes` | 容量的人读写法（表驱动） |
@@ -768,43 +822,43 @@ ZPACK_IMAPI2_LIVE_TEST=1 go test ./internal/imapi2 -run TestLiveReadOnly
 - **刻录百分比进度没有接入**（需要自建 COM 事件接收器；现在是每 5 秒一条心跳日志）。
 - **live 优盘模式（UDF 包写入）没有接入**：`--mode live` 三个平台都明确拒绝；Windows 计划走 `IDiscFormat2RandomWrite`。
 - **macOS 多刻录机寻址没有做**：`--device` > 0 直接拒绝（注释里记为「M2 交付」）。
-- **Linux 没有容量预检、没有写入前拒绝**：这两样只有 Windows 后端有，macOS / Linux 全靠外部工具报错。
+- **Linux 没有容量预检，写入前拒绝只有两种**：容量预检只有 Windows 后端有，macOS / Linux 全靠外部工具报错。写入前拒绝 Linux 自 2026-11-24 起有「没放盘」「已封盘」两种（`burnStatusRefusal`），macOS 仍全靠外部工具。
 - **刻录流程不响应取消请求**（第一次 Ctrl+C 不中断，见第 2 节）；是否让刻录也响应取消，尚无定案。
 - **验收缺口**：见 8.1 末尾的清单，尤其是 `burnParseFlags` 的校验文案完全没有自动化测试。
 
 ### 已知不对但暂时没改的
 
 - **macOS 上 `--volid` 没有任何效果**：`hdiutil makehybrid` 与 `hdiutil burn` 都没有传卷标（cli/burn/burn.go:619、644-654）。是有意保留的旧行为还是遗漏【待确认】。
-- **macOS / Linux 追加区段时不沿用盘上名称**：目录 / 多输入恒把第一步算出的名字（目录名、当前目录名或显式值）作 `-volid`（Linux），macOS 上干脆不定。与「已有内容的盘缺省沿用」的定案不符——这套规则目前只在 Windows 后端里实现。盘上的实际表现【待确认】（这两个平台没实跑过）。
-- **macOS / Linux 的 `size_bytes` 不是写入量**：是非目录输入的文件大小之和；输入全是目录时是第一个输入 `os.Stat` 的大小（没有意义）。`image` 是已经删除的临时 ISO 路径。两个字段在这两个平台上的语义与 Windows 不同，也没有文档说明过是否有意如此。
+- ~~**macOS / Linux 追加区段时不沿用盘上名称**~~ **Linux 已解决（2026-11-24）**：`burnLinuxVolumeID` 按同一规则决定给不给 `-volid`，可追加的盘不给、由 xorriso 沿用盘上卷标（4.1.6；没有实跑过）。macOS 不传卷标，这条规则在 macOS 上不适用。
+- ~~**macOS / Linux 的 `size_bytes` 不是写入量、`image` 是已删除的临时 ISO 路径**~~ **已解决（2026-11-24 用户拍板：统一）**：三个平台同义，见 3.2。Linux 上会话日志的单位还待实跑确认（【待确认】#12）。
 - ~~**「光盘是只读盘（DVD-ROM：压盘或已封盘），无法继续写入」对读不出来的盘有误导性**~~ **已解决（2026-11-24 用户拍板）**：新增 `unrecognized` 状态，读不出的盘在 `burn devices`、GUI、写入拒绝文案里都按「光驱认不出这张光盘」处理并带排查提示（见 3.1、4.3、6.4、6.10）。遗留一点：软件层面分不出是放反、划伤还是盘型不支持，排查提示只能把这几种都列出来；「只读类型 + 写保护」形态的追加读取还没有实盘验证过。
 - ~~**擦除之后仍然异常时的提示绕**~~ **已解决（2026-11-24）**：带 `--blank` 擦完重读仍异常时，拒绝文案里的提示不再叫人「加 --blank」（他已经加过了），一律是「请换一张空白盘」（`burnMediaRefusal` 的第三个参数 `erased`，4.3）。
 - **Windows 上往有数据的盘写镜像时不导入上一区段**：镜像输入走的是整文件直烧（`burnWindowsSource`，cli/burn/burn_windows.go），不经过镜像库的 `ImportFileSystem`。后果与对策见 4.1.3：2026-11-24 用户拍板**警告后允许**（stderr 打一条 `[WARN]`，GUI 在主按钮上方出「写入提醒」行）。遗留：【待确认】镜像之后再追加镜像，旧区段的文件在新视图里到底还看不看得见——没有实测过；按「系统挂载最后一个区段的文件系统」推断是看不到，警告文案据此措辞并留了余地。（「镜像区段之后追加目录」是验证过的，旧文件仍在。）
 - **macOS / Linux 上外部工具的 stderr 没有时间戳**，是原样透传的（cli/burn/burn.go:690）；`error_info` 里只有「… 刻录失败: exit status N」，看不到工具给的真正原因。
-- **`burnLinux` 的参数 `stagedFromDir` 没有被使用**（cli/burn/burn.go:658）——是「目录原生刻录」旧设计的遗留。
-- **`burnRunCommand` 的注释与代码不一致**：注释说「会跳过调用方 defer 的临时镜像清理」，而调用方用的是显式 `cleanup()`（cli/burn/burn.go:310、685-686）。
-- **`burn devices` 在 macOS 上有盘时给不出任何状态**（`status` 缺省），Linux 认不出的状态原样透传。GUI 因此只对明确认识的状态下结论；CLI 在这两个平台上也没有写入前拒绝。
+- ~~**`burnLinux` 的参数 `stagedFromDir` 没有被使用**~~ **已解决（2026-11-24）**：Linux 的目录 / 多输入真的走原生刻录了，`burnLinux` 拆成 `burnLinuxImage` / `burnLinuxTree`，遗留参数一并消失。
+- ~~**`burnRunCommand` 的注释与代码不一致**~~ **已解决（2026-11-24）**：注释改准。
+- **`burn devices` 在 macOS 上有盘时给不出任何状态**（`status` 缺省），Linux 认不出的状态原样透传。GUI 因此只对明确认识的状态下结论；CLI 的写入前拒绝 Linux 有两种（见上），macOS 没有。连带：macOS 上读不到盘是不是空白，给不出「往有数据的盘写镜像」的 `[WARN]`，GUI 也出不了「写入提醒」行（4.1.4）。
 - **`MEDIA_TYPE_DISK`（0x0C）不在介质类型表里**，遇到时报 `未知介质(12)`（internal/imapi2/imapi2.go:100-119、122-127）。
 - **空目录在 macOS / Linux 上是否保留没有验证**（Windows 上验证过保留）。
 - **Windows 镜像里是否跳过 `desktop.ini`、`Thumbs.db` 这类系统垃圾没有验证**：compress 默认排除它们，burn 没有对应的逻辑，行为由引擎的 `AddTree` 决定【待确认】。
-- **macOS / Linux 追加区段时不导入上一区段**：每次写的都是全新生成的 ISO（Linux 的 mkisofs 调用里没有 `-M`，macOS 没有任何合并选项，cli/burn/burn.go:619-626）。旧区段的文件在新视图里是否还可见【待确认】——没有实测过；按 ISO9660 多区段的一般行为推断是看不到的。这直接关系到「缺省多区段可追加」在这两个平台上的实际意义。
+- ~~**macOS / Linux 追加区段时不导入上一区段**~~ **Linux 已解决（2026-11-24 用户拍板「原生能做到是什么就是什么」）**：目录 / 多输入走 xorriso 原生增量，旧区段的文件并入新区段的目录树，按手册在新视图里可见（4.1.5；没有实跑过）。**macOS 做不到**：hdiutil 没有并入已有区段的能力，往有数据的盘上再刻，新视图里通常只剩这次刻入的内容——这是原生能力的边界，已如实标注（4.1.4、gui.md 2.6），命令行只能每次提示。镜像输入在 Linux 上与 Windows 一样不并入，先 `[WARN]` 再写。
 
 ### 代码与文档不一致的地方（以代码为准）
 
 | # | 文档怎么写 | 代码实际 | 出处 |
 |---|---|---|---|
-| 1 | 成功 JSON 是 `{"is_success":true,"image":"…","size_bytes":N,"mode":"multi","close":false,"blank":false}` | 载荷包在 `data` 里；载荷是 map，键按字母序输出：`blank`、`close`、`image`、`mode`、`size_bytes` | AGENTS.md:83；cli/burn/burn.go:67（帮助文本）；cli/burn/burn.go:274-280；internal/stdout/log.go:40 |
+| 1 | 成功 JSON 是 `{"is_success":true,"image":"…","size_bytes":N,"mode":"multi","close":false,"blank":false}` | 载荷包在 `data` 里。键序：2026-11-24 起载荷是 struct，按声明序 `image`、`size_bytes`、`mode`、`close`、`blank`（此前是 map 按字母序）；帮助文本的示例同步改了 | 3.2 |
 | 2 | `burn devices` 的 Windows 另报状态只列了 `damaged` / `erase-required` / `write-protected` / `unsupported` | 还有 `unknown`（介质查询失败，或状态位认不出）；`note` 字段也没在这一行里出现 | AGENTS.md:82 对比 internal/imapi2/imapi2.go:89、cli/burn/burn_windows.go:79-82 |
 | 3 | 「`blank / appendable / full / no-media` 四平台同名」 | 是三个平台；而且 macOS 有盘时根本不报 status | AGENTS.md:247 对比 cli/burn/burn.go:125-140 |
-| 4 | 光盘名称规则：「已有内容的盘缺省沿用、显式 `--volid` 才改」；「mac/Linux 显式 `--volid` 仍原样交外部工具」 | 沿用只在 Windows 后端实现；Linux 上目录 / 多输入追加时不沿用；macOS 上 `--volid` 根本没交给任何工具 | AGENTS.md:257、cli/tools/skill.md:250 对比 cli/burn/burn.go:598-632、644-654 |
-| 5 | 「mac/Linux 走 hdiutil/xorriso 临时 ISO」，没说这两个平台上 `image` / `size_bytes` 是什么 | `image` = 已删除的临时 ISO 路径；`size_bytes` = 非目录输入的文件大小之和 | AGENTS.md:83 对比 cli/burn/burn.go:224-238、269-280 |
+| 4 | 光盘名称规则：「已有内容的盘缺省沿用、显式 `--volid` 才改」；「mac/Linux 显式 `--volid` 仍原样交外部工具」 | Windows 与 Linux 都实现了沿用（Linux 2026-11-24 起）；macOS 不传卷标，规则不适用 | 4.1.6 |
+| 5 | 「mac/Linux 走 hdiutil/xorriso 临时 ISO」，没说这两个平台上 `image` / `size_bytes` 是什么 | 2026-11-24 起三个平台同义（3.2）；Linux 不再产临时 ISO | 3.2、4.1.4、4.1.5 |
 | 6 | 代码在 `cli/burn_windows.go`、`cli/burn.go` | 拆包后在 `cli/burn/burn_windows.go`、`cli/burn/burn.go` | AGENTS.md:237、242-244 |
-| 7 | Linux「目录 `-map` 原生刻录」 | Linux 上目录也是先生成临时 ISO（`xorriso -as mkisofs`），再用 `-as cdrecord` 烧；代码里没有 `-map` | cli/burn/burn.go:8 对比 598-632、657-683 |
+| 7 | Linux「目录 `-map` 原生刻录」 | 2026-11-24 起代码与文档一致：目录 / 多输入走 `-dev` + `-map` + `-commit` | 4.1.5 |
 | 8 | 用法行是 `burn <镜像.iso\|目录>` | 还接受多输入 `<文件\|目录 ...>`；帮助的示例里也没有多输入的例子 | cli/burn/burn.go:54 对比 221、240 |
 | 9 | ISO9660 卷标上限：一处记 30 字符，另一处记 32 字符 | 代码按 32 截断 | AGENTS.md:250 对比 AGENTS.md:257、cli/burn/burn_windows.go:21 |
 | 10 | `burn devices` 的输出示例里没有说明 macOS 的形态 | macOS 的 `path` 恒为空串、`note` 恒为「macOS 经 hdiutil 使用默认刻录设备」 | AGENTS.md:82 对比 cli/burn/burn.go:118-123 |
 
-另有两条不属于本功能、但找刻录代码时会撞上的：AGENTS.md:340 的目录结构里 `cli/` 仍写着「root.go（装配）+ commands.go」，拆包后已不存在 `commands.go`；AGENTS.md 里刻录一节的未结项清单（265-275 行）仍按「二轮更新」时的状态写，本节是更新的版本。
+> **沿革说明（2026-11-24）**：上表是初版整理时对照**当时的** AGENTS.md（重组前，原文见提交 50604b7）逐条核出的出入，表里的行号也都是那一份的。AGENTS.md 重组后只留全局规范，本 spec 成为刻录行为的权威说明。表里 #1、#4、#5、#7 已随代码对齐；其余各条描述的差异，在本 spec 的正文里就是现行做法，留作沿革。
 
 ### 【待确认】汇总
 
@@ -812,21 +866,23 @@ ZPACK_IMAPI2_LIVE_TEST=1 go test ./internal/imapi2 -run TestLiveReadOnly
 |---|---|---|
 | 1 | macOS `drutil list` 的列布局，与「丢掉最后两列」的解析是否吻合 | 没有 macOS 机器；这条路径没有真机验证记录 |
 | 2 | macOS 上 `--volid` 没有效果，是有意还是遗漏 | 代码没有任何注释说明；AGENTS.md 只说「原样交外部工具」 |
-| 3 | macOS / Linux 追加区段时不沿用盘上名称，是否符合预期 | 与定案文字不符，但没实跑过、也没有说明 |
+| 3 | ~~macOS / Linux 追加区段时不沿用盘上名称，是否符合预期~~ **Linux 已解决（2026-11-24）**：按同一规则给不给 `-volid`（4.1.6）；macOS 不传卷标，不适用 | Linux 上的实际表现没有实跑过 |
 | 4 | Windows 上往有数据的盘追加镜像后，旧文件是否仍可见 | 没有实测；代码路径明确不导入上一区段。2026-11-24 起警告后允许（4.1.3），警告文案按「看不到」措辞并留了余地——实测结果若不是这样，要改文案 |
 | 5 | Windows 上目录内部的符号链接 / 联接点如何进盘；是否跳过系统垃圾文件 | 由引擎的 `AddTree` 决定，没有验证 |
 | 6 | ISO9660 层的卷标上限是 30 还是 32 个字符 | AGENTS.md 两处记录互相矛盾 |
 | 7 | 「光驱里放着读不出来的盘」的具体物理原因 | 只有现象记录（`DVD-ROM / full`、从第 0 扇区起 CRC 错误），没法判断是放反、划伤还是盘型不支持 |
 | 8 | 空目录在 macOS / Linux 上是否保留 | 只在 Windows 上验证过 |
 | 9 | ~~`StatusName` 与 `burnMediaRefusal` 的判定顺序不完全一致（`DAMAGED` 与 `UNSUPPORTED` 同时置位时，一边报 `unsupported`、一边报「状态异常」）是有意还是巧合~~ **已解决（2026-11-24）**：对齐成同一顺序，「不支持」在前，理由见 4.3 | — |
-| 10 | macOS / Linux 追加区段后，旧区段的文件在新视图里是否还可见 | 没有实测；代码不导入上一区段，只能按 ISO9660 的一般行为推断 |
+| 10 | ~~macOS / Linux 追加区段后，旧区段的文件在新视图里是否还可见~~ **Linux 已解决（2026-11-24）**：xorriso 原生增量会并入（按手册，没有实跑过）。macOS 做不到，已如实标注（4.1.4） | — |
 | 11 | 光驱里放着读不出来的盘时，`burn devices` 的 `path` 是盘符还是引擎标识 | 直接报「介质不兼容」的形态：2026-11-24 实测是盘符（`E:\`），Windows 当时也没有挂载它。被报成 `DVD-ROM / full` 的那种形态没有留下输出，按代码推断也是盘符（盘符跟刻录机走，不跟盘走） |
+| 12 | Linux 上 xorriso 会话日志里的 `size` 是不是按 2048 字节扇区计 | 手册只写了 `timestamp start_lba size volume-id`，没写单位；按 xorriso 一贯按 2 KiB 扇区计推断（4.1.5）。第一次在 Linux 上实跑时拿 `size_bytes` 对一下 `-toc` |
 
 ## 变更记录
 
 | 日期 | 改了什么 | 同步的代码（提交） |
 |---|---|---|
 | 2026-11-24 | 初版：从代码与 AGENTS.md 整理 | 40fb9e7 |
-| 2026-11-24 | 新增 `unrecognized` 状态：光驱认不出的盘（读不出身份，或被报成只读盘但读不出任何文件系统）在 `burn devices`、GUI、写入拒绝文案里都按「认不出」处理并带排查提示（3.1、3.3、4.1.1、4.3、5、6.4、6.5、6.10、9） | （提交后回填） |
-| 2026-11-24 | 往有数据的盘写镜像：从「不声不响地写」改为**警告后允许**——stderr 打一条 `[WARN]`（conventions.md 第 4 节首次启用警告级别），GUI 在主按钮上方出「写入提醒」行；只在读得到介质状态的 Windows 上有（3.4、4.1.2、4.1.3、5、8.2、9） | （提交后回填） |
-| 2026-11-24 | 写入前拒绝与 `burn devices` 对齐判定顺序：「不支持」排到「损坏 / 须先擦除 / 半截区段」之前，`DAMAGED \| UNSUPPORTED` 两边都是「不支持」；带 `--blank` 擦完仍异常时提示改为「请换一张空白盘」（4.3、6.15、8.2、9） | （提交后回填） |
+| 2026-11-24 | 新增 `unrecognized` 状态：光驱认不出的盘（读不出身份，或被报成只读盘但读不出任何文件系统）在 `burn devices`、GUI、写入拒绝文案里都按「认不出」处理并带排查提示（3.1、3.3、4.1.1、4.3、5、6.4、6.5、6.10、9） | 82e86f0 |
+| 2026-11-24 | 往有数据的盘写镜像：从「不声不响地写」改为**警告后允许**——stderr 打一条 `[WARN]`（conventions.md 第 4 节首次启用警告级别），GUI 在主按钮上方出「写入提醒」行；只在读得到介质状态的 Windows 上有（3.4、4.1.2、4.1.3、5、8.2、9） | 510fe45 |
+| 2026-11-24 | 写入前拒绝与 `burn devices` 对齐判定顺序：「不支持」排到「损坏 / 须先擦除 / 半截区段」之前，`DAMAGED \| UNSUPPORTED` 两边都是「不支持」；带 `--blank` 擦完仍异常时提示改为「请换一张空白盘」（4.3、6.15、8.2、9） | 4aaacae |
+| 2026-11-24 | Linux 目录 / 多输入改走 xorriso 原生增量（`-dev` + `-map` + `-commit`）：旧文件并入新区段、可追加的盘沿用盘上名称、不落临时 ISO；新增「没放盘 / 已封盘」两种写入前拒绝，镜像写进有数据的盘时同样 `[WARN]`。三个平台的 `image` / `size_bytes` 统一成 Windows 语义，成功载荷由 map 改为 struct（按声明序输出）。macOS / Linux 这一层不再 `ErrorPrint`（临时文件不再泄漏），刻录失败时 `error_info` 带上工具 stderr 里的一句原因；macOS 按原生能力如实标注「不并入原有文件」，`--device > 0` 的文案改准。**macOS / Linux 都没有实跑过**（3.2、3.3、3.4、4.1.4、4.1.5、4.1.6、4.1.7、4.1.8、4.2、5、6.2、8.2、9） | （提交后回填） |

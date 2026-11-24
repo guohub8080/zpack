@@ -153,7 +153,7 @@ func burnWindowsInner(inputs []string, flags burnFlags) (int64, error) {
 	}
 
 	// 擦除之后才判：擦完的盘是空白的，不用警告
-	if warning := burnImageOnUsedDiscWarning(inputs, media); warning != "" {
+	if warning := burnImageOnUsedDiscWarning(inputs, !media.HeuristicallyBlank); warning != "" {
 		stdout.LoggerWarn(warning)
 	}
 
@@ -232,20 +232,6 @@ func burnRecoveryHint(media imapi2.Media, erased bool) string {
 		return "加 --blank 先擦除再刻"
 	}
 	return "请换一张空白盘"
-}
-
-// BURN_IMAGE_ON_USED_DISC_WARNING 往有数据的盘写镜像时的警告文案。镜像是原样写进新区段的，不经过镜像库、
-// 不导入上一区段（目录 / 多输入才会导入）——写入后新视图里通常只剩镜像自己的文件，原有文件没被擦掉，
-// 但一般的工具读不到。旧文件到底还看不看得见没有实盘验证过，所以措辞留了余地（specs/burn.md 4.1.3、9）
-const BURN_IMAGE_ON_USED_DISC_WARNING = "这张盘已有内容，而镜像是原样写进新区段的，不会与盘上原有文件合并——写入后电脑上通常只看得到镜像里的文件，原有文件虽没被擦掉，但一般工具读不到。要把新内容追加到原有文件之后，请改用目录或文件作为输入；要保留原有文件可见，请换一张空白盘"
-
-// burnImageOnUsedDiscWarning 镜像输入遇到非空白盘时的警告（空串=不用警告）。
-// 2026-11-24 用户拍板：警告后照常允许，不拦截——要拦的话，想故意这么刻的人就没法刻了
-func burnImageOnUsedDiscWarning(inputs []string, media imapi2.Media) string {
-	if len(inputs) != 1 || !burnLooksLikeImage(inputs[0]) || media.HeuristicallyBlank {
-		return ""
-	}
-	return BURN_IMAGE_ON_USED_DISC_WARNING
 }
 
 // burnWindowsSource 准备交给写入器的数据流：单个 .iso/.img/.bin 文件直接作为文件流；
