@@ -97,7 +97,7 @@
 | `bin/zpack.exe`（Windows 完整版） | cgo 静态链 | 83MB（AGENTS.md:275、:323；:294 记的是 82MB。产线脚本最后打印的体积取的是 `du -h` 的输出） | import 表里只允许白名单内的系统 DLL（`build_cli/windows/build.sh:69`）；AGENTS.md:403 记 32 个导入 DLL 全是系统出厂 | **能** |
 | 两个 mac 装机位里的 `Contents/Resources/zpack` | mac 完整版的拷贝 | 同上 | 同上，而且所在的 .app 必须保持签名有效 | **能**（这就是装机产物） |
 
-依赖准入的总规则（静态优先、体积预算、零新增动态链接、许可证红线）见第 6.1 节。
+依赖准入的总规则（静态优先、体积预算、零新增动态链接、许可证不作硬约束）见第 6.1 节。
 
 ### 3.2 能力矩阵：每种构建形态能做什么
 
@@ -508,7 +508,7 @@ Windows 上才暴露、mac 上毫无症状的代码问题，记录在第 6.8 节
 | 体积预算 | 500MB 以内随意（AGENTS.md:16 记「当前实测静态全量约 130MB」；这个数和两套产线记录的体积对不上，见第 9 节） |
 | 零新增**动态**链接，这条照旧有效 | mac：`otool -L` 不得挂 brew 或系统外的路径。Windows：import 表仍然只有出厂 DLL |
 | 纯 Go 依赖 | 照旧自由引入 |
-| 许可证 | 见第 6.7 节。AGENTS.md:16 写的是「GPL 库（x264/x265）不捆绑」，可两套产线实际都链了 x264 / x265——AGENTS.md 自己前后不一致，以脚本为准 |
+| 许可证 | 不是硬约束（AGENTS.md 铁律 2，2026-11-24 修订：不因 GPL 排除候选，项目自身的协议可以改）；项目按 GPL-2.0-or-later 发布，义务见第 6.7 节 |
 
 ### 6.2 产物定案：为什么恒为完整版
 
@@ -588,17 +588,18 @@ go:embed 嵌入、尾注附二进制这两版都已经退役。`build_cli/mac/bu
 
 | 组件 | 许可证 | 对产物的含义 | 出处 |
 |---|---|---|---|
-| FFmpeg 核心 | LGPL | — | AGENTS.md:16 |
+| zpack 自身 | GPL-2.0-or-later | 根目录 `LICENSE`。整个产物按 GPL 发布：对外分发要提供对应的完整对应源码（含所链的 x264 / x265 / FFmpeg 的源码与构建脚本） | `LICENSE`；AGENTS.md:16 |
+| FFmpeg 核心 | LGPL；开 `--enable-gpl` 并链入 x264 / x265 之后，整个产物按 GPL-2.0-or-later 看 | 同上一行 | 第 4.3 节；`build_cli/mac/ffmpeg_static.sh:4-5` |
 | x264、x265 | GPL | 入列之后**产物承担 GPL 义务**。对外分发要提供对应的源码和可重链接的对象 | `build_cli/mac/ffmpeg_static.sh:4-5`；AGENTS.md:206、:298 |
 | libjxl、libaom | BSD | 无附加义务 | AGENTS.md:16 |
 | lame、opus、libvpx | AGENTS.md 和脚本里都没写（第 4.3 节的配料表里按公开许可证填了，未核对） | — | — |
 | office_oxide | MIT / Apache-2.0 | 脚本头注：「无 GPL 污染」 | `build_cli/mac/office_static.sh:3` |
 | 7-Zip（Alone2） | 7-Zip LGPL + unRAR 特许 | `Rar*.o` 在归档阶段剥掉，unRAR 的限制代码不进产物 | AGENTS.md:235 |
 
-- **决策史**：2026-11-08 用户定案「功能全优先」——含 GPL 库（x264 / x265），产物承担 GPL 义务；对外分发需要提供对应源码或重链对象；内部使用无碍；需要 LGPL 版的话可以去掉 x264 / x265（`build_cli/mac/ffmpeg_static.sh:4-5`）。Windows 产线「GPL 义务同 mac」（AGENTS.md:298）。
+- **决策史**：2026-11-08 用户定案「功能全优先」——含 GPL 库（x264 / x265），产物承担 GPL 义务；对外分发需要提供对应源码或重链对象；内部使用无碍；需要 LGPL 版的话可以去掉 x264 / x265（`build_cli/mac/ffmpeg_static.sh:4-5`）。Windows 产线「GPL 义务同 mac」（AGENTS.md:298）。2026-11-24 用户定案：许可证不是硬约束，项目自身的协议可以改（「不要因为许可证把自己拴死」）——项目随之按 GPL-2.0-or-later 发布（`LICENSE`）；选库时不因 GPL 排除候选，只如实说明它要求项目带什么协议。
 - **LGPL 退路**：去掉 x264 和 x265 两味配料。mac 上 VideoToolbox 仍然能做 h264 / hevc 的硬编（AGENTS.md:206）。Windows 产线没有 VideoToolbox 这样的硬编旗标（AGENTS.md:298），这条退路在 Windows 上就是单纯去掉 x264 / x265。
 - 产线脚本里没有「生成许可证清单或源码包」这一步——对外分发时的合规材料得另外准备。
-- AGENTS.md:16（铁律 2）还写着「GPL 库（x264/x265）不捆绑」，和同一份文档的 AGENTS.md:206、:298 以及两套脚本都矛盾。以脚本为准，见第 9 节。
+- AGENTS.md 铁律 2 曾写着「GPL 库（x264/x265）不捆绑」，和产线脚本矛盾；2026-11-24 已改为「许可证不是硬约束」，不再矛盾。仍然有效的只有第三方自己的专有限制（unRAR 不得用于做 RAR 压缩），它和项目协议无关。
 
 ### 6.8 三平台验证的教训：Windows 上才暴露的问题
 
@@ -907,7 +908,7 @@ Windows 完整版对比 brew 版 ffmpeg 还有的缺口（配料待补，AGENTS.
 | 位置 | 文档说的 | 实际 |
 |---|---|---|
 | AGENTS.md:16 | 「当前实测静态全量约 130MB」 | 两套产线记录的是 mac 约 48MB（AGENTS.md:204）、Windows 83MB（AGENTS.md:275）。130MB 指什么不明 |
-| AGENTS.md:16 | 「许可证红线：GPL 库（x264/x265）不捆绑」 | 两套产线都链了 x264 / x265（`build_cli/mac/ffmpeg_static.sh:66-92`、`build_cli/windows/deps_static.sh:104-130`）。AGENTS.md:206、:298 自己也写着「产物承担 GPL 义务」 |
+| AGENTS.md:16 | ~~「许可证红线：GPL 库（x264/x265）不捆绑」~~ | **已解决（2026-11-24）**：铁律 2 改为「许可证不是硬约束」，项目按 GPL-2.0-or-later 发布（`LICENSE`），与两套产线都链 x264 / x265 的事实一致 |
 | AGENTS.md:181 | verify.sh「预期 354/354」 | 现在 362 例（有刻录机 360） |
 | AGENTS.md:181 | verify.sh「只测 bin/zpack（纯 Go 产物）」 | verify.sh 含 7z 写入 14 例，要完整版才绿（`verify/verify.sh:1126`） |
 | AGENTS.md:182 | verify-media.sh「128 用例」 | 最多 158 例，随 LibreOffice 和 JXL 夹具浮动 |
@@ -950,3 +951,4 @@ Windows 完整版对比 brew 版 ffmpeg 还有的缺口（配料待补，AGENTS.
 |---|---|---|
 | 2026-11-24 | 初版：从脚本与 AGENTS.md 整理 | 40fb9e7 |
 | 2026-11-24 | 修复：mac 产线三处路径 / 判断错误（office 库守卫少写 ../../、直调库拷错目录、office_oxide 目录判断用了 -f；见 9.2，未在 mac 上实跑） | 3a3cb8d |
+| 2026-11-24 | 许可证：项目按 GPL-2.0-or-later 发布（新增 `LICENSE`）；AGENTS.md 铁律 2 与格式策略③不再把许可证当硬约束；本 spec 的 6.1 / 6.7 / 9.3 同步 | （提交后回填） |

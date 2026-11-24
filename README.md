@@ -24,3 +24,7 @@ bash verify/verify.sh   # 行为门禁 91/91
 目录分层（产品三面顶层平铺）：`core/` 核心算法引擎（纯库）· `cli/` 命令面 · `ui/` UI 面（GUI 壳 + 右键菜单，路线图 #6；统一经 CLI 契约干活）；`cmd/zpack/` 二进制入口。
 
 规范与路线图见 [AGENTS.md](AGENTS.md)。
+
+## 许可证
+
+GPL-2.0-or-later，全文见 [LICENSE](LICENSE)。完整版产物链入了 x264 / x265 并开了 FFmpeg 的 `--enable-gpl`，所以整个二进制按 GPL 发布；第三方组件各自的许可证见 [specs/build.md](specs/build.md) 第 6.7 节。
