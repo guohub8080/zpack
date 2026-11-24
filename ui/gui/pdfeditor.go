@@ -101,8 +101,42 @@ func (a *app) ensureEditorState() *pdfEditorState {
 		}
 		a.pdfEd.grid.Selected = &a.pdfEd.selected
 		a.pdfEd.grid.Selection = &a.pdfEd.selection
+		a.pdfEd.grid.Reorder = a.pdfEd.reorderPages
 	}
 	return a.pdfEd
+}
+
+// reorderPages 拖拽重排回调（GridState.Reorder）：把 items（编辑序下标）移到 to 之前
+// （to == len(pages) 表示末尾——mygo 的语义是「放到目标项前面，项数表示末尾」）。
+// 移除拖动项时，目标点之前的项数要同步前移（否则插入点漂移）。
+func (ed *pdfEditorState) reorderPages(items []int, to int) {
+	removeSet := map[int]bool{}
+	for _, index := range items {
+		removeSet[index] = true
+	}
+	moved := make([]editorPage, 0, len(items))
+	kept := make([]editorPage, 0, len(ed.pages))
+	insertAt := to
+	for index, page := range ed.pages {
+		if removeSet[index] {
+			moved = append(moved, page)
+			if index < to {
+				insertAt-- // 拖动项原本在目标点之前——移除后目标点前移
+			}
+			continue
+		}
+		kept = append(kept, page)
+	}
+	if insertAt > len(kept) {
+		insertAt = len(kept)
+	}
+	newPages := make([]editorPage, 0, len(ed.pages))
+	newPages = append(newPages, kept[:insertAt]...)
+	newPages = append(newPages, moved...)
+	newPages = append(newPages, kept[insertAt:]...)
+	ed.pages = newPages
+	ed.selection = ui.Selection[int]{}
+	ed.selected = -1
 }
 
 // toast 入 toast 队列（sniff.go 的 pendingToasts 通道——帧外 goroutine/回调入队，帧首 drain）
@@ -294,17 +328,14 @@ func (ed *pdfEditorState) editorSelectedIndices() []int {
 
 // editorRotate 选中页旋转：编辑态改角 + 投递**真渲染重渲请求**（urgent 插队——
 // 用户点了旋转就等它，渲染完贴真旋转图；编辑期间显示「渲染中」占位）+ 显式触发一帧
-func (a *app) editorRotate(indices []int, clockwise bool) {
+// editorRotateBy 选中页旋转（delta 顺时针增量：±90 / 180）——urgent 投递真渲染重渲请求
+func (a *app) editorRotateBy(indices []int, delta int) {
 	ed := a.ensureEditorState()
 	for _, index := range indices {
 		if index < 0 || index >= len(ed.pages) {
 			continue
 		}
-		if clockwise {
-			ed.pages[index].rotation = (ed.pages[index].rotation + 90) % 360
-		} else {
-			ed.pages[index].rotation = (ed.pages[index].rotation + 270) % 360
-		}
+		ed.pages[index].rotation = ((ed.pages[index].rotation+delta)%360 + 360) % 360
 		ed.urgent <- thumbRequest{srcPage: ed.pages[index].srcPage, rotation: ed.pages[index].rotation}
 	}
 	a.win.Update(func() {}) // 立即反馈：格子进「渲染中」态
@@ -457,9 +488,9 @@ func (a *app) pagePdfEditor(c *ui.Context) {
 		// 工具行：旋转/删除/缩放/导出（经典排版：与转换族同一行高与间距；空态由 heroPane 接管）
 		toolRow := ui.Row(c).Gap(6).AlignItems(ui.Center).Padding(0, 0, 8, 0)
 		toolRow.Children(func() {
-			editorToolButton(c, t, "旋转左 ⟲", func() { a.editorRotate(a.pdfEd.editorSelectedIndices(), false) })
-			editorToolButton(c, t, "旋转右 ⟳", func() { a.editorRotate(a.pdfEd.editorSelectedIndices(), true) })
-			editorToolButton(c, t, "删除所选", func() { a.editorDelete(a.pdfEd.editorSelectedIndices()) })
+			editorToolButton(c, t, "左转 ⟲", func() { a.editorRotateBy(a.pdfEd.editorSelectedIndices(), -90) })
+			editorToolButton(c, t, "右转 ⟳", func() { a.editorRotateBy(a.pdfEd.editorSelectedIndices(), 90) })
+			editorToolButton(c, t, "倒立 ⇅", func() { a.editorRotateBy(a.pdfEd.editorSelectedIndices(), 180) })
 			// 缩放档：− / 百分比 / +（pdfarranger 同款 zoom）
 			editorToolButton(c, t, "−", func() {
 				if ed.zoomIdx > 0 {
@@ -519,14 +550,15 @@ func (a *app) pagePdfEditor(c *ui.Context) {
 					case hasThumb:
 						ui.Image(c, thumb).Width(tier.thumbW).Height(tier.gridCellH - 34)
 						if page.rotation != 0 {
-							ui.Text(c, fmt.Sprintf("⟳ %d°", page.rotation)).FontSize(11).TextColor(t.AccentText)
+							ui.Text(c, fmt.Sprintf("⟳ %d°", page.rotation)).FontSize(11).TextColor(t.AccentText).Shrink(0)
 						}
 					case isRendering:
-						ui.Text(c, "渲染中…").FontSize(12).TextColor(t.TextMuted)
+						ui.Text(c, "渲染中…").FontSize(12).TextColor(t.TextMuted).Shrink(0)
 					default:
-						ui.Text(c, "排队中…").FontSize(12).TextColor(t.TextMuted)
+						ui.Text(c, "排队中…").FontSize(12).TextColor(t.TextMuted).Shrink(0)
 					}
-					ui.Text(c, fmt.Sprintf("第 %d 页", page.srcPage)).FontSize(12)
+					// 重排后恒显源页码——用户知道每页原本在哪（用户定案「换页要有原第多少页」）
+					ui.Text(c, fmt.Sprintf("原第 %d 页", page.srcPage)).FontSize(12).Shrink(0)
 				})
 			}).Grow(1)
 		})

@@ -25,11 +25,13 @@
 | `--help` / `-h` | 任何子命令都可用，打印帮助后 exit 0 | `internal/cliutil` 的 `HelpAwareRun` |
 | `--quiet` | 过程日志全部静默：stderr 只剩「开始执行」那一行，stdout 不变。compress / extract / convert / media 全族 / audio 全族 / pdf 全族 / image 全族支持（2026-11-24 起 pdf、audio、image 才真正生效——此前只解析不生效）。日志去向按**本次调用的参数**判定，不靠包级变量 | `internal/cliutil` 的 `EngineLogf` |
 | 平台不支持 | 必须输出 error JSON「暂不支持 <平台>：<原因>」+ exit 1，禁止静默失败 | — |
-| 中断 | 第一次 Ctrl+C 或 SIGTERM：发出取消请求——**只有压缩包引擎**（compress / extract / convert）的循环会检查它，清理半成品后输出「操作已被用户取消（半成品已清理）」+ exit 1。第二次 Ctrl+C：立即退出，exit 130（不等清理） | `cli/root.go` 的信号处理、`core/cancel.go` |
+| 中断 | 第一次 Ctrl+C 或 SIGTERM：发出取消请求——**压缩包引擎**（compress / extract / convert）的循环会检查它，清理半成品后输出「操作已被用户取消（半成品已清理）」+ exit 1。**其余命令**（刻录、转码、图片、PDF……）的引擎没有可取消的循环，请求发出 2 秒后进程还在，就由装配层强制收尾：尽力删掉本次新建的输出，输出「操作已被用户取消（操作无法中途收尾，已强制结束）」（有文件被占用删不掉时附在后面）+ exit 1。任何时候再按一次：立即退出，exit 130（不等清理、stdout 无输出）。2026-11-24 用户定案：长操作都要响应第一次取消 | `cli/root.go` 的信号处理、`internal/cliutil` 的 `CancelSequence` / `RemoveCreatedOutputs`、`core/cancel.go` |
+
 
 关于「未知旗标静默忽略」与「数值严格校验」并存：这是与旧版 exkit 的故意分歧——旧版对数值也是静默回退或钳位，现在数值必须报错，其余宽容行为保留（`internal/cmdutil/flags.go` 包注释）。
 
-**取消的范围**：信号一旦被接管（`signal.Notify`），进程就不再有「收到 Ctrl+C 即退出」的默认行为。所以对压缩包以外的命令，第一次 Ctrl+C 不会中断它们，要按第二次才会以 130 退出。
+**取消的范围**：信号一旦被接管（`signal.Notify`），进程就不再有「收到 Ctrl+C 即退出」的默认行为，所以要自己管。能中途停下的只有压缩包引擎（它们的循环里检查取消请求）；其余引擎没有这种循环，第一次 Ctrl+C 之后最多再跑 2 秒（`CANCEL_GRACE_PERIOD`）就被强制收尾——不是「优雅停止」，是「保证停下」。强制收尾能清掉的只有经 `OutputGuard` 登记过的输出（目前是 image 与 pdf 两族）；media / audio / office / burn 的输出没有登记，被强制结束时半成品会留在原地【已知限制】。刻录更特殊：写到一半的盘由光驱自己收场（burn.md 6.9）。
+
 
 ## 3. 输出契约
 
@@ -133,11 +135,13 @@ zpack compress 目录/ --output out.zip > /dev/null 2>&1 && echo "OK" || echo "F
 ## 8. 验收用例
 
 - `verify/verify.sh` 的每个用例都同时比对输出与退出码（`assert_equal`），这是本契约最直接的验收。
-- Ctrl+C 行为、`--help` 可用性没有自动化用例，靠手动验证：`zpack <任意命令> --help; echo $?` 应为 0。
+- Ctrl+C 的序列逻辑有单测（`TestCancelSequence*`、`TestRemoveCreatedOutputs`），真按 Ctrl+C 的端到端靠手动验证：`zpack burn 目录/` 后按一次 Ctrl+C，应在 2 秒内退出并输出取消 JSON。`--help` 可用性也没有自动化用例：`zpack <任意命令> --help; echo $?` 应为 0。
+
 
 ## 9. 未结项与已知限制
 
-- **压缩包以外的命令按一次 Ctrl+C 不会中断**（原因见第 2 节「取消的范围」）：刻录、视频转码这类长操作想中途停下，得按两次。是否让这些引擎也响应取消，尚无定案。
+- ~~**压缩包以外的命令按一次 Ctrl+C 不会中断**~~ **已解决（2026-11-24 用户定案）**：第一次 Ctrl+C 之后 2 秒内一定停下并给出 JSON（见第 2 节）。遗留：强制收尾只清 `OutputGuard` 登记过的输出——media / audio / office / burn 还没有登记，半成品会留下；这几个引擎要真正「优雅响应取消」，得各自接取消点（转码要给 ffmpeg 传中断回调、刻录要调 `IDiscFormat2Data::CancelWrite`），都还没有做。序列逻辑有单测（`internal/cliutil/cancel_test.go`）；真按 Ctrl+C 的端到端没有自动化，2026-11-24 也没有实按（当时的 shell 里没法给原生进程发 Ctrl+C）。
+
 - 根命令的 Short 描述「zip 并行架构 + tar/tar.gz；7z/rar 解压规划中」已过时（7z / rar 读取早已交付）；`media` 的 Use 只写了 `<convert|compress>`，实际子命令远不止这两个。帮助文本的修订待办。
 - ~~`image` 不解析 `--quiet`（它的过程日志始终输出）~~ **已解决（2026-11-24）**：image 全族认 `--quiet`，见 image.md 2.1、3.6。
 
