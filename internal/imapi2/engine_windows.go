@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
+	"golang.org/x/sys/windows"
 )
 
 // CLSID（注册表 HKCR\CLSID，与 SDK 的 coclass 定义逐个核对；本机无脚本封装层的 ProgID，只能按 CLSID 创建）
@@ -282,24 +283,58 @@ func (writer *DataWriter) Eject() error {
 	return callVoid(writer.recorder, "EjectMedia", "弹出光盘")
 }
 
-// applyVolumeName 定卷标并返回最终使用的卷标（空串=交给引擎自定）：volumeName 非空则用它
-// （各文件系统按自身上限自动截断）；追加区段且未指定时沿用盘上原有卷标——引擎导入上一区段后
-// 并不自动沿用（镜像里的卷标是空的），缺省会换成时间戳卷标
-// （2026-11-24 实测：追加后盘名由 ZPACK_TEST_VOLUME 变成了 2026.11.24_0118）
-func applyVolumeName(image *ole.IDispatch, volumeName string, appended bool) (string, error) {
-	if volumeName == "" {
-		if !appended {
-			return "", nil
-		}
-		imported, err := getString(image, "ImportedVolumeName", "盘上卷标")
-		if err != nil || imported == "" {
-			return "", err
-		}
-		if volumeName = sanitizeVolumeName(imported); volumeName == "" {
-			return "", nil // 读不出可写回的卷标 → 不动，由引擎自定
-		}
+// mountedVolumeLabel Windows 给这张盘显示的卷标——资源管理器里看到的那个名字，Unicode 无损。
+// 追加区段沿用盘名以它为准：引擎的 ImportedVolumeName 要过本机 ANSI 代码页、遇 0x00 截断，中文名读回即失真
+// （2026-11-24 内置光驱实测）。盘没有挂载点（没盘符）或 Windows 读不出时返回空串，调用方退回引擎读回值
+func (writer *DataWriter) mountedVolumeLabel() string {
+	if writer.info.VolumePath == "" {
+		return ""
 	}
-	return volumeName, putValue(image, "VolumeName", "卷标", volumeName)
+	pathPointer, err := windows.UTF16PtrFromString(writer.info.VolumePath)
+	if err != nil {
+		return ""
+	}
+	var nameBuffer [windows.MAX_PATH + 1]uint16
+	err = windows.GetVolumeInformation(pathPointer, &nameBuffer[0], uint32(len(nameBuffer)), nil, nil, nil, nil, 0)
+	if err != nil {
+		return ""
+	}
+	return cleanVolumeName([]rune(windows.UTF16ToString(nameBuffer[:])))
+}
+
+// chooseVolumeName 这次写入用哪个卷标（空串=交给引擎自定）。显式指定的名字优先；追加区段未指定时沿用盘上原名——
+// 先取 Windows 显示的卷标，取不到再还原引擎读回的字节串（见 sanitizeVolumeName，还原不出就放弃沿用，不写乱码）；
+// 空白盘未指定则交给引擎自定
+func chooseVolumeName(explicit, mounted, imported string, appended bool) string {
+	switch {
+	case explicit != "":
+		return explicit
+	case !appended:
+		return ""
+	case mounted != "":
+		return mounted
+	}
+	return sanitizeVolumeName(imported)
+}
+
+// applyVolumeName 定卷标并返回最终使用的卷标（空串=交给引擎自定）：规则见 chooseVolumeName
+// （引擎导入上一区段后并不自动沿用卷标，镜像里的卷标是空的，缺省会换成时间戳卷标
+// ——2026-11-24 实测：追加后盘名由 ZPACK_TEST_VOLUME 变成了 2026.11.24_0118）
+func applyVolumeName(image *ole.IDispatch, explicit, mounted string, appended bool) (string, error) {
+	if volumeName := chooseVolumeName(explicit, mounted, "", appended); volumeName != "" {
+		return volumeName, putValue(image, "VolumeName", "卷标", volumeName)
+	}
+	if explicit != "" || !appended {
+		return "", nil
+	}
+	imported, err := getString(image, "ImportedVolumeName", "盘上卷标")
+	if err != nil || imported == "" {
+		return "", err
+	}
+	if volumeName := sanitizeVolumeName(imported); volumeName != "" {
+		return volumeName, putValue(image, "VolumeName", "卷标", volumeName)
+	}
+	return "", nil // 读不出可写回的卷标 → 不动，由引擎自定
 }
 
 // NewImage 创建镜像并按介质状态配置：非空白盘导入上一区段（既有文件在新区段中保持可见）；
@@ -337,7 +372,7 @@ func (writer *DataWriter) NewImage(volumeName string, media Media) (*ImageBuilde
 		err = callVoid(image, "ImportFileSystem", "导入上一区段")
 	}
 	if err == nil {
-		builder.volumeName, err = applyVolumeName(image, volumeName, appended)
+		builder.volumeName, err = applyVolumeName(image, volumeName, writer.mountedVolumeLabel(), appended)
 	}
 	var rootValue *ole.VARIANT
 	if err == nil {

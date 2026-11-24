@@ -279,7 +279,7 @@ type streamWorker struct {
 }
 
 // executeFile 统一执行器
-func executeFile(input, output string, mode Mode, probe ProbeResult, params execParams, logf Logf) (ExecResult, error) {
+func executeFileTo(input, output string, mode Mode, probe ProbeResult, params execParams, logf Logf) (ExecResult, error) {
 	closer := astikit.NewCloser()
 	defer closer.Close()
 

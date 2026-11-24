@@ -724,6 +724,37 @@ assert_equal "加密分卷无密码解压拒绝" 1 "$?"
 "$NEW_CLI" extract "/tmp/zpack-verify-encspan.zip.001" --output "/tmp/zpack-verify-encspan-ok" --password PW >/dev/null 2>&1
 assert_equal "加密分卷带密码解压 exit" 0 "$?"
 rm -rf "$enc_big_src" /tmp/zpack-verify-encbig* /tmp/zpack-verify-encspan*
+# 多条目加密包 + 错密码（2026-11-24 修复：多个 worker 同时失败时重复关闭取消通道 → panic、exit 2、stdout 空）
+enc_many_src="/tmp/zpack-verify-encmany-$$"
+mkdir -p "$enc_many_src"
+for enc_idx in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do printf '并发失败回归载荷 %s\n' "$enc_idx" > "$enc_many_src/f$enc_idx.txt"; done
+"$NEW_CLI" compress "$enc_many_src" --output "/tmp/zpack-verify-encmany-$$.zip" --password PW >/dev/null 2>&1
+enc_many_out=$("$NEW_CLI" extract "/tmp/zpack-verify-encmany-$$.zip" --output "/tmp/zpack-verify-encmany-out-$$" --password WRONG --jobs 16 2>/dev/null); enc_many_exit=$?
+assert_equal "多条目加密包错密码 exit（不得 panic）" 1 "$enc_many_exit"
+if echo "$enc_many_out" | grep -q '"is_success":false,"error_info":"解压失败'; then report_pass; else report_fail "多条目加密包错密码 error_info" "解压失败…" "$enc_many_out"; fi
+rm -rf "$enc_many_src" /tmp/zpack-verify-encmany-*
+# --level 0 加密（2026-11-24 修复：AES 扩展字段里的内层压缩方式曾写死 deflate，--level 0 的数据却是原样 Store，
+# 产出的归档连自家 extract 都解不开、解出的文件是空的）
+enc_tbl_src="/tmp/zpack-verify-enctbl-$$"; mkdir -p "$enc_tbl_src"
+for enc_idx in 1 2 3 4; do printf '加密回归载荷 %s\n' "$enc_idx" > "$enc_tbl_src/f$enc_idx.txt"; done
+"$NEW_CLI" compress "$enc_tbl_src"/f*.txt --output "/tmp/zpack-verify-enc-l0-$$.zip" --password PW --level 0 >/dev/null 2>&1
+assert_equal "level 0 加密 compress exit" 0 "$?"
+"$NEW_CLI" extract "/tmp/zpack-verify-enc-l0-$$.zip" --output "/tmp/zpack-verify-enc-l0-out-$$" --password PW >/dev/null 2>&1
+assert_equal "level 0 加密 extract exit" 0 "$?"
+if cmp -s "/tmp/zpack-verify-enc-l0-out-$$/f3.txt" "$enc_tbl_src/f3.txt"; then report_pass; else report_fail "level 0 加密解出内容一致" "与原文一致" "不一致或文件缺失"; fi
+# 逐文件密码表（2026-11-24 修复：同码条目曾共用首个条目的密码；只给密码表不给 --password 时整包曾是明文）
+printf 'f2.txt=TWO\n*=FALLBACK\n' > "/tmp/zpack-verify-pwtable-$$.txt"
+"$NEW_CLI" compress "$enc_tbl_src"/f*.txt --output "/tmp/zpack-verify-pwtable-$$.zip" --password-table "/tmp/zpack-verify-pwtable-$$.txt" >/dev/null 2>&1
+assert_equal "密码表加密（不带 --password）compress exit" 0 "$?"
+if echo "$("$NEW_CLI" info "/tmp/zpack-verify-pwtable-$$.zip" 2>/dev/null)" | grep -q '"encrypted":true'; then report_pass; else report_fail "密码表加密标记" "encrypted:true" "未加密"; fi
+"$NEW_CLI" extract "/tmp/zpack-verify-pwtable-$$.zip" --output "/tmp/zpack-verify-pwtable-out-$$" --password-table "/tmp/zpack-verify-pwtable-$$.txt" >/dev/null 2>&1
+assert_equal "密码表逐文件解压 exit" 0 "$?"
+if cmp -s "/tmp/zpack-verify-pwtable-out-$$/f1.txt" "$enc_tbl_src/f1.txt" && cmp -s "/tmp/zpack-verify-pwtable-out-$$/f2.txt" "$enc_tbl_src/f2.txt"; then report_pass; else report_fail "密码表逐文件解压内容一致" "全部与原文一致" "不一致"; fi
+# 密码表没有 *= 兜底又不给 --password：必须明确报错，不能静默产出明文包
+printf 'f2.txt=TWO\n' > "/tmp/zpack-verify-pwnofallback-$$.txt"
+"$NEW_CLI" compress "$enc_tbl_src"/f*.txt --output "/tmp/zpack-verify-pwnofallback-$$.zip" --password-table "/tmp/zpack-verify-pwnofallback-$$.txt" >/dev/null 2>&1
+assert_equal "密码表缺兜底且无 --password 时拒绝 exit" 1 "$?"
+rm -rf "$enc_tbl_src" /tmp/zpack-verify-enc-l0-* /tmp/zpack-verify-pwtable-* /tmp/zpack-verify-pwnofallback-*
 
 # rar
 new_out=$("$NEW_CLI" info "$FIXTURE_DIR/rar/single-rar4.rar" 2>/dev/null)
@@ -933,6 +964,9 @@ clamp_out=$("$NEW_CLI" pdf extract "$WORK/pdf-c.pdf" --pages 4-10 --output "$WOR
 assert_equal "pdf 宽尾提取 exit" 0 "$ec"
 if echo "$clamp_out" | grep -q '"pages":\[4,5\]'; then report_pass; else report_fail "pdf 宽尾钳制 [4,5]" "[4,5]" "$clamp_out"; fi
 if grep -q "已截至第 5 页" "$WORK/clamp.err"; then report_pass; else report_fail "pdf 宽尾提示" "已截至第 5 页" "$(cat "$WORK/clamp.err")"; fi
+# --quiet 生效（2026-11-24 修复：此前 pdf / audio 的 --quiet 只被解析、没有任何地方读取）
+"$NEW_CLI" pdf extract "$WORK/pdf-c.pdf" --pages 4-10 --output "$WORK/pdf-quiet.pdf" --quiet 2>"$WORK/quiet.err" >/dev/null
+if [ "$(grep -vc '开始执行' "$WORK/quiet.err")" = "0" ]; then report_pass; else report_fail "pdf --quiet 静默过程日志" "只剩开始日志" "$(cat "$WORK/quiet.err")"; fi
 # ── pdf resize 统一页面尺寸（图片型 PDF 各页不一；混合夹具=每页不同 MediaBox）──
 make_pdf_mixed() { # 混合尺寸 3 页：300x400 / 500x300(横) / 200x900
 python3 -I - "$1" <<'PYX'
@@ -1148,6 +1182,40 @@ sevenz_w_empty="/tmp/zpack-verify-7zw-empty-$$"; mkdir -p "$sevenz_w_empty"
 assert_equal "7z write 空输入 exit" 1 "$?"
 echo "$("$NEW_CLI" compress "$sevenz_w_empty" --output "$sevenz_w_out-empty2.7z" 2>/dev/null)" | grep -q "没有可压缩的文件" && report_pass || report_fail "7z write 空输入 error_info" "没有可压缩的文件" "缺失"
 rm -rf "$sevenz_w_src" "$sevenz_w_out"*.7z* "$sevenz_w_dest" "$sevenz_w_edest" "$sevenz_w_edest-wrong" "$sevenz_w_empty"
+
+# ---------- 数值参数严格校验（2026-11-24 补漏：crypto/bench 此前只看前缀，"5abc" 被当成 5） ----------
+"$NEW_CLI" crypto password --length 5abc --count 1 >/dev/null 2>&1
+assert_equal "crypto password --length 非整数 exit" 1 "$?"
+"$NEW_CLI" crypto uuid --count 3x >/dev/null 2>&1
+assert_equal "crypto uuid --count 非整数 exit" 1 "$?"
+"$NEW_CLI" crypto genkey --bits 1024abc >/dev/null 2>&1
+assert_equal "crypto genkey --bits 非整数 exit" 1 "$?"
+strict_out=$("$NEW_CLI" crypto password --length 5abc --count 1 2>/dev/null)
+if echo "$strict_out" | grep -q '"is_success":false'; then report_pass; else report_fail "crypto password --length 非整数 error_info" "is_success:false" "$strict_out"; fi
+"$NEW_CLI" bench --size 5abc >/dev/null 2>&1
+assert_equal "bench --size 非整数 exit" 1 "$?"
+"$NEW_CLI" crypto genkey --bits 512 >/dev/null 2>&1
+assert_equal "crypto genkey --bits 512（标准库拒绝 <1024 位）exit" 1 "$?"
+
+# ---------- 失败时不得删文件（2026-11-24 修复：命令失败后曾无条件删除输出路径上的文件） ----------
+guard_dir="/tmp/zpack-verify-guard-$$"; mkdir -p "$guard_dir"
+"$NEW_CLI" image new "$guard_dir/photo.png" 40x30 >/dev/null 2>&1
+guard_sum=$(shasum -a 256 "$guard_dir/photo.png" 2>/dev/null | cut -d' ' -f1)
+"$NEW_CLI" image compress "$guard_dir/photo.png" --target-size 100KB >/dev/null 2>&1  # png 不走质量压缩：报错；不带 --output 时输出路径就是输入
+assert_equal "image compress 失败 exit" 1 "$?"
+assert_equal "image compress 失败后源文件必须还在" "$guard_sum" "$(shasum -a 256 "$guard_dir/photo.png" 2>/dev/null | cut -d' ' -f1)"
+"$NEW_CLI" image new "$guard_dir/photo.png" abc >/dev/null 2>&1  # 尺寸非法：报错
+assert_equal "image new 尺寸非法 exit" 1 "$?"
+assert_equal "image new 失败后输出路径上原有的文件必须还在" "$guard_sum" "$(shasum -a 256 "$guard_dir/photo.png" 2>/dev/null | cut -d' ' -f1)"
+rm -rf "$guard_dir"
+# 纸型名不分大小写（2026-11-24 修复：letter / legal 等纸型曾一律报「需纸型」）
+"$NEW_CLI" pdf resize "$WORK/pdf-c.pdf" --size letter --output "$WORK/pdf-letter.pdf" >/dev/null 2>&1
+assert_equal "pdf resize --size letter exit" 0 "$?"
+letter_out=$("$NEW_CLI" pdf info "$WORK/pdf-letter.pdf" 2>/dev/null)
+if echo "$letter_out" | grep -q '"width_pt":612,"height_pt":792'; then report_pass; else report_fail "pdf resize --size letter 尺寸" "612x792" "$letter_out"; fi
+"$NEW_CLI" pdf resize "$WORK/pdf-c.pdf" --size legal --output "$WORK/pdf-legal.pdf" >/dev/null 2>&1
+legal_out=$("$NEW_CLI" pdf info "$WORK/pdf-legal.pdf" 2>/dev/null)
+if echo "$legal_out" | grep -q '"width_pt":612,"height_pt":1008'; then report_pass; else report_fail "pdf resize --size legal 尺寸（不是横向尾缀）" "612x1008" "$legal_out"; fi
 
 # ---------- 汇总 ----------
 echo

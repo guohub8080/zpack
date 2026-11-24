@@ -5474,20 +5474,9 @@ func (a *app) formatSpec() string {
 
 // ───────────────────────── 刻录光盘（m06038）─────────────────────────
 
-// burnDeviceLabel 设备下拉显示名：1 · HL-DT-ST DVDRAM…（+介质态短语）
+// burnDeviceLabel 设备下拉显示名：1 · HL-DT-ST DVDRAM…（+介质态短语，规则见 burnMediaSuffix）
 func burnDeviceLabel(device BurnDevice) string {
-	label := fmt.Sprintf("%d · %s %s", device.Index+1, device.Vendor, device.Product)
-	switch device.Status {
-	case "blank":
-		label += "（空白）"
-	case "appendable":
-		label += "（可追加）"
-	case "full":
-		label += "（已满）"
-	case "no-media":
-		label += "（无介质）"
-	}
-	return label
+	return fmt.Sprintf("%d · %s %s%s", device.Index+1, device.Vendor, device.Product, burnMediaSuffix(device.Status))
 }
 
 // addBurnInputs 追加刻录内容（去重保序；镜像文件禁止与其他内容混排——引擎侧还会拦）
@@ -5830,6 +5819,16 @@ func (a *app) pageBurn(c *ui.Context) {
 		burnBlockHint := "未检测到刻录机"
 		if len(a.burnInputs) == 0 {
 			burnBlockHint = "先放入刻录内容"
+		}
+		// 盘本身不可写（已封盘 / 没放盘 / 状态异常…）时就地置灰——此前点了才由引擎报错；
+		// 判不出状态的不拦（规则与各平台状态来源见 burnBlockReason）
+		if burnReady {
+			if selected, chosen := a.burnSelectedDevice(); chosen {
+				if reason := burnBlockReason(selected.Status, a.burnBlank); reason != "" {
+					burnReady = false
+					burnBlockHint = reason
+				}
+			}
 		}
 		ctaRow(c).Children(func() {
 			cancelButton(c, t, "清除", a.clearBurn)

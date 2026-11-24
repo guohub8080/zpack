@@ -66,8 +66,12 @@ func TestLiveReadOnly(t *testing.T) {
 			return nil
 		}
 		t.Logf("介质: %+v", media)
-		if media.State&(MEDIA_STATE_FINALIZED|MEDIA_STATE_WRITE_PROTECTED) != 0 || !media.SupportedByWriter {
-			t.Logf("介质不可写（%s），介质相关验证跳过", media.StatusName())
+		// 不可追加的介质都跳过镜像构建：除了封盘 / 写保护，还有引擎判为不可用的几类（SDK 注释：损坏 = 上一个
+		// 区段没正常关闭、须先擦除、上一区段写了一半、不支持）——这类盘上多区段接口设置必然失败，不是回归
+		// （2026-11-24 内置光驱实测：Windows 刻录过的 DVD-R 报 damaged，此前这里判 FAIL）
+		if media.State&(MEDIA_STATE_FINALIZED|MEDIA_STATE_WRITE_PROTECTED|MEDIA_STATE_DAMAGED|MEDIA_STATE_ERASE_REQUIRED|
+			MEDIA_STATE_NON_EMPTY_SESSION|MEDIA_STATE_UNSUPPORTED) != 0 || !media.SupportedByWriter {
+			t.Logf("介质不可追加（%s），介质相关验证跳过", media.StatusName())
 			return nil
 		}
 		// 流参数按值传入的编组核对（Write 的 IStream 参数走同一通道）：借一个接收接口指针、无副作用的方法验证
@@ -134,23 +138,20 @@ func TestLiveReadOnly(t *testing.T) {
 }
 
 // checkKeptVolumeName 追加区段且未指定卷标时，镜像应沿用盘上原有卷标
-// （2026-11-24 实测：引擎导入上一区段后缺省会换成时间戳卷标）
+// （2026-11-24 实测：引擎导入上一区段后缺省会换成时间戳卷标）。盘有挂载点时以 Windows 显示的卷标为准
+// ——引擎读回值要过 ANSI 代码页，中文名不可靠（同日内置光驱实测）
 func checkKeptVolumeName(writer *DataWriter, media Media) error {
 	kept, err := writer.NewImage("", media)
 	if err != nil {
 		return err
 	}
 	defer kept.Close()
-	imported, err := getString(kept.image, "ImportedVolumeName", "盘上卷标")
-	if err != nil {
-		return err
+	expected := writer.mountedVolumeLabel()
+	if expected == "" {
+		return nil // 读不到 Windows 卷标：只剩引擎读回值这条不可靠的路，不做断言
 	}
-	current, err := getString(kept.image, "VolumeNameUDF", "镜像卷标")
-	if err != nil {
-		return err
-	}
-	if imported == "" || current != sanitizeVolumeName(imported) {
-		return fmt.Errorf("追加区段未沿用盘上卷标: 盘上=%q 镜像=%q", imported, current)
+	if kept.volumeName != expected {
+		return fmt.Errorf("追加区段未沿用盘上卷标: Windows 卷标=%q 镜像=%q", expected, kept.volumeName)
 	}
 	return nil
 }

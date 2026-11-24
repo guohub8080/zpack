@@ -12,7 +12,8 @@ JOBS="$(sysctl -n hw.ncpu)"
 
 command -v cargo >/dev/null || { echo "✗ 需要 Rust 工具链：brew install rust"; exit 1; }
 
-if [ ! -f "$SRC/office_oxide" ] || [ ! -d "$SRC/office_oxide/.git" ]; then
+# office_oxide 是目录，要用 -d 判断（此前写成 -f，对目录恒假 → 条件恒真，每次都重新 clone）
+if [ ! -d "$SRC/office_oxide" ] || [ ! -d "$SRC/office_oxide/.git" ]; then
   rm -rf "$SRC/office_oxide"
   mkdir -p "$SRC"
   git clone --depth 1 --branch v0.1.16 https://github.com/yfedoseev/office_oxide.git "$SRC/office_oxide"

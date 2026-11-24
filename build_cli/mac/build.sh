@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# mac 完整版产线：静态 libav（自建 prefix）+ ffmpeg CLI 尾注嵌入。
-# 产物 bin/zpack：单文件自包含（媒体功能 + zpack ffmpeg 透传），裸机可跑。
-# 首次运行自动触发 ffmpeg_static.sh（源码级全静态，约 15-25 分钟）；prefix 幂等复用。
+# mac 完整版产线：静态 libav（自建 prefix）+ ffmpeg CLI 进程内直调库。
+# 产物 bin/zpack：单文件自包含（媒体功能 + zpack ffmpeg 直调），裸机可跑。
+# 首次运行自动触发 ffmpeg_static.sh（源码级全静态，约 25 分钟）；prefix 幂等复用。
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)" && cd "$ROOT/../.."
 PREFIX="$ROOT/prefix"
 
 [ -f "$PREFIX/bin/ffmpeg" ] || bash "$ROOT/ffmpeg_static.sh"
-[ -f "$ROOT/office/libs/liboffice_oxide.a" ] || bash "$ROOT/office_static.sh"
+# office/libs 在仓库根（$ROOT 是 build_cli/mac）；此处曾漏写 ../../，守卫恒不成立、每次都重跑 office 产线
+[ -f "$ROOT/../../office/libs/liboffice_oxide.a" ] || bash "$ROOT/office_static.sh"
 [ -f "$ROOT/../../internal/sevenzipcli/libs/libzpack_7zcli.a" ] || bash "$ROOT/sevenzip_static.sh"
 
 echo "── 静态链接构建 ──"

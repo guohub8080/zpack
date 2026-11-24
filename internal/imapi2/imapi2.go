@@ -24,6 +24,7 @@ import (
 	"math"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // 介质物理类型 IMAPI_MEDIA_PHYSICAL_TYPE（SDK imapi2.idl）
@@ -268,31 +269,63 @@ func IsSCode(err error, code uint32) bool {
 	return errors.As(err, &callErr) && callErr.SCode == code
 }
 
-// UDF dstring 的首字节「压缩标识」——引擎的 ImportedVolumeName 原样带着它
+// UDF dstring 的首字符「压缩标识」——引擎的 ImportedVolumeName 原样带着它，其后每个字符对应一个原始字节
 const (
-	UDF_DSTRING_COMPRESSION_8BIT  rune = 0x08 // 其后为 8 位字符
-	UDF_DSTRING_COMPRESSION_16BIT rune = 0x10 // 其后为大端 16 位 UCS-2 码元
+	UDF_DSTRING_COMPRESSION_8BIT  rune = 0x08 // 其后每字节一个 8 位字符
+	UDF_DSTRING_COMPRESSION_16BIT rune = 0x10 // 其后每两个大端字节一个 16 位码元
 )
 
-// sanitizeVolumeName 把引擎读回的盘上卷标变成可写回的卷标：剥掉 UDF dstring 的压缩标识字节
-// （2026-11-24 实测 UDF 盘读回 "\bZPACK"，原样写回被引擎判「含无效字符」；16 位形态按 UDF 规格还原，
-// 尚未实盘验证），再去掉首尾控制字符；仍夹着控制字符的视为读不出，返回空串由调用方放弃沿用
+// sanitizeVolumeName 把引擎读回的盘上卷标变成可写回的卷标；还原不出可信的原名就返回空串（调用方放弃沿用）。
+// ImportedVolumeName 给的是 UDF dstring 的原始字节序列，引擎把它变成字符串时走的是本机 ANSI 代码页，
+// 还会在 0x00 处截断（2026-11-24 内置光驱实测：「照片备份」的 0xFD 读回成了 '?'——按当时「16 位码元被按
+// 小端解读」的假设去还原，得到的是乱码「焀最爀䜀夀一㼀」，并且被写成了盘名）。
+// 所以带压缩标识的字节串只在确定无损时才还原：
+//   - 8 位形态：不许有被代码页合并出的字符（≥ 0x100，说明字节边界已错位）；带高位字节时又不许出现 '?'
+//     （丢失的字节正是变成它）
+//   - 16 位形态：'?' 也可能是合法的低字节，分不清丢没丢，所以只认「纯 ASCII 且没有 ?」的字节串
+//
+// 不带压缩标识的普通字符串只清理控制字符。
 func sanitizeVolumeName(raw string) string {
 	units := []rune(raw)
-	if len(units) > 1 {
-		switch units[0] {
-		case UDF_DSTRING_COMPRESSION_8BIT:
-			raw = string(units[1:])
-		case UDF_DSTRING_COMPRESSION_16BIT:
-			// 大端码元被按小端解读成了字符，逐个交换字节还原
-			var builder strings.Builder
-			for _, unit := range units[1:] {
-				builder.WriteRune((unit<<8)&0xFFFF | unit>>8)
-			}
-			raw = builder.String()
-		}
+	if len(units) == 0 {
+		return ""
 	}
-	trimmed := strings.TrimFunc(raw, unicode.IsControl)
+	compression := units[0]
+	if compression != UDF_DSTRING_COMPRESSION_8BIT && compression != UDF_DSTRING_COMPRESSION_16BIT {
+		return cleanVolumeName(units)
+	}
+	payload := units[1:]
+	hasHigh, hasQuestion := false, false
+	for _, unit := range payload {
+		hasHigh = hasHigh || unit >= utf8.RuneSelf
+		hasQuestion = hasQuestion || unit == '?'
+	}
+	switch compression {
+	case UDF_DSTRING_COMPRESSION_16BIT:
+		if len(payload)%2 != 0 || hasHigh || hasQuestion {
+			return ""
+		}
+		decoded := make([]rune, 0, len(payload)/2)
+		for index := 0; index+1 < len(payload); index += 2 {
+			decoded = append(decoded, payload[index]<<8|payload[index+1])
+		}
+		return cleanVolumeName(decoded)
+	default:
+		for _, unit := range payload {
+			if unit > 0xFF {
+				return ""
+			}
+		}
+		if hasHigh && hasQuestion {
+			return ""
+		}
+		return cleanVolumeName(payload)
+	}
+}
+
+// cleanVolumeName 去掉首尾控制字符；仍夹着控制字符则视为读不出，返回空串
+func cleanVolumeName(units []rune) string {
+	trimmed := strings.TrimFunc(string(units), unicode.IsControl)
 	if strings.IndexFunc(trimmed, unicode.IsControl) >= 0 {
 		return ""
 	}

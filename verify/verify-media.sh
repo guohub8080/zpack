@@ -483,10 +483,37 @@ if echo "$out" | grep -q '"audio"'; then report_pass; else report_fail "audio in
 "$NEW_CLI" media 2>/dev/null >/dev/null; assert_equal "media 无子命令 exit" 1 "$?"
 "$NEW_CLI" media convert 不存在.mp4 out.mkv 2>/dev/null >/dev/null; assert_equal "输入不存在 exit" 1 "$?"
 "$NEW_CLI" media convert "$WORK/src.mp4" 2>/dev/null >/dev/null; assert_equal "convert 缺参数 exit" 1 "$?"
+"$NEW_CLI" media clip --frame-from 0 --frame-to 10 >/dev/null 2>&1; assert_equal "media clip 缺视频路径 exit（不得 panic）" 1 "$?"
 out=$("$NEW_CLI" media compress "$WORK/src.mp4" --target-size 999zz --output "$WORK/x.mp4" 2>/dev/null); exit_code=$?
 assert_equal "非法 target-size exit" 1 "$exit_code"
 # --help 守卫
 "$NEW_CLI" media --help >/dev/null 2>&1; assert_equal "media --help exit" 0 "$?"
+
+# ── 就地改写安全（2026-11-24 修复：输出与输入是同一个文件时，引擎边读边写会先把源文件截断——
+#    实测 media compress x.mp4 的缺省输出就是输入自己，10MB 的源只剩 1297 字节且报 success；
+#    失败路径上的「清理半成品」还会把源文件删掉）──
+cp "$WORK/src.mp4" "$WORK/inplace.mp4"
+"$NEW_CLI" media compress "$WORK/inplace.mp4" >/dev/null 2>&1   # 不给 --output：缺省输出＝输入自己
+assert_equal "media compress 缺省就地改写 exit" 0 "$?"
+inplace_size=$(stat -f%z "$WORK/inplace.mp4" 2>/dev/null)
+if [ "$inplace_size" -gt "$((SRC_SIZE / 4))" ] && [ "$inplace_size" -lt "$SRC_SIZE" ]; then report_pass; else report_fail "media compress 就地改写产物大小合理" "源的 25%–100%（真被压缩，没被截毁）" "$inplace_size/$SRC_SIZE"; fi
+inplace_duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$WORK/inplace.mp4" 2>/dev/null)
+if awk -v duration="$inplace_duration" 'BEGIN { exit !(duration > 5.5) }'; then report_pass; else report_fail "media compress 就地改写后时长完整" "≈6 秒" "$inplace_duration"; fi
+if ls "$WORK" | grep -q 'zpack-inplace'; then report_fail "就地改写临时文件清理" "无 .zpack-inplace 残留" "$(ls "$WORK" | grep zpack-inplace)"; else report_pass; fi
+# 太小的源：压缩计划在动工前就报错，源文件必须还在
+head -c 60000 "$WORK/src.mp4" > "$WORK/tiny.mp4"
+"$NEW_CLI" media compress "$WORK/tiny.mp4" >/dev/null 2>&1; assert_equal "media compress 太小的源报错 exit" 1 "$?"
+assert_equal "media compress 失败后源文件必须还在" 60000 "$(stat -f%z "$WORK/tiny.mp4" 2>/dev/null)"
+# audio compress 缺省就地覆盖：产物时长完整
+cp "$WORK/audio-src.m4a" "$WORK/song.m4a"
+"$NEW_CLI" audio compress "$WORK/song.m4a" >/dev/null 2>&1; assert_equal "audio compress 缺省就地覆盖 exit" 0 "$?"
+ac_inplace_duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$WORK/song.m4a" 2>/dev/null)
+if awk -v duration="$ac_inplace_duration" 'BEGIN { exit !(duration > 4.5) }'; then report_pass; else report_fail "audio compress 就地覆盖后时长完整" "≈5 秒" "$ac_inplace_duration"; fi
+# 剪辑类命令不支持就地改写：显式同路径要明确拒绝，源文件不动
+cp "$WORK/src.mp4" "$WORK/clip-same.mp4"
+"$NEW_CLI" media clip "$WORK/clip-same.mp4" --seconds-from 0 --seconds-to 2 --output "$WORK/clip-same.mp4" >/dev/null 2>&1
+assert_equal "media clip 同路径拒绝 exit" 1 "$?"
+assert_equal "media clip 同路径拒绝后源文件不变" "$SRC_SIZE" "$(stat -f%z "$WORK/clip-same.mp4" 2>/dev/null)"
 
 rm -rf "$WORK"
 # ---------- 汇总 ----------

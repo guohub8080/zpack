@@ -186,7 +186,7 @@ if [ ! -f "$PREFIX/lib/libavcodec.a" ] || [ ! -f "$PREFIX/lib/libzpack_ffmpeg_cl
   for src in "${FFMPEG_TARBALLS[@]}"; do
     echo "尝试下载: $src"
     if curl -sL --retry 2 --connect-timeout 20 --max-time 600 -o src.tar.xz "$src" \
-       && tar -tzf src.tar.xz >/dev/null 2>&1 \
+       && tar -tf src.tar.xz >/dev/null 2>&1 \
        && mkdir -p ffmpeg && tar -xf src.tar.xz -C ffmpeg --strip-components=1; then
       ffmpeg_fetched=1
       break

@@ -70,3 +70,35 @@ func TestParsePagesSpec(t *testing.T) {
 		}
 	}
 }
+
+// TestParsePageSizeSpecPaperNameCase 纸型名不分大小写，且不能把本身就以 L/P 结尾的纸型当成方向尾缀
+// （2026-11-24 修复：letter / legal 等 53 个纸型因 pdfcpu 纸型表是混合大小写的键而一律报「需纸型」）
+func TestParsePageSizeSpecPaperNameCase(t *testing.T) {
+	cases := []struct {
+		name              string
+		spec              string
+		wantWidth         int
+		wantHeight        int
+		wantEnforceOrient bool
+	}{
+		{"letter 小写", "letter", 612, 792, false},
+		{"LETTER 大写", "LETTER", 612, 792, false},
+		{"legal 以 L 结尾，不是横向尾缀", "legal", 612, 1008, false},
+		{"a4l 强制横向", "a4l", 842, 595, true},
+		{"A4P 强制纵向", "A4P", 595, 842, true},
+	}
+	for _, testCase := range cases {
+		resize, parseErr := ParsePageSizeSpec(testCase.spec)
+		if parseErr != nil {
+			t.Errorf("%s（%q）：不应报错 %v", testCase.name, testCase.spec, parseErr)
+			continue
+		}
+		if int(resize.PageDim.Width) != testCase.wantWidth || int(resize.PageDim.Height) != testCase.wantHeight || resize.EnforceOrient != testCase.wantEnforceOrient {
+			t.Errorf("%s（%q）：期望 %dx%d 强制方向=%v，得到 %dx%d 强制方向=%v", testCase.name, testCase.spec,
+				testCase.wantWidth, testCase.wantHeight, testCase.wantEnforceOrient, int(resize.PageDim.Width), int(resize.PageDim.Height), resize.EnforceOrient)
+		}
+	}
+	if _, parseErr := ParsePageSizeSpec("nosuchpaper"); parseErr == nil {
+		t.Error("未知纸型应报错")
+	}
+}

@@ -18,6 +18,9 @@ func Clip(input, output string, startTime, endTime float64) (*ClipResult, error)
 	if startTime < 0 || endTime <= startTime {
 		return nil, fmt.Errorf("时间需 0 ≤ start < end，收到 start=%.2f end=%.2f", startTime, endTime)
 	}
+	if rejectErr := rejectInPlace([]string{input}, output); rejectErr != nil {
+		return nil, rejectErr
+	}
 	probe, probeErr := probeFile(input)
 	if probeErr != nil {
 		return nil, fmt.Errorf("读取视频失败: %w", probeErr)

@@ -729,7 +729,7 @@ func zipWriteArchive(absoluteOutput string, tasks []compressTask, compressionLev
 							entryPassword = resolved
 						}
 					}
-					encrypted, extra, _, encryptErr := zipEncryptEntryForWrite(entryData, entryPassword, result.uncompressedBytes)
+					encrypted, extra, _, encryptErr := zipEncryptEntryForWrite(entryData, entryPassword, result.uncompressedBytes, result.method)
 					if encryptErr != nil {
 						return abortArchive(fmt.Errorf("加密失败: %s", encryptErr.Error()))
 					}
@@ -873,7 +873,24 @@ func zipExtract(source archiveSource, options ExtractOptions, logf Logf) (Extrac
 
 	// 预扫：加密识别（元数据层无密码可见：method 99/extra 0x9901 → WinZip AES；
 	// 仅 bit0 → 经典 ZipCrypto）+ 名字解码 + zip-slip 检查（先全验后动工）
+	// 桥接码按「方案 + 强度 + 内层方式 + 校验字节 + 密码」分组分配：同一组共用一个解码器，不同组各占一个码
+	// ——解码器闭包里锁的是本组的密码（见 crypto.go 的 ZIP_BRIDGE_FIRST 注释）
 	bridgeRegistrations := map[uint16]func(io.Reader) io.ReadCloser{}
+	bridgeCodes := map[string]uint16{}
+	nextBridgeCode := ZIP_BRIDGE_FIRST
+	registerBridge := func(groupKey string, decompressor func(io.Reader) io.ReadCloser) (uint16, error) {
+		if code, exists := bridgeCodes[groupKey]; exists {
+			return code, nil
+		}
+		if nextBridgeCode > ZIP_BRIDGE_LAST {
+			return 0, fmt.Errorf("归档的加密分组超过 %d 个，无法解压", int(ZIP_BRIDGE_LAST-ZIP_BRIDGE_FIRST)+1)
+		}
+		code := nextBridgeCode
+		nextBridgeCode++
+		bridgeCodes[groupKey] = code
+		bridgeRegistrations[code] = decompressor
+		return code, nil
+	}
 	var decodedEntries []zipDecodedEntry
 	for entryIdx := range archiveReader.File {
 		zipEntry := archiveReader.File[entryIdx]
@@ -888,22 +905,19 @@ func zipExtract(source archiveSource, options ExtractOptions, logf Logf) (Extrac
 				_, _, schemeName, _ := aesStrengthParams(strength)
 				return ExtractResult{}, fmt.Errorf("归档已加密（%s）：需要 --password 提供密码", schemeName)
 			}
-			bridge := zipBridgeAES(strength, innerMethod)
-			zipEntry.Method = bridge
-			passwordCopy := entryPassword
-			innerCopy := innerMethod
-			strengthCopy := strength
-			if _, exists := bridgeRegistrations[bridge]; !exists {
-				bridgeRegistrations[bridge] = func(r io.Reader) io.ReadCloser {
-					wrapped, wrapErr := zipWrapInnerDecompress(r, func(src io.Reader) (io.Reader, error) {
-						return newZipAESDecodingReader(src, passwordCopy, strengthCopy)
-					}, innerCopy)
-					if wrapErr != nil {
-						return errorReadCloser{wrapErr}
-					}
-					return wrapped
+			bridge, bridgeErr := registerBridge(fmt.Sprintf("aes|%d|%d|%s", strength, innerMethod, entryPassword), func(source io.Reader) io.ReadCloser {
+				wrapped, wrapErr := zipWrapInnerDecompress(source, func(src io.Reader) (io.Reader, error) {
+					return newZipAESDecodingReader(src, entryPassword, strength)
+				}, innerMethod)
+				if wrapErr != nil {
+					return errorReadCloser{wrapErr}
 				}
+				return wrapped
+			})
+			if bridgeErr != nil {
+				return ExtractResult{}, bridgeErr
 			}
+			zipEntry.Method = bridge
 		} else if zipEntry.Flags&0x1 != 0 {
 			entryPassword := options.Password
 			if options.PasswordResolver != nil {
@@ -919,22 +933,19 @@ func zipExtract(source archiveSource, options ExtractOptions, logf Logf) (Extrac
 			if zipEntry.Flags&0x8 != 0 { // 数据描述符模式：校验字节取时间高位（规范）
 				expectCheck = byte(zipEntry.Modified.Hour()<<3 | zipEntry.Modified.Minute()>>3)
 			}
-			bridge := zipBridgeZipCrypto(innerMethod)
-			zipEntry.Method = bridge
-			passwordCopy := entryPassword
-			expectCopy := expectCheck
-			innerCopy := innerMethod
-			if _, exists := bridgeRegistrations[bridge]; !exists {
-				bridgeRegistrations[bridge] = func(r io.Reader) io.ReadCloser {
-					wrapped, wrapErr := zipWrapInnerDecompress(r, func(src io.Reader) (io.Reader, error) {
-						return newZipCryptoDecodingReader(src, passwordCopy, expectCopy)
-					}, innerCopy)
-					if wrapErr != nil {
-						return errorReadCloser{wrapErr}
-					}
-					return wrapped
+			bridge, bridgeErr := registerBridge(fmt.Sprintf("zipcrypto|%d|%02x|%s", innerMethod, expectCheck, entryPassword), func(source io.Reader) io.ReadCloser {
+				wrapped, wrapErr := zipWrapInnerDecompress(source, func(src io.Reader) (io.Reader, error) {
+					return newZipCryptoDecodingReader(src, entryPassword, expectCheck)
+				}, innerMethod)
+				if wrapErr != nil {
+					return errorReadCloser{wrapErr}
 				}
+				return wrapped
+			})
+			if bridgeErr != nil {
+				return ExtractResult{}, bridgeErr
 			}
+			zipEntry.Method = bridge
 		}
 		decodedName, converted := decodeEntryName(zipEntry.Name, zipEntry.Flags&0x800 != 0)
 		if isUnsafeEntryPath(zipEntry.Name) || isUnsafeEntryPath(decodedName) {
@@ -1011,6 +1022,11 @@ func zipExtract(source archiveSource, options ExtractOptions, logf Logf) (Extrac
 		}
 	}
 	cancelChannel := make(chan struct{})
+	// 取消通道只关一次：多个 worker 同时失败（典型：加密包密码错误，每个条目都解不开）、
+	// 或 worker 失败与主循环的取消检查撞在一起时，重复 close 会 panic（close of closed channel，
+	// 进程以 exit 2 结束且 stdout 为空——2026-11-24 实测 16 条目加密包 + 错密码必崩）
+	var cancelOnce sync.Once
+	cancelWorkers := func() { cancelOnce.Do(func() { close(cancelChannel) }) }
 	for workerIdx := 0; workerIdx < workerCount; workerIdx++ {
 		workerGroup.Add(1)
 		go func() {
@@ -1028,7 +1044,7 @@ func zipExtract(source archiveSource, options ExtractOptions, logf Logf) (Extrac
 				skippedEntry, extractErr := zipExtractEntry(task, options.Force, &skippedFiles, logf)
 				if extractErr != nil {
 					setFirstError(fmt.Errorf("写出 %s 失败: %s", task.zipEntry.Name, extractErr.Error()))
-					close(cancelChannel)
+					cancelWorkers()
 					return
 				}
 				if !task.isDirEntry && !skippedEntry {
@@ -1040,7 +1056,7 @@ func zipExtract(source archiveSource, options ExtractOptions, logf Logf) (Extrac
 	}
 	for _, task := range tasks {
 		if checkCancelled() != nil {
-			close(cancelChannel)
+			cancelWorkers()
 			break
 		}
 		select {

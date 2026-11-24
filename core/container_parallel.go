@@ -50,6 +50,9 @@ func parallelContainerExtract(source archiveSource, options ExtractOptions, entr
 		}
 	}
 	cancelChannel := make(chan struct{})
+	// 取消通道只关一次（与 zipExtract 同构）：多个 worker 同时失败时重复 close 会 panic
+	var cancelOnce sync.Once
+	cancelWorkers := func() { cancelOnce.Do(func() { close(cancelChannel) }) }
 	worker := func() {
 		defer workerGroup.Done()
 		for {
@@ -67,14 +70,14 @@ func parallelContainerExtract(source archiveSource, options ExtractOptions, entr
 			case entry.isDirEntry:
 				if mkdirErr := os.MkdirAll(targetPath, 0o755); mkdirErr != nil {
 					setFirstError(fmt.Errorf("写出 %s 失败: %s", entry.cleanName, mkdirErr.Error()))
-					close(cancelChannel)
+					cancelWorkers()
 					return
 				}
 			case entry.isSymlink:
 				skippedLink, linkErr := tarCreateSymlink(targetPath, entry.linkTarget, options.Force, &skippedFiles, logf)
 				if linkErr != nil {
 					setFirstError(fmt.Errorf("写出符号链接 %s 失败: %s", entry.cleanName, linkErr.Error()))
-					close(cancelChannel)
+					cancelWorkers()
 					return
 				}
 				if !skippedLink {
@@ -84,14 +87,14 @@ func parallelContainerExtract(source archiveSource, options ExtractOptions, entr
 				entryReader, openErr := entry.open()
 				if openErr != nil {
 					setFirstError(fmt.Errorf("写出 %s 失败: %s", entry.cleanName, openErr.Error()))
-					close(cancelChannel)
+					cancelWorkers()
 					return
 				}
 				skippedFile, writeErr := tarWriteOutFile(entryReader, targetPath, entry.perm, options.Force, &skippedFiles, logf)
 				entryReader.Close()
 				if writeErr != nil {
 					setFirstError(fmt.Errorf("写出 %s 失败: %s", entry.cleanName, writeErr.Error()))
-					close(cancelChannel)
+					cancelWorkers()
 					return
 				}
 				if !skippedFile {

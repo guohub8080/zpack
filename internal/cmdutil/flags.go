@@ -1,4 +1,4 @@
-// Package cli 里所有命令共用的小型参数解析器。
+// Package cmdutil 是所有命令共用的小型参数解析器。
 //
 // 为什么不用 cobra 的 flag 解析而手写：需要完全控制语义——保留旧版的
 // 宽容行为（未知 flag 静默忽略），同时对数值参数做严格校验（非法值
@@ -33,6 +33,7 @@ func FlagValue(args []string, flagName string) (string, bool) {
 
 // ParseIntStrict 严格解析整数：整个字符串必须是合法十进制整数（可带正负号）。
 // 与 JS parseInt 的前缀语义不同——"5abc"/"" 这类输入一律返回 false。
+// 命令面的数值旗标一律走这里（2026-11-24：crypto/bench 曾用 Sscanf 只看前缀，"5abc" 被当成 5）
 func ParseIntStrict(text string) (int, bool) {
 	parsed, parseErr := strconv.Atoi(text)
 	if parseErr != nil {

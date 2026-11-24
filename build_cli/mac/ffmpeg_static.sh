@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# mac 静态 ffmpeg 产线：libjxl(BSD) + libaom(BSD) + FFmpeg 8.1.2 全静态。
-# 产物 prefix/：静态库(.a)+头文件+pkgconfig+ffmpeg CLI 二进制（供嵌入）。
+# mac 静态 ffmpeg 产线：libjxl(BSD) + libaom(BSD) + FFmpeg n9.0 全静态。
+# 产物 prefix/：静态库(.a)+头文件+pkgconfig+ffmpeg CLI 直调库（libzpack_ffmpeg_cli.a，进程内直调用）。
 # 许可证注意（2026-11-08 用户定案功能全优先）：含 GPL 库（x264/x265）→ 产物承担 GPL 义务；
 # 对外分发需提供对应源码/重链对象。内部使用无碍；如需 LGPL 版可去掉 x264/x265（VideoToolbox 硬编仍可 h264/hevc）。
 # 复用：prefix 已有产物时跳过重编（幂等）；FORCE=1 强制全量重建。
@@ -148,9 +148,12 @@ if [ ! -f "$PREFIX/lib/libzpack_ffmpeg_cli.a" ]; then
   ar rcs "$PREFIX/lib/libzpack_ffmpeg_cli.a" fftools/ffmpeg_zpack.o \
     $(ls fftools/*.o fftools/*/*.o 2>/dev/null | grep -vE '/(ffmpeg|ffprobe|ffplay)\.o$|ffplay_renderer|ffmpeg_zpack')
   echo "✓ ffmpeg CLI 对象 → $PREFIX/lib/libzpack_ffmpeg_cli.a（进程内直调用，~0.5MB）"
-  # 拷进包目录——#cgo LDFLAGS -L${SRCDIR}/libs 引用（裸 go test/build 不再依赖产线环境变量）
-  mkdir -p "$ROOT/internal/ffmpegcli/libs"
-  cp "$PREFIX/lib/libzpack_ffmpeg_cli.a" "$ROOT/internal/ffmpegcli/libs/"
+  # 拷进包目录——#cgo LDFLAGS -L${SRCDIR}/libs 引用（裸 go test/build 不再依赖产线环境变量）。
+  # 目标是仓库根下的 internal/ffmpegcli/libs（$ROOT 是本脚本所在的 build_cli/mac，要再上两级）——
+  # 此前拷到了 build_cli/mac/internal/…，cgo 包取不到：全新克隆链接失败，旧克隆一直链着过期库
+  ZPACK_ROOT="$(cd "$ROOT/../.." && pwd)"
+  mkdir -p "$ZPACK_ROOT/internal/ffmpegcli/libs"
+  cp "$PREFIX/lib/libzpack_ffmpeg_cli.a" "$ZPACK_ROOT/internal/ffmpegcli/libs/"
 fi
 echo "═══ 产线就绪 ═══"
 ls -la "$PREFIX/lib/"*.a | awk '{print "  lib:", $NF, "("$5/1024/1024"MB)"}'

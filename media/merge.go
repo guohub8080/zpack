@@ -17,6 +17,9 @@ func Merge(inputs []string, output, referencePath string) (*MergeResult, error) 
 	if len(inputs) < 2 {
 		return nil, fmt.Errorf("至少需要 2 个视频")
 	}
+	if rejectErr := rejectInPlace(inputs, output); rejectErr != nil {
+		return nil, rejectErr
+	}
 	// 基准视频：缺省 = 第一个；--reference 指定 = 按路径匹配
 	reference := inputs[0]
 	if referencePath != "" {

@@ -172,18 +172,32 @@ func TestRecorderIndexErrorText(t *testing.T) {
 	}
 }
 
-// TestSanitizeVolumeName 引擎读回的盘上卷标清理（表驱动）。"\bZPACK" 是 2026-11-24 真机实测值
+// TestSanitizeVolumeName 引擎读回的盘上卷标清理（表驱动）。"\bZPACK" 是 2026-11-24 真机实测值；
+// 16 位形态的取值来自同日的内置光驱实测：引擎每个字节给一个字符，「照片备份」里的 0xFD 已被代码页换成 '?'
+// ——按旧假设（16 位码元被按小端解读）还原出来的是乱码，并且被写成了盘名
 func TestSanitizeVolumeName(t *testing.T) {
-	// 大端 16 位码元被按小端解读：'备'=U+5907 → 0x0759，'份'=U+4EFD → 0xFD4E
-	sixteenBit := string([]rune{0x10, 0x0759, 0xFD4E})
+	// 照=U+7167 片=U+7247：大端字节 71 67 72 47，全是 ASCII 字节——无损
+	photo := string([]rune{0x10, 0x71, 0x67, 0x72, 0x47})
+	// 备=U+5907 份=U+4EFD：大端字节 59 07 4E FD，引擎读回时 0xFD 丢了，成了 '?'
+	lostTail := string([]rune{0x10, 0x71, 0x67, 0x72, 0x47, 0x59, 0x07, 0x4E, 0x3F})
+	accented := string([]rune{0x08, 'R', 0xE9, 's', 'u', 'm', 0xE9}) // 西欧代码页下高位字节逐字节对应
 	cases := []struct {
 		name string
 		raw  string
 		want string
 	}{
 		{"UDF 8 位卷标（实测带 0x08 前导）", "\bZPACK", "ZPACK"},
-		{"UDF 16 位中文卷标按大端还原", sixteenBit, "备份"},
+		{"UDF 8 位卷标带高位字节（逐字节对应，无损）", accented, string([]rune{'R', 0xE9, 's', 'u', 'm', 0xE9})},
+		{"UDF 8 位卷标带高位字节、又有字节丢成了 ?（实测形态）", string([]rune{0x08, 'R', 0xE9, 's', 'u', 'm', 0x3F}), ""},
+		{"UDF 8 位卷标的字节被 GBK 合并成汉字：边界已错位", "\b" + string([]rune{0x4E2D}), ""},
+		{"UDF 8 位卷标里本来就有的 ? 没有高位字节相伴：是原名的一部分", "\bR?sum?", "R?sum?"},
+		{"UDF 16 位中文卷标：纯 ASCII 字节按大端还原", photo, "照片"},
+		{"UDF 16 位中文卷标丢了字节（实测：份 → ?）：放弃沿用", lostTail, ""},
+		{"UDF 16 位卷标含 ? 低字节：分不清丢没丢，放弃沿用", string([]rune{0x10, 0x71, 0x67, 0x00, 0x3F}), ""},
+		{"UDF 16 位卷标带高位字节：放弃沿用", string([]rune{0x10, 0xD8, 0x00, 0xDC, 0x01}), ""},
+		{"UDF 16 位卷标字节数为奇数（被 0x00 截断，实测 \\x10q）", "\x10q", ""},
 		{"普通卷标原样", "ZPACK", "ZPACK"},
+		{"普通 Unicode 卷标原样", "照片备份", "照片备份"},
 		{"首尾控制字符被剥掉", "\x07abc\x00", "abc"},
 		{"夹着控制字符视为读不出", "a\x01b", ""},
 		{"空串", "", ""},
@@ -191,6 +205,32 @@ func TestSanitizeVolumeName(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		if got := sanitizeVolumeName(testCase.raw); got != testCase.want {
+			t.Errorf("%s: %q ≠ %q", testCase.name, got, testCase.want)
+		}
+	}
+}
+
+// TestChooseVolumeName 写入时卷标的取舍（表驱动）：显式指定 > 追加时沿用（Windows 卷标 > 引擎读回值）> 空白盘交给引擎
+func TestChooseVolumeName(t *testing.T) {
+	photo := string([]rune{0x10, 0x71, 0x67, 0x72, 0x47})                      // 引擎读回的「照片」，可无损还原
+	lostTail := string([]rune{0x10, 0x71, 0x67, 0x72, 0x47, 0x59, 0x07, 0x4E}) // 末字节丢失的「照片备?」
+	cases := []struct {
+		name     string
+		explicit string
+		mounted  string
+		imported string
+		appended bool
+		want     string
+	}{
+		{"空白盘未指定：交给引擎", "", "", "", false, ""},
+		{"空白盘显式指定", "备份", "", "", false, "备份"},
+		{"追加未指定、Windows 给出卷标：沿用", "", "照片备份", "", true, "照片备份"},
+		{"追加未指定、没有挂载点：还原引擎读回值", "", "", photo, true, "照片"},
+		{"追加未指定、引擎读回值不可信：放弃沿用", "", "", lostTail, true, ""},
+		{"显式指定压过盘上原名", "新名字", "照片备份", "", true, "新名字"},
+	}
+	for _, testCase := range cases {
+		if got := chooseVolumeName(testCase.explicit, testCase.mounted, testCase.imported, testCase.appended); got != testCase.want {
 			t.Errorf("%s: %q ≠ %q", testCase.name, got, testCase.want)
 		}
 	}

@@ -13,6 +13,6 @@ func probeFile(input string) (ProbeResult, error) {
 	return ProbeResult{}, ErrRequiresFullBuild
 }
 
-func executeFile(input, output string, mode Mode, probe ProbeResult, params execParams, logf Logf) (ExecResult, error) {
+func executeFileTo(input, output string, mode Mode, probe ProbeResult, params execParams, logf Logf) (ExecResult, error) {
 	return ExecResult{}, ErrRequiresFullBuild
 }

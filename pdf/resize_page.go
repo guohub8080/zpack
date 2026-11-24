@@ -38,20 +38,39 @@ func ParsePageSizeSpec(spec string) (*model.Resize, error) {
 	if trimmed == "" {
 		return nil, fmt.Errorf("--size 缺少值（纸型如 a4/letter，或 210x297mm / 595x842）")
 	}
-	// 纸型（可带 L/P 尾缀）
-	core := strings.ToUpper(trimmed)
-	enforceLandscape, enforcePortrait := false, false
-	if strings.HasSuffix(core, "L") {
-		core, enforceLandscape = core[:len(core)-1], true
-	} else if strings.HasSuffix(core, "P") {
-		core, enforcePortrait = core[:len(core)-1], true
+	// 纸型名不分大小写：pdfcpu 的纸型表里是 A4、Letter、Legal 这类混合大小写的键，不能拿大写化的输入直接查
+	// （2026-11-24 修复：letter / legal 等 53 个纸型此前一律报「需纸型」）
+	lookupPaper := func(name string) (*types.Dim, string, bool) {
+		if dim, isPaper := types.PaperSize[name]; isPaper {
+			return dim, name, true
+		}
+		for paperName, dim := range types.PaperSize {
+			if strings.EqualFold(paperName, name) {
+				return dim, paperName, true
+			}
+		}
+		return nil, "", false
 	}
-	if dim, isPaper := types.PaperSize[core]; isPaper {
-		resize := &model.Resize{PageSize: core, PageDim: dim}
+	// 先按整个名字找纸型，找不到再看尾缀 L/P（强制横/竖，如 a4l / a4p）——
+	// 不能先剥尾缀：legal 本身就以 L 结尾
+	upperSpec := strings.ToUpper(trimmed)
+	enforceLandscape, enforcePortrait := false, false
+	paperDim, paperName, isPaper := lookupPaper(upperSpec)
+	if !isPaper {
+		switch {
+		case strings.HasSuffix(upperSpec, "L"):
+			upperSpec, enforceLandscape = upperSpec[:len(upperSpec)-1], true
+		case strings.HasSuffix(upperSpec, "P"):
+			upperSpec, enforcePortrait = upperSpec[:len(upperSpec)-1], true
+		}
+		paperDim, paperName, isPaper = lookupPaper(upperSpec)
+	}
+	if isPaper {
+		resize := &model.Resize{PageSize: paperName, PageDim: paperDim}
 		if enforceLandscape || enforcePortrait {
 			resize.EnforceOrient = true // 尾缀出现即强制（pdfcpu 无此位则做 best-fit——横页保横）
-			if (enforceLandscape && dim.Portrait()) || (enforcePortrait && dim.Landscape()) {
-				resize.PageDim = &types.Dim{Width: dim.Height, Height: dim.Width}
+			if (enforceLandscape && paperDim.Portrait()) || (enforcePortrait && paperDim.Landscape()) {
+				resize.PageDim = &types.Dim{Width: paperDim.Height, Height: paperDim.Width}
 			}
 		}
 		return resize, nil

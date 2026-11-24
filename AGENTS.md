@@ -6,7 +6,7 @@
 
 - **压缩/解压专项 CLI**：单文件二进制（零运行环境依赖），Mac 上一条命令交叉编译出 Windows exe；stdout 唯一 JSON 结果 + stderr 日志的输出契约天然是 Agent/未来 GUI 的协议。
 - 已交付：`compress` / `extract` 扁平命令（2026-11-02 定案）——**zip + tar/tar.gz 双格式**。zip 侧并行架构（条目级并行 + >16MB 文件 128KB 分块并行 + 魔数 Store 直通 + GBK 文件名修复 + 智能解压 + zip-slip 防护 + 有界内存耐久设计）；tar 侧 PAX 确定性写入 + 符号链接保留 + 魔数识别读取 + 穿越/链接逃逸/设备条目防护。7z/rar 读取为下一里程碑。
-- **北极星（2026-11-02 用户定案；2026-11-22 修订）**：单引擎双面孔——同一二进制服务 CLI 与未来 GUI（GUI 是经输出契约调用的薄壳，引擎层零感知）。**读取** zip/rar/7z/tar/tar.gz 百分百（全变体：zip64/分卷/加密带密码/SFX/GBK/符号链接）；**写入** zip/7z/tar.gz（7z 于 2026-11-22 解禁——官方 7-Zip C++ 引擎进程内直调，见「7z 写入直调引擎」节；rar 永不写——法律禁止）；**不做私有格式**（互操作即护城河）。
+- **北极星（2026-11-02 用户定案；2026-11-22 修订）**：单引擎双面孔——同一二进制服务 CLI 与未来 GUI（GUI 是经输出契约调用的薄壳，引擎层零感知）。**读取** zip/rar/7z/tar/tar.gz 百分百（全变体：zip64/分卷/加密带密码/SFX/GBK/符号链接）；**写入** zip/7z/tar.gz（7z 于 2026-11-22 解禁——官方 7-Zip C++ 引擎进程内直调，见 specs/build.md；rar 永不写——法律禁止）；**不做私有格式**（互操作即护城河）。
 - **已决策：命令扁平化**（2026-11-02 用户拍板）：`zpack compress/extract <任意输入>`——写格式由 `--output` 扩展名定（.zip/.tar/.tar.gz/.tgz），读格式靠魔数识别；旧 `zpack zip …` 形态退役。
 - **已决策：格式策略**（2026-11-02 定案，同日修订）：读取格式**尽可能多**，判定标准是**开源实现/公开规格的可得性**而非格式出身——①公开格式（规格公开）尽量做；②私有格式但有许可兼容开源实现（MIT/BSD/公有领域）→ 纳入（alz=unalz BSD、pea=公开规格）；③只有 GPL 实现 → clean-room 重写才可（daa/isz=daa2iso/isz2iso），排末位；④无实现无规格（egg/j2j/k2k/bam）或安全污点格式（ace，CVE-2018-20250）→ 出局；rar 为专有出身例外（事实标准 + nwaples/rardecode MIT）。zpaq 实为开放标准（规格公开 + 参考实现公有领域），归公开格式。批次：A=bz2+zstd+单流gz+.001分卷（✅ 已交付）→ B=xz+lz4+brotli → C=7z+rar → D=iso+asar+uue+z+ar → E=cab/wim(LZX)/arj/lzh(+bh 捆绑评估)/lzip/nsis/zpaq → F=alz→pea→daa/isz（clean-room）。
 
@@ -16,6 +16,10 @@
 2. **依赖准入（2026-11-08 用户放宽定案）：静态优先 + 预算 ≤500MB**：产物单文件自包含（裸机可跑）是硬目标——静态链接优先于动态；体积预算 500MB 内随意（当前实测静态全量约 130MB）。零新增**动态**链接仍有效（`otool -L` 不得挂 brew/系统外路径；Windows import 表仍仅出厂 DLL）。纯 Go 依赖照旧自由引入。许可证红线：GPL 库（x264/x265）不捆绑——当前静态组合 libjxl/libaom 均 BSD，ffmpeg 核心按 LGPL（对外分发需合规静态链接义务）。
 3. **命名规范**：变量/函数全语义命名，禁单字母（循环下标 `idx` 例外）；常量 SCREAMING_SNAKE_CASE + 行上注释；固定字面量引用 `cmdutil.AppName`。
 4. **Git**：主分支 `main`；Conventional Commits；**完成工作单元即主动本地提交**（不必等用户发话）；**绝对禁止 push**，仅本地提交。
+5. **刻盘这件事三个平台分别实现**（2026-11-24 用户定案）：Windows = 系统自带 IMAPI2，Linux = xorriso（libburnia），macOS = 系统自带 hdiutil——各用该平台上最简单、最可靠的做法，不强求同一个库，不为统一引擎做跨平台移植；对用户始终是同一个 `zpack burn`（旗标与输出契约一致）。明细、两次绕路的教训与真机验证记录见 specs/burn.md。
+6. **spec 是行为的权威说明**（2026-11-24 用户定案：按功能整理项目，文档和代码都按功能归类）：每个功能一份 spec，放在 `specs/`（目录与流程见 [specs/README.md](specs/README.md)）。改行为先改 spec，再让 agent 按小节同步代码、补验收用例、把提交号回填到 spec 的变更记录；新功能先按 `specs/_template.md` 立 spec。本文只留全局规范，功能细节一律在 spec 里、不在这里重复。
+7. **失败时不得删用户的文件**（2026-11-24 实测教训）：命令失败后的清理只能删本次新建的输出（`internal/cliutil` 的 `OutputGuard`）；引擎写输出时如果输出就是输入，必须先写旁边的临时文件、成功后再替换（`media/inplace.go`）——`zpack media compress x.mp4` 的缺省输出就是输入自己，曾把 10MB 的源文件毁成 1297 字节还报成功；`audio compress` 与 image / pdf 命令的失败清理同病。
+8. **批量重命名之后扫一遍字符串**（2026-11-24 实测教训）：用 sed 批量替换包限定符（如 `core.` → `engine.`）会误伤字符串字面量里的同形文本（用法提示里的 `[3.pdf...]` 变成了 `[3.engine...]`）；改完用 go/ast 把字符串和注释里的新名字扫一遍再提交。
 
 ## 输出契约（所有命令无例外）
 
@@ -23,161 +27,39 @@
 
 - **stdout 有且只有一个最终输出**（`internal/stdout` 输出管线约束层的 print 函数输出后立即 `os.Exit`，编码先进内存、失败路径 stdout 零字节——绝不半截 JSON）：调用方读完 stdout 即得到完整结果，无需解析多次。
 - **print 即 exit，外层 defer 不运行**：任何清理（临时目录/半成品）必须在闭包内 defer（闭包 return 时执行）或 print 前显式调用——convert 的临时目录曾在成功路径静默泄漏即此因（2026-11-04 修复，清理行为已入验收）。
-- **子命令 `--help`/`-h` 恒可用**：DisableFlagParsing 会吞掉 cobra 的自动 help，全部命令 Run 统一经 `helpAwareRun` 守卫（2026-11-04 修复——此前 `zpack compress --help` 报参数错误，agent 嗅探在此断裂）；主力命令带 Long 示例（compress/extract）。
+- **子命令 `--help`/`-h` 恒可用**：DisableFlagParsing 会吞掉 cobra 的自动 help，全部命令 Run 统一经 internal/cliutil 的 `HelpAwareRun` 守卫（2026-11-04 修复——此前 `zpack compress --help` 报参数错误，agent 嗅探在此断裂）；主力命令带 Long 示例（compress/extract）。
 - **stderr 是过程日志**（进度/警告/跳过明细），可被整体忽略（`2>/dev/null`），不影响结果判断。
 - **退出码**：成功 `0` / 失败 `1`（无中间状态）。
 - **is_success 与退出码的关系恒定**：exit 0 ⇔ `is_success:true`——刻意的双通道冗余（管道会吃掉 `$?`、stdout 是唯一穿越进程边界的信道）。**唯一例外**：判定类命令（test/hash --expect）「操作完成但结论为否」时，JSON 永远带完整判定字段（`is_success:false`/`is_match:false` + 实算值），退出码跟随结论；消费方规则——脚本可用退出码，但**管道/存档/GUI 场景只信 JSON 字段**。
 - 数值参数严格校验（非法/越界 → error JSON + exit 1）；未知 flag 静默忽略；旗标一律长形态 `--word`；路径完整支持空格/中文（argv 直传，禁止拼 shell 字符串）。
 - 平台不支持的功能分支必须 `ErrorPrint`「暂不支持 <平台>：<原因>」+ exit 1，禁止静默失败。
 
-### stdout 输出格式（逐命令）
+逐命令的 stdout 字段、旗标、行为细则与设计取舍都在 `specs/` 对应功能的 spec 里；stderr 日志规则、`--quiet`、调用方消费指南在 [specs/conventions.md](specs/conventions.md)。本文不再重复。
 
-> **信封协议（2026-11-05 定案）**：所有命令统一 `{"is_success":true,"data":{...}}` / `{"is_success":false,"error_info":"..."}`；
-> 判定类失败（test/hash --expect）= `{"is_success":false,"data":{判定字段}}`。下表「成功输出」列均为 **data 载荷**（读时自动包一层 data）。
+## 命令规格
 
-| 命令 | 成功输出（exit 0） | 失败输出（exit 1） |
-|---|---|---|
-| `compress` | `{"is_success":true,"archive":"<绝对路径>","file_count":N,"size_bytes":N}` | `{"error_info":"人类可读原因"}` |
-| `extract` | `{"is_success":true,"output":"<绝对路径>","file_count":N,"size_bytes":N,"skipped":N}` | `{"error_info":"人类可读原因"}` |
-| `base64 encode`（无 --output） | 纯文本：Base64 编码字符串 | `{"error_info":"..."}` |
-| `base64 encode`（有 --output） | `{"is_success":true,"output":"<路径>","size_bytes":N}` | 同上 |
-| `base64 decode`（无 --output） | 原始解码字节（二进制安全，直接写 stdout） | 同上 |
-| `base64 decode`（有 --output） | `{"is_success":true,"output":"<路径>","size_bytes":N}` | 同上 |
-| `crypto genkey`（无 --output） | `{"is_success":true,"bits":2048,"public_key":"-----BEGIN...","private_key":"-----BEGIN...","public_b64":"...","private_b64":"..."}` | 同上 |
-| `crypto genkey --output <前缀>` | `{"is_success":true,"bits":2048,"public_key":"<公钥路径>","private_key":"<私钥路径>"}` | 同上 |
-| `crypto encrypt`（无 --output） | 纯文本：Base64 编码密文 | 同上 |
-| `crypto encrypt --output <路径>` | `{"is_success":true,"output":"<路径>","size_bytes":N}` | 同上 |
-| `crypto decrypt`（无 --output） | 解码后原始内容（二进制安全） | 同上 |
-| `crypto decrypt --output <路径>` | `{"is_success":true,"output":"<路径>","size_bytes":N}` | 同上 |
-| `crypto password [--length 4-128] [--count 1-100] [--lower/--upper/--digit/--symbol true\|false]… [--charset <字符集>]` | 纯文本：每行一个密码（count>1 逐行）。四个字符类缺省全开，启用的类各保底 1 字符再随机填充；`--charset` 追加自定义字符集（2026-11-23 GUI 随机生成页「自定义」分组的引擎面）——同样保底 1 字符、按 rune 取可含非 ASCII；四类全关且无 `--charset` 报错 | 同上 |
-| `crypto uuid [--count 1-100] [--upper] [--no-dash]` | 纯文本：每行一个 UUID v4 | 同上 |
-| `list <归档>` | `{"format":"zip","entry_count":N,"file_count":N,...,"entries":[{"name":"...","size":N,...}]}` | `{"error_info":"..."}` |
-| `test <归档>` | `{"is_success":true,"format":"zip","tested_entries":N,"all_ok":true}` 或 `{"is_success":false,"failures":["..."]}` | `{"error_info":"..."}` |
-| `info <归档>` | `{"format":"zip","entry_count":N,"file_count":N,"dir_count":N,"total_uncompressed":N,"archive_size":N,"compression_ratio":N,"encrypted":bool}` | `{"error_info":"..."}` |
-| `hash <文件...> [--algorithm 算法]` | `{"is_success":true,"algorithm":"sha256","files":[{"path":"<绝对路径>","size_bytes":N,"hash":"<hex>"}]}` | `{"error_info":"..."}` |
-| `hash <文件> --expect <hex>`（匹配） | `{"is_success":true,"is_match":true,"algorithm":"...","path":"...","size_bytes":N,"hash":"...","expected":"..."}` | 同上 |
-| `hash <文件> --expect <hex>`（不匹配） | exit 1：`{"is_success":false,"is_match":false,...,"hash":"<实算>","expected":"<期望>"}` | — |
-| `hash <文件...> --output <清单>` | `{"is_success":true,"output":"<绝对路径>","algorithm":"...","file_count":N}`（shasum 文本格式，`shasum -c` 可验） | `{"error_info":"..."}` |
-| `hash --check <清单>` | `{"is_success":true,"checked":N,"matched":N,"mismatched":[],"missing":[]}`；任一不匹配/缺失 → exit 1 同构 JSON（`mismatched`/`missing` 非空） | `{"error_info":"..."}` |
-| `skill` | 纯文本：SKILL.md 全文（go:embed 内嵌，与二进制版本永不漂移） | `{"error_info":"..."}` |
-| `media convert <输入> <输出>` | `{"is_success":true,"mode":"remux\|audio-only\|full\|audio-only-output","input":"...","output":"...","video":{"action":"copy\|encode\|none","codec":"...","bitrate":N},"audio":{...},"size_bytes":N,"original_size_bytes":N,"ratio":N}` | `{"error_info":"..."}` |
-| `media compress <输入> [--target-size]` | 同上（mode 恒 full）+ `"target_bytes":N`；缺省目标=原始 50%；低于压缩下限（原始10%+音频）报错 | 同上 |
-| `image new <输出> <尺寸> [--color] [--ppi]` | `{"is_success":true,"width":N,"height":N,"target_format":"png","size_bytes":N,...}`（**空白占位图**：缺省全透明；`--color` 色名/#RRGGBB[AA]；尺寸三形态=`800x600` 像素 / `55x90mm|cm|in`+`--ppi`（缺省 300）/ 纸型 `a4|a4l|letter…`（尾缀 L/P 方向，pt→ppi 换算）；全格式 jpg/png/webp/bmp/tiff/gif；**透明按编码器真实 alpha 能力**：png/webp/tiff 保真（webp 透明像素级验证过），jpg/bmp/gif 会丢 → 明确报错引导；无扩展名缺省 .png；纯 Go） | `{"error_info":"..."}` |
-| `image compress <输入> [--target-size 100KB] [--priority size\|quality] [--output]` | 同 compress + `"strategy":"size-first","quality":90,"scale_percent":68,"target_bytes":N`（**双优先级**（2026-11-08 用户定案）：`size`（缺省）=质量钉 90 视觉无损档、二分缩放到刚好装下（5000×6000 类巨图主因是像素多）；`quality`=保像素优先（全尺寸降质至 q50 下限，不够再缩+回拉）；仅 jpg——webp=纯 Go 无损 VP8L 质量无效，png/bmp/tiff/gif 无损；源已达标 → 直拷贝 + `"already_fit":true`；缩至 5%+q1 仍超 → 报错引导；与 `--quality` 互斥） | `{"error_info":"..."}` |
-| `image info <输入>` | `{"format":"jpeg","width":N,"height":N,"size_bytes":N,"color_model":"ycbcr","orientation":6,"display_width":N,"display_height":N}`（orientation/display 仅 EXIF≠1 时出现） | `{"error_info":"..."}` |
-| `image rotate-left\|rotate-right\|rotate-180\|mirror\|flip <输入> <输出>` | `{"is_success":true,"input":"...","output":"...","source_format":"png","target_format":"png","width":N,"height":N,"size_bytes":N,...}`（纯像素重排无损，ffmpeg 像素级交叉验证） | `{"error_info":"..."}` |
-| `json get <字段路径>` / `json ok` | stdin 读 JSON：get=值裸打印（stdout 纯文本；复合值紧凑 JSON；路径=点分段+数组下标）；ok=is_success → exit 0/1。**零依赖消费层——调用范式全面替代 python3 -c/jq**（2026-11-08 用户定案：单二进制闭环） | 非法 JSON/字段不存在/缺路径 → `{"error_info":"..."}` |
-| `office convert <输入> <输出> [--try-msoffice\|--try-wps\|--try-libreoffice]` | `{"is_success":true,"source_format":"xls(et)","target_format":"xlsx","engine":"...","size_bytes":N}`（**全格式矩阵**：doc/wps→docx、xls/et→xlsx、ppt/dps→pptx——WPS 现代文件与 MS 旧格式同构（.wps/.et/.dps 魔数识别后按对应 MS 格式解析，source_format 报 `core(alias)`）；**族匹配强制**（doc 族只出 docx——跨族拒绝，office_oxide 会尽力转出错误产物故前置校验）；内置=office_oxide（Rust C ABI 静态链，MIT/Apache-2.0，cgo 层纯构建报需完整版）；--try-\* 外部引擎层纯 Go：`--try-msoffice`=Win COM 按类型分派（Word.Application/Excel.Application FileFormat=51/PowerPoint.Application FileFormat=24，go-ole 纯 syscall）/mac Word AppleScript 按包 ID 寻址；`--try-wps`=Win COM（KWPS/KET/KWPP）；`--try-libreoffice`=三平台 soffice --headless 隔离 profile + **目标格式动态**（--convert-to 随输出扩展）；探测层四段式（env 覆盖→PATH→平台动态解析→兜底；**任意安装位寻址**（2026-11-09 定案）：Win 的 ms/wps 走 COM ProgID 注册表自解析（`CreateObject` 即寻址——装哪个盘都行）；Win 的 LibreOffice 优先查注册表 `HKLM/HKCU\SOFTWARE\LibreOffice\UNO\InstallPath`（安装器权威写入，自定义安装位如 D:\Apps 也覆盖；32 位在 WOW6432Node）——目录猜默认位仅兜底 + 盘符扫描（绿色解压版无注册表场景）；**显式指路双通道**：CLI 旗标 `--libreoffice-path <根目录|soffice.exe 全路径>`（进程内覆盖同名 env，值容错目录形态）> 环境变量 `ZPACK_OFFICE_LIBREOFFICE_PATH` > 探测链）；验证=soffice 回读交叉（inline string 产物无 sharedStrings——csv/pptx XML 回读才是互操作铁证）） | `{"error_info":"..."}` |
-| `pdf merge <1.pdf 2.pdf...> <输出>` | `{"is_success":true,"output":"<绝对>","inputs":[...],"input_count":N,"page_count":N,"size_bytes":N}` | `{"error_info":"..."}` |
-| `pdf extract <输入> --pages 1-3,5,8- [--output]` | `{"is_success":true,"input":"...","output":"...","pages_spec":"...","pages":[N...],"source_page_count":N,"size_bytes":N}`（页码 1 起闭区间；`8-`=到末页、`-5`=首页起；升序去重；**区间末端超出自动截至末页+stderr 提示**（宽尾，同视频剪辑语义）——起始页超出/单页不存在仍报错；缺省输出=同目录 `<名>-extract.pdf`） | 同上 |
-| `pdf resize <输入> --size a4\|a4l\|letter\|210x297mm\|595x842 [--pages] [--output]` | `{"is_success":true,"size_spec":"a4","width_pt":595,"height_pt":842,"pages":[N...],"page_count":N,"total_pages":N,"size_bytes":N}`（**页面尺寸统一**——图片型 PDF 各页图片大小不一 → 统一到纸型/自定义尺寸，内容按页缩放；横页 best-fit 保横（a4→A4L），尾缀 `L/P` 强制方向；**文档型拦截·选中页域**（2026-11-08 用户定案修订：只拦**选中页**中的文字页——混合型 PDF 可 `--pages` 圈住图片页避开文字页不连坐；报错**点名具体页码**「第 2、5 页含文字」+ 指路 `pdf info --all-pages` 与 `--force`；`--force` 放行+stderr 警告亦点名页码）；缺省全部页；缺省输出 `<名>-resized.pdf`） | `{"error_info":"..."}` |
-| `pdf info <输入> --all-pages` | 同 info + `"pages":[{page,width_pt,height_pt,rotation}]`（全页尺寸+角度+**逐页 text 文字标注**；info 另增 `text_based` 文档型判定——resize 前体检闭环） | 同上 |
-| `pdf rotate-left\|rotate-right\|rotate-180 <输入> [--pages 1-3] [--output]` | `{"is_success":true,"input":"...","output":"...","direction":"left","pages":[N...],"page_count":N,"total_pages":N,"size_bytes":N}`（**/Rotate 元数据零损**——同视频写矩阵；方向语义同 image/media 家族；**增量叠加**（已转页再转=累加）；`--pages` 缺省全部页；缺省输出=同目录 `<名>-rotated.pdf`；**mirror 不支持**——PDF 无镜像属性且文本会镜像不可读） | `{"error_info":"..."}` |
-| `pdf info <输入>` | `{"is_success":true,"page_count":N,"width_pt":N,"height_pt":N,"width_mm":N,"height_mm":N,"size_bytes":N,"rotation":90}`（尺寸已反映 /Rotate 观看态；rotation=首页角度，0 不出现） | 同上 |
-| `image merge <图...> [--reference] <输出>` | `{"is_success":true,"reference":"...","inputs":[...],"output":"...","direction":"vertical","width":N,"height":N,"format":"png","image_count":N,"size_bytes":N}` | `{"error_info":"..."}` |
-| `ffmpeg <原版任意参数...>` | **契约唯一例外**：透明代理（进程内直调——ffmpeg CLI 的 main 符号改名后静态链入，`zpack ffmpeg` 即普通 C 函数调用，零释放零子进程，原理见「ffmpeg CLI 进程内直调」节）——stdout/stderr/exit code 均为 ffmpeg 原生语义（stdout 可为二进制媒体流，`pipe:1` 场景必需），不走 JSON 信封；纯构建报「需完整版」 | — |
-| `audio convert <输入> <输出> [--bitrate] [--sample-rate] [--mono]` | `{"is_success":true,"mode":"audio-only-output","audio":{"action":"encode","codec":"...","bitrate":N},"size_bytes":N,"ratio":N,"bitrate":N,"sample_rate":N,"mono":true}` | `{"error_info":"..."}` |
-| `audio compress <输入> [--bitrate] [--mono]` | 同上 + `"original_bitrate":N`；缺省目标=原始码率 50%（下限 32k）；目标≥原始明确拒绝 | 同上 |
-| `burn devices` | `{"is_success":true,"devices":[{"index":0,"path":"/dev/sr0","vendor":"...","product":"...","media":"CD-R","status":"blank"}]}`（无光驱=空数组也算成功；Windows 的 path 为盘符如 `E:\`，没放盘 status=`no-media`，封盘=`full`——见「Windows 刻录后端」节） | `{"error_info":"..."}` |
-| `burn <镜像.iso\|目录\|文件...> [--device N] [--speed N] [--volid 卷标] [--mode multi\|mastered\|live] [--close] [--blank] [--no-eject]` | `{"is_success":true,"image":"<绝对路径>","size_bytes":N,"mode":"multi","close":false,"blank":false}`（Windows：目录/散文件由系统镜像库流式生成直烧、无临时 ISO，size_bytes=本次写入的镜像字节数；mac/Linux 走 hdiutil/xorriso 临时 ISO） | 同上 |
-| `skill --install [目录]` | `{"is_success":true,"skill":"zpack","installed":["<绝对路径>"],"size_bytes":N}`（无目录参数=探测 `~/.claude/skills`/`~/.agents/skills` 等全部命中处） | 同上 |
+命令保持扁平（2026-11-02 定案）：`zpack compress/extract <任意输入>`——写格式由 `--output` 扩展名定，读格式靠魔数识别；无格式子命令。各功能的规格：
 
-### stderr 过程日志（可忽略，不影响结果判断）
-
-所有 stderr 输出格式统一为：`[YYYY-MM-DD HH:MM:SS] 消息内容`（无级别标签即常态——单级类别是零信息装饰；标签位为未来例外级 WARN 预留，出现标签本身就是信号）
-
-**统一开始日志**：每个命令入口 stderr 恒一行 `zpack <命令名> 开始执行`——由 cli 装配层（root 的 PersistentPreRun）一处约束全部命令；只记命令名**绝不记参数**（参数可能含密码/密钥，落终端即泄密）。
-
-| 类型 | 触发场景 | 示例 |
-|---|---|---|
-| **进度条** | 操作耗时 >5 秒时每 5 秒采样 | `压缩中 ███████░░░░░░░░░░░░░░░░░░░░░░░░ 25.0% \| 500.0MB/2.0GB \| 100.0MB/s \| 1/4 文件 \| 剩余 15秒` |
-| **GBK 名修复** | 解压遇非 EFS 且非 UTF-8 文件名 | `条目名按 GBK 解码: "ÖÐÎÄ" -> "中文"` |
-| **跳过已存在** | 解压遇已有文件且无 --force | `跳过已存在: /path/to/file.txt` |
-| **分卷创建** | --volume-size 切分时每卷一条 | `分卷 /path/to/out.zip.001: 65536 字节` |
-| **部分加密降级** | rar 混合密码预扫降级 | `部分加密 rar：预扫降级，根目录按归档基名保守包裹` |
-| **密码错误跳过** | rar 逐文件密码不匹配 | `密码错误跳过: b.txt` |
-| **HSA 降档** | 压缩遇不可压大文件降 Store | （进度条中的百分比变化体现） |
-
-### 调用方（AI/GUI/脚本）消费指南
-
-```bash
-# 只拿最终结果（推荐）——stdout 解析一次 JSON 即可
-result=$(zpack compress 目录/ --output out.zip 2>/dev/null)
-# result = {"is_success":true,"archive":"/abs/path/out.zip","file_count":5,"size_bytes":12345}
-
-# 判断成功失败
-echo "$result" | python3 -c "import json,sys; r=json.load(sys.stdin); exit(0 if r['is_success'] else 1)"
-
-# 同时看进度（实时）——stderr 管道到终端
-zpack extract big.zip 2>&1 | tee /dev/stderr | python3 -c "import json,sys; r=json.load(sys.stdin); print(r)"
-
-# 完全静默（脚本/CI）——只看退出码
-zpack compress 目录/ --output out.zip > /dev/null 2>&1 && echo "OK" || echo "FAIL"
-```
-
-## 命令规格（2026-11-02 扁平化定案：无格式子命令）
-
-**`zpack compress <目录|文件...> [--output out.zip|out.tar|out.tar.gz] [--exclude 名称]... [--level 0-9] [--jobs N]`**
-- **写格式由 `--output` 扩展名决定**：`.tar` → tar、`.tar.gz`/`.tgz` → tar.gz、`.7z` → 7z（官方 C++ 直调引擎）、其余（含缺省 `CWD/<首输入名>.zip`）一律 zip；已存在则覆盖；**`--volume-size <尺寸|模板>`** 分卷创建（100MB/1GB/64KB/65536 人读格式；**模板**（2026-11-04，大小写归一）：`gmail`25MB／`cd650`650MB／`cd`=`vcd`700MB／`fat32`4GiB-1／`dvd`=`dvd5`4.7GB／`dvd9`8.5GB／`bd`=`bd25`25GB／`bd50`50GB——介质标称容量 **SI 十进制精确字节**，与数字后缀的二进制 1024 基并存；格式无关字节切分 `.001/.002/...`，cat 即还原；**整档 ≤ 单卷大小时不切分——保持原文件名，不产孤零零的 .001**；下限 64KB=65536；tar/zip/tar.gz 通吃）
-- **`zpack compress <目录|文件...> --output out.zip --password <值>`** 加密 zip 写入（WinZip AES-256 AE-2，零第三方依赖——PBKDF2/AES-CTR/HMAC 反向使用读取侧原语；`--password-table` 密码表支持逐文件密码；已知限制：p7zip 17.05 旧版不识别，自产自解+主流新版 7-Zip 待验证）
-- **`.zpackignore`**（gitignore 语义）：输入目录根/CWD 的 `.zpackignore` 自动生效——glob 模式、`#` 注释、`!` 反选、`/dir/` 目录限定、`/root` 根限定；`.zpackignore` 自身始终排除
-- 通用：默认排除系统垃圾（`.DS_Store`/`__MACOSX`/`Thumbs.db`/`desktop.ini`/`._` 前缀）；`--exclude` 按名精确匹配；目录以目录名为包内根前缀、多文件平铺进包根；中途失败删半成品；空目录不保留；非法 UTF-8 文件名报错；**`--temp-dir <目录>`**（2026-11-04，compress/extract/convert/bench 四命令通用）：临时落点指定（zip 分块溢写/convert 中转/bench 语料/cab 大文件夹溢写），缺省系统临时目录（Windows 上 %TEMP% 几乎总在 C: 盘——大转换指定到目标盘规避系统盘空间紧张）；指定目录不存在自动 MkdirAll；用后即清（只删自己的子目录，不动用户基目录）
-- zip 专属：`--level` 默认 6（0=全 Store）；`--jobs` 默认 `min(核数,8)`、压缩侧上限 8，1-64 严格校验；**条目级并行**（klauspost flate 文本 2.1× 标准库，主协程按收集顺序 `CreateRaw` 落盘，同输入产出字节确定）；**大单文件 128KB 分块并行**（**阈值 0x40001=256KB+1（业界主流压缩器 MT 切换点）**；非末块 sync-flush 缝合、末块 final；分块 CRC 用 zlib `crc32_combine` 公开算法拼合）；**分块字典衔接**（每块 `NewWriterDict` 预置前块尾 ≤32KB，跨块回引合法且比值近单流）；**HSA 前置直通**（不可压扩展名 30+ + 魔数佐证 → Store）+ **HSA 运行时降档**（累计满 30MiB(0x1e00000) 且压缩比 ≥99% → 剩余块降 level 0（deflate 流内 stored 块，容器不变）；%PDF 首块豁免；**快照信号设计保确定性**——装配器按序发累计快照，派发器收第 k-W 个快照后决策，决策输入纯函数化）；包内文件名强制 UTF-8（EFS 位 bit 11）
-- tar 专属：**tar.xz/tar.zst 写入**（现有依赖 ulikunitz/xz + klauspost/zstd 接入压缩壳——.txz/.tzst 短扩展名也支持）；tar.bz2 写入暂不支持（纯 Go 无成熟 bzip2 编码器——读取已支持）；PAX 格式确定性写入（Uid/Gid/Uname/Gname 归零、ModTime 截秒、权限只取 perm 位——同输入产出字节确定）；符号链接原样保留（tar 惯例；zip 才解引用）；`--level` 作用于 gzip 档；单流顺序写 `--jobs` 不参与，流式拷贝内存有界
-- 输出：`{"is_success":true,"archive":<绝对路径>,"file_count":N,"size_bytes":N}`（字段 2026-11-02 由 `zip` 更名 `archive`，多格式语义）
-
-**`zpack extract <归档> [--output 目录] [--jobs N] [--force]`**
-- **读格式靠魔数识别不靠扩展名**：zip（PK 前缀 + SFX 兜底——EOCD 尾部定位）/ tar 四压缩壳 tar.gz/tar.xz/tar.bz2/tar.zst（压缩流魔数 + 内层 ustar 佐证）/ tar（ustar@257，覆盖 ustar/PAX/GNU 三系）/ **gzip·bzip2·zstd·xz·lz4·lzip 单流 + brotli（.br 扩展名门控）+ .Z（compress LZW，libarchive 公开算法移植）+ uuencode/xxencode（begin 头行嗅探，.xxe 扩展名区分；内嵌文件名优先，.uue/.xxe 裸体流不支持）**（非容器，解出为单文件，名=基名去压缩扩展名或内嵌名；跳过/覆盖语义同容器）/ **`.001` 顺序分卷**（首卷自动拼段 `.002/.003…` 为逻辑单文件后按内层魔数分发——zip 分卷即通；内层非归档则拼接还原单文件）；**7z 读取**（bodgit/sevenzip，随机访问，加密读取经 `--password`（`NewReaderWithPassword`）——连 mhe 加密头都解）；**rar 读取**（nwaples/rardecode v1.1.3，自家多卷命名自动续卷，创建法律禁止，v1.1.3 头无链接标记→rar 符号链接按普通文件落地）；**wim 读取**（nradchenko/go-wim，LZX 按需解码，多镜像按 N-镜像名/ 平铺；局限：LZMS/ESD、XPRESS、重解析点不支持）；**cab 读取**（MSCF + 存储柜直拷 + MSZIP 逐块独立 deflate 配 32K 跨块预置字典 + LZX ChunkDecoder 含 Intel E8 翻译——LZX+E8 已 7z 字节级交叉验证；Quantum 明确报暂不支持、跨柜多卷暂不支持）；**ar 读取**（GNU name///长名表//与 BSD #1/len 双命名系，纯 ReadAt 定位）；**asar 读取**（Electron 双 pickle 头 + JSON 目录，.asar 扩展名门控，unpacked 条目读兄弟目录）；**iso9660 读取**（kdomanski/iso9660，Rock Ridge 名生效，Joliet 名暂按基础层读——局限）；伪头/损坏明确报「无法读取 <格式> 归档」；无法识别报错（分卷源则回退还原）
-- **`--password-table <文件>`**（边角功能，2026-11-03）：密码映射文件，每行 `匹配模式=密码`（精确文件名或 glob，`*=default` 兜底，`#` 注释）；**zip 逐文件独立生效**（随机访问+桥接解码器天然支持），rar/7z 取 `*` 通配命中作整档单密码（顺序流架构限制——逐文件多密码需多遍扫描，暂不做）；优先于 `--password`
-- 通用：`--output` 显式指定直接解进去；缺省智能解压（unar 语义）：单根直落当前目录、散装包一层以归档基名（`.tar.gz`/`.tgz` 剥复合后缀）命名的根目录（**当前目录最多出现一个新目录**）；`--force` 覆盖、**缺省跳过**已存在（O_EXCL 原子探测 + `skipped` 计数，保护已改动文件）；GBK 文件名修复（非 EFS 且非 UTF-8 → GBK 尽力解码，逐条 stderr 日志）；路径穿越防护（反斜杠归一后绝对路径/盘符/`..` 段拒绝）；重复条目名拒绝；校验自动
-- zip 专属：**加密读取**（WinZip AES + ZipCrypto，`--password` 值——零第三方依赖自实现 PBKDF2/AES-CTR/HMAC）；zip64 自动；空目录条目照建；`--jobs` 并行解压（缺省 `max(1, 核数/2)`、硬上限 32、≤文件数）
-- tar 专属：符号链接保留（相对链接放行；绝对/盘符/以条目目录锚点解析后逃出归档根拒绝）；硬链接按归档内成员复制落地（Windows 无特权可用）；设备/管道条目拒绝；GNU sparse 透明读取；**预扫全验后动工**（tar 顺序流无随机访问：预扫+解出两遍读，`--jobs` 不参与）
-- 输出：`{"is_success":true,"output":...,"file_count":N,"size_bytes":N,"skipped":N}`
-
-双向进度每 5 秒 stderr，操作耗时 >5 秒时输出进度条（`压缩中 ███████░░░░ 25.0% | 500.0MB/2.0GB | 100.0MB/s | 1/4 文件 | 剩余 15秒`）；<5 秒不输出（合理——秒级操作无需进度）。格式详见输出契约节。
-
-**`zpack hash <文件...> [--algorithm 算法] [--expect 值] [--output 清单] [--check 清单]`**（2026-11-04）
-- 算法：`md5/sha1/sha224/sha256/sha384/sha512/crc32`（纯标准库零新依赖；crc32=IEEE 多项式，zlib/zip 同款）；缺省 sha256；算法名大小写/连字符归一（`SHA-256`=`sha256`）；1MB 流式读取内存有界
-- 四形态：缺省=计算（多文件逐条）；`--expect <hex>`=单文件校验（恰好一个文件；匹配 exit 0 / 不匹配 exit 1 结构化 JSON 含实算值——脚本用退出码、GUI 用字段）；`--output <清单>`=生成校验清单（shasum 文本格式 `<hex><两空格><原路径>`，`shasum -a N -c` 直接可验——双向互操作已入验收）；`--check <清单>`=批量校验（算法按 hex 长度自动判定：8=crc32/32=md5/40=sha1/56=sha224/64=sha256/96=sha384/128=sha512，混合清单可；相对路径以清单所在目录为基准；`#` 注释行跳过；任一不匹配/缺失 exit 1）
-- 退化：未知算法/路径不存在/目录/expect 长度不符或非十六进制 → error JSON + exit 1
-
-**`zpack skill [--install [目录]]`**（2026-11-04，agent 消费端自描述）
-- SKILL.md 经 `go:embed` 内嵌于二进制——单文件分发且文档与版本永不漂移；`zpack skill` 输出全文，`--install` 探测 `~/.claude/skills`/`~/.agents/skills`（家目录级）与 `./.claude/skills`/`./.agents/skills`（项目级，仅当已存在）全部安装，或显式指定目录；安装文件与 `zpack skill` stdout 逐字节一致
-- 内容=输出契约+命令速查+配方（从 AGENTS.md 提炼，给消费端 agent 渐进披露：frontmatter description 常驻、正文按需加载）
-
-**`zpack media convert|compress ...`**（2026-11-05，go-astiav 进程内引擎 + 决策层）
-- `media convert <输入> <输出.mp4|mkv|mov|webm|mp3|m4a|flac|opus|wav>`：**尽量无损三级瀑布**（SmartRender 矩阵复刻）——①目标容器全兼容且无旋转→remux 全流拷贝（bit-exact）②视频兼容音频不兼容→拷视频+转音频 ③视频不兼容→全编（码率跟随源=autoMask bit3 语义）；音频容器输出→丢视频抽音轨（同编码拷贝/异编码转）；跨容器 remux 清 codec_tag 由目标 muxer 重分配
-- `media compress <输入> [--output 路径] [--target-size 50%|100MB|cd|dvd]`：**业界主流公式族**——总码率=目标×8÷时长×0.99；音频>128k 降 128k、≤128k 保留；视频=总−音频（下限 32k）；下限保护=原始×10%+音频大小（低于报错）；纯音频=码率全给音频；缺省 --target-size 50%、输出缺省同名 .mp4
-- 纯 Go 构建（CGO_ENABLED=0）media 命令报「需完整版」不崩；完整版走 build_cli/ 产线（mac 已验证：brew libav 动态链接）
-- **预设库**（2026-11-05）：`media/presets.json`（官方公开规格整理，社区共建=直接改 JSON 提 PR）——`media preset` 列表/详情；`--preset <ID>` 施加约束（convert：容器+缩放上限（只降不升保比例 FitWithinBox 偶数对齐）+码率上限（源超 1.1× 强制重编）；compress：max_size_bytes 为目标，**源已达标 → 直拷贝 remux + already_fit:true 不浪费画质**）；起步集 8 档：youtube/bilibili/douyin（social）+ gmail/discord/wechat 25MB（messaging）+ iphone/appletv（apple）
-- **media info 体检**（2026-11-05）：探测事实（容器/时长/尺寸/帧率/双流码率/旋转）+ **确定性压缩建议**（`suggestions[]`：resolution→`--screen 1080p`（像素密度不变）、codec-generation→`--codec hevc`（代际系数 0.55）、bitrate-inflated（bpp>0.25 健康度）、audio 降 128k）——AI/用户先读报告再挑旗标，建议规则全可单测；**skill.md 已写入 Agent 工作流：先 info 体检 → suggestions 按 order 排序（1=bake 先行 2=几何/码率 3=换码）→ flag 拼旗标 → 查 mode/ratio 报告损益**
-- **几何变换命令**（2026-11-05）：`media rotate-left|rotate-right|rotate-180|mirror <输入> <输出>`——旋转族**默认零损写 display-matrix**（源无矩阵时秒级、编码字节不变；PSNR 对照验证与烤入路径同向）+ `--bake` 强制烤入（transpose 无损像素重排+重编码）；源已有矩阵自动降级烤入（SideData Add 不可替换）；mirror 恒烤入（矩阵镜像播放器支持不可靠）；±90° 编码目标宽高自动对调；`--bake` 烤入**净角度**（源旋转+命令增量——源矩阵随重编丢失必须一并烤实）；**convert --bake 已退休**（2026-11-07）——物理化统一走 `media bake` 一级命令；media info 的 rotation 恒显示（0=无）+ `display_width/display_height` 显示尺寸（±90° 与存储对调）
-- **正交指令**（2026-11-05）：`--screen 2160p|1440p|1080p|720p|480p|360p`（尺寸上限，只降不升保比例）与 `--codec h264|hevc|vp9|av1`（换码，容器白名单校验）——convert/compress 通用，可组合（如 4K→`--screen 1080p --codec hevc`）；指令与决策矩阵协作：需缩放或换码≠源 → 强制 full；`--screen` 与 `--preset` 互斥（预设自带适配框）；`media info` 的 `suggestions[].flag` 直接对应此二旗标（skill 闭环）
-- **正交指令**（2026-11-05）：`--screen 2160p|1440p|1080p|720p|480p|360p`（尺寸上限，只降不升保比例）与 `--codec h264|hevc|vp9|av1`（换码，容器白名单校验）——convert/compress 通用可组合（4K→`--screen 1080p --codec hevc`）；与决策矩阵协作：需缩放或换码≠源 → 强制 full；`--screen` 与 `--preset` 互斥；`media info` 的 `suggestions[].flag` 直接对应此二旗标（skill 闭环）
-- **旋转与字幕（2026-11-05 修复，原 v1 局限①②）**：旋转读 display-matrix 侧数据（2016+ 手机标准）+ 旧式 rotate 标签兜底——remux 时矩阵随流参数零损保留（旋转不再否决直拷），重编时 transpose 烤入（无损像素重排，方向经 ffmpeg autorotate 参考帧 PSNR 对照验证）；字幕轨按容器兼容表保轨（mkv 全兼容/mp4 mov_text/webm webvtt），不兼容丢弃**必告警**（stderr `跳过字幕流 #N`）
-- **可烤元数据 #2 SAR**（2026-11-06）：像素宽高比探测（StreamProbe sar_num/sar_den）→ info 显示尺寸 SAR 感知（720x576 SAR16:15 显示 768x576）+ aspect-ratio 建议；缩放路径归一方像素（scale 后 setsar=1 滤镜 + encCtx SAR 同步 1:1——只做滤镜会被流级 SAR 盖掉双重校正）；适配（--screen/--preset）全部在显示坐标系（DisplayDims = 存储×SAR±90°对调）
-- **bake 一级命令**（2026-11-07）：`media bake <输入> <输出>`——显示元数据物理化的统一入口（把散在 convert --bake/rotate --bake 的能力收拢）；info 的 `bakeable` 字段直接回答「本文件可烤什么」（当前：rotation+sar；判定就绪待接：interlace/color-range）；无可烤 → remux 幂等（`baked:[]` 恒出而非缺省——v2 omitzero 保指针空数组可见）；`suggestions` 有 `bakeable` kind 指路
-- **`zpack image ...`（2026-11-08 HDR 解码 + EXIF Orientation 定向链）**：HDR 图片走 astiav 通道（零新增依赖）——EXR（OpenEXR gbrpf32）与 Radiance HDR（RGBE→float）读取：SDR 值域（max≤1.05）直通保逐位一致，真 HDR 扩展 Reinhard 滚降（白点→1.0，纯函数表驱动单测+python 直造 EXR 手算值端到端验证）；AVIF 归 HEIC 家族通道——**修复潜伏 bug：ConvertHEIC 的 execFFmpeg 是空壳（HEIC/AVIF convert 从未真工作）**，现经 astiav 首帧解码 + sws（Bicubic 对齐 ffmpeg CLI）——与 ffmpeg rgba64le 逐位等价；纯构建侧 stub 报「需完整版」；JXL 待 ffmpeg 构建带 libjxl 再收编。ICC→sRGB 仍缓期。：图片界的"可烤旋转"=EXIF Orientation（JPEG APP1/TIFF IFD0 零依赖解析）；**处理路径读取即定向**（convert/compress/resize/merge/几何变换一律先物化为观看态像素——zpack 输出不携带 EXIF，不定向则 orientation≠1 照片产出横倒）；`image info` 如实报告存储尺寸+orientation+display 尺寸（5-8 对调）；方向经 ffmpeg autorotate 四象限交叉验证。PPI 密度元数据（JFIF/pHyS）=打印尺寸契约，烤入路径=`resize --ppi`；ICC→sRGB 缓期（纯 Go 无零依赖 ICC 解析）。
-
-**`zpack audio convert|compress|info ...`**（2026-11-08，音频与视频分家——同一 astiav 引擎、独立命令面）
-- `audio convert <输入> <输出.mp3|m4a|flac|wav|ogg|opus>`：跨格式互转 + 质量旗标 `--bitrate 128k`/`--sample-rate 44100`/`--mono`（aformat 滤镜自动重采样/混音下变换）
-- `audio compress <输入> [--bitrate 64k] [--mono]`：**缺省压到原始码率 50%**（下限 32k），`--output` 缺省就地覆盖；目标≥原始明确拒绝（要转格式用 convert）；同格式+指定码率=强制重编码（决策矩阵直拷被质量旗标否决——质量旗标干预时视频容器走 audio-only 模式拷视频+重编音频，不丢视频流）
-- `audio info <输入>`：复用 media info（音频流探测）
-- 实测：320k 402KB → 160k 201KB（50.0%）→ 64k 80KB（20%）；--mono/--sample-rate 经 ffprobe 交叉验证落地
-
-已知局限 v2：文本字幕互转（srt↔mov_text）未做（不兼容即丢+告警）；两遍编码阻塞于 astiav v0.43 未暴露 stats_file/stats_in（上游暴露后半天接上，或改采样逼近法）；单遍编码目标偏差实测 ±5%（易压内容欠靶更大）
+| 功能 | spec | 功能 | spec |
+|---|---|---|---|
+| 压缩包（compress / extract / convert / list / test / info / bench） | [specs/archive.md](specs/archive.md) | 刻录（burn） | [specs/burn.md](specs/burn.md) |
+| 加密与校验（crypto / hash） | [specs/crypto.md](specs/crypto.md) | 图片（image） | [specs/image.md](specs/image.md) |
+| 视频（media / ffmpeg） | [specs/media.md](specs/media.md) | 音频（audio） | [specs/audio.md](specs/audio.md) |
+| 文档转换（office） | [specs/office.md](specs/office.md) | PDF（pdf） | [specs/pdf.md](specs/pdf.md) |
+| 零依赖消费层（base64 / json / skill） | [specs/tools.md](specs/tools.md) | GUI 与右键菜单 | [specs/gui.md](specs/gui.md) |
 
 ## 构建与验收
 
 ```bash
-go build -ldflags "-s -w -X main.version=$(git rev-parse --short HEAD)" -o bin/zpack ./cmd/zpack
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o bin/zpack.exe ./cmd/zpack   # 交叉编译
+CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=$(git rev-parse --short HEAD)-dev" -o bin/zpack-dev ./cmd/zpack   # 开发期纯 Go 构建（不是交付产物，见下方「产物定案」）
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o bin/zpack-dev.exe ./cmd/zpack  # 交叉编译（mac 上验证 Windows 可编译；别用完整版的文件名 bin/zpack.exe）
 
 go test ./...          # 单测（表驱动；纯逻辑函数才测，run* 函数直接 os.Exit 不测）
 go vet ./...           # + GOOS=windows / GOOS=linux go vet ./... 三平台编译验证
+bash build_cli/windows/build.sh   # Windows 完整版产线：deps（prefix 幂等缓存）→ office → cgo 组装 → DLL 白名单校验；在 MSYS2 bash 里跑
 bash build_cli/mac/build.sh   # mac 完整版产线：自动触发 ffmpeg_static.sh（首次源码级全静态 ~25 分钟，prefix 幂等）→ 静态链接 go build（ffmpeg CLI 对象进程内直调，~48MB 单文件）→ 校验零 brew 动态依赖
 go run ./scripts/genenv       # realEnvTest 真实体感数据一键生成（≈3.4GB 算法生成可复现；--fast/--full/--clean；见 scripts/genenv/README.md——门禁测确定性小样本，realEnvTest 测进度条/媒体/加密分卷的真实体感；目录 gitignore 不入库）
-bash verify/verify.sh        # 行为门禁：只测 bin/zpack（纯 Go 产物），确定性输出全字节比对（预期 354/354）
+bash verify/verify.sh        # 行为门禁：只测 bin/zpack（恒为完整版），确定性输出全字节比对（用例数以脚本为准）
 bash verify/verify-media.sh  # 媒体门禁：需产线完整版 bin/zpack（128 用例：转码矩阵/压缩公式/几何变换/bake/HDR/EXIF/audio/ffmpeg 直调），夹具用系统 ffmpeg 生成
 bash verify/verify-image.sh  # 图片门禁：纯 Go 即可（65 用例：格式互转/物理尺寸/变换 ffmpeg 像素级交叉/merge/EXIF 定向）
 ```
@@ -196,132 +78,25 @@ CGO_ENABLED=0 go test ./...                            # ~4s
 bin/zpack-dev <命令>                                   # media/HDR/HEIC/ffmpeg 走 stub 报「需完整版」
 ```
 **完整循环（media/audio/HDR/ffmpeg 直调开发时）**：`export PKG_CONFIG_PATH=build_cli/mac/prefix/lib/pkgconfig` 后 cgo 构建即可（`internal/ffmpegcli/libs/` 已包内自含，无需产线环境变量）；发布产物走 `build_cli/mac/build.sh`。
-**新功能家族的落位惯例**（如 pdf）：顶层包 `pdf/`（纯 Go，同 `image/` 惯例：引擎纯函数+文件，CLI 面 `cli/pdf.go`，**门禁进 `verify/verify.sh`**——纯构建可跑，反馈秒级）；仅当真的要碰 ffmpeg/libav 才进 cgo 层。**注意**：`build_cli/mac/build.sh` 会 `go clean -cache`——跑完产线后 cgo 冷构建要等一会，属预期。
+**新功能家族的落位惯例**（如 pdf）：顶层包 `pdf/`（纯 Go，同 `image/` 惯例：引擎纯函数+文件，CLI 面 `cli/<功能>/` 子包（引擎以别名 engine 引入；跨功能小件放 `internal/cliutil`；子包一份 doc.go 指向对应 spec），**门禁进 `verify/verify.sh`**——纯构建可跑，反馈秒级）；仅当真的要碰 ffmpeg/libav 才进 cgo 层。**注意**：`build_cli/mac/build.sh` 会 `go clean -cache`——跑完产线后 cgo 冷构建要等一会，属预期。
 
-### mac 静态产线全记录（build_cli/mac，2026-11-08）
+产线、许可证、验收在各平台的细节（两套完整版产线的流程、配料表、configure 旗标、陷阱清单 #1–#38，依赖与许可证义务，三个验收脚本的环境要求与已知噪音）全部在 [specs/build.md](specs/build.md)——**改产线、调 ffmpeg / office / 7z 集成、跑 Windows 完整版之前先读它的陷阱清单**。这里只留两条最容易被绕过的定案：
 
-**流程**：`bash build_cli/mac/build.sh` → 缺产物自动触发 `ffmpeg_static.sh`（源码级全静态，首次 ~25 分钟，`prefix/` 幂等复用跳过）→ `go clean -cache` 后静态链接构建 → 断言 `otool -L` 零 brew 动态依赖。产物 `bin/zpack` ~48MB，动态依赖仅系统出厂库——**单文件裸机可跑**。`src/` 与 `prefix/` 不入 git（.gitignore），换机重跑产线即复现。
-
-**配料表**（版本钉死）：libjxl v0.11.1（**SKCMS 后端**）/ libaom v3.11 / x264（videolan git）/ x265（**Bitbucket `multicoreware/x265_git`**——code.videolan.org 镜像要认证）/ lame 3.100（sourceforge tarball）/ opus v1.5.2 / libvpx v1.15 / FFmpeg **n9.0**（2026-11-09 用户定案 8.1.2→9.0 与 Windows 产线对齐；mac 侧脚本已改、**产线待复跑重验**）。ffmpeg configure 关键旗标：`--enable-gpl --enable-libx264 --enable-libx265 --enable-libmp3lame --enable-libopus --enable-libvpx --enable-libjxl --enable-libaom --enable-videotoolbox --disable-ffplay --disable-xlib --disable-libxcb`。GPL 库（x264/x265）入列=产物承担 GPL 义务；LGPL 退路=去掉二者（VideoToolbox 仍可 h264/hevc 硬编）。
-
-**ffmpeg CLI 进程内直调（零释放定案原理，2026-11-09 用户定案记录）**：
-
-- **旧方案为何退役（用户明确厌恶）**：把完整 ffmpeg.exe 二进制（35MB）嵌入 zpack，`zpack ffmpeg` 运行时先**释放成临时文件**再起子进程执行——四宗罪：污染磁盘（临时目录留垃圾、清理失败残留）、**杀毒软件高概率误报**（运行时释放可执行文件是病毒典型行为）、并发冲突（多实例抢同一释放路径要加锁）、慢（每写 35MB + 起进程开销）。go:embed 嵌入/尾注附二进制两版均已退役。
-- **现方案原理**：编译期把 ffmpeg CLI 当普通库链入——`fftools/ffmpeg.c` 重编译后**符号改名**（mac：`-Dmain=zpack_ffmpeg_cli_main` 编译宏；Windows：`objcopy --redefine-sym` 目标文件层改名——`-Dmain` 被 ffmpeg 的 `_WIN32` 分支 `#undef main` 取消，见 Windows 陷阱 #15/#16），连同 fftools 全对象打包 `libzpack_ffmpeg_cli.a`（~0.5MB），与 libav 全家静态链进 zpack.exe 本体。**ffmpeg 的 main 就是我们进程里的一个普通 C 函数**。
-- **运行时形态**：`zpack ffmpeg <参数>` = Go 侧构造 argc/argv → 调用 `C.zpack_ffmpeg_cli_main(argc, argv)`（`internal/ffmpegcli/cli_cgo.go`）——**零文件释放、零子进程、零缓存目录**；main 结尾 `exit()` 终结进程，退出码/stdio 全 ffmpeg 原生语义（契约唯一例外）。Windows 侧 argv 须堵 `prepare_app_arguments` 的 `GetCommandLineW()` 重取（陷阱 #17），否则 ffmpeg 拿到宿主命令行。
-- **运行时零释放已实测验证**（2026-11-09 Windows）：x264/x265 转码 + media info + hash 全轮跑完，临时目录与 CWD 新增文件恰等于产出物本身；转码进行中系统无 ffmpeg 子进程。
-- 产线拷入 `internal/ffmpegcli/libs/`（`#cgo LDFLAGS -L${SRCDIR}/libs`——**裸 `go test`/`go build` 不依赖产线环境变量**）。
-
-**陷阱清单（全部实际踩过；改产线/调 ffmpeg 集成前先读）**：
-
-1. **configure 找不到自建库**：ffmpeg 探测第三方全靠 pkg-config——`export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"` 必须在 `./configure` 前设置
-2. **libjxl 0.11.1 .pc 静态闭包缺陷**：`libjxl.pc` 缺 `-lbrotlicommon`（brotlidec 依赖它）、`libjxl_threads.pc` 闭包全缺——产线 sed 补齐，否则 configure 探测必挂
-3. **libjxl 默认 lcms 后端是坑**：lcms submodule 编了不装静态库 → `libjxl_cms.a` 悬 lcms 符号链接失败；`-DJPEGXL_ENABLE_SKCMS=ON` 换自含后端
-4. **x265 cmake 不装 pc 文件**（模板 `x265.pc.in` 未处理）：手写一份，依赖闭包（`-lc++ -lpthread -lm`）必须写进 `Libs:` 行——configure 探测期**不读** `Libs.private`
-5. **空文件陷阱**：`set -u` 中断的 heredoc 会留下 0 字节 pc 文件，幂等守卫用 `-s`（非空）而非 `-f`（存在），否则永久跳过重写
-6. **X11/xcb 自动探测**：ffmpeg configure 在 mac 上会探测到 brew 的 X11 把动态依赖带进静态链接——`--disable-xlib --disable-libxcb`；ffplay 依赖 SDL2（静态不可得）`--disable-ffplay`
-7. **cgo 构建缓存吃掉环境切换**：pkg-config 结果进 Go 构建缓存且不随环境变量失效——切换静态前缀后必须 `go clean -cache`，否则仍链 brew dylib
-8. **fftools 8.x 对象散布子目录**（`graph/`、`textformat/`）：ar 清单用 `fftools/*.o fftools/*/*.o` glob + 排除法；排除模式必须锚定 `/(ffmpeg|ffprobe|ffplay)\.o$`——`grep -v "ffmpeg.o"` 的正则点号会误吞 `ffmpeg_opt.o`
-9. **C argv 惯例**：argv[0]=程序名占位（ffmpeg 的 usage/报错引用它）、argc 含程序名、末位 NULL——传错 ffmpeg 视为零参数只打 usage
-10. **cgo 下 C `exit()` 不 flush stdio**：终端正常、管道/重定向丢输出——调用 main 前 `setvbuf(stdout, NULL, _IOLBF, 0)` 钉行缓冲
-11. **ffmpeg main 失败路径会返回负值**（非 exit）：与 stub 语义冲突过——`ffmpegcli.Available()` 探针分流；负值=真实失败码照传 `os.Exit`
-12. **astiav `ImageBufferSize/ImageCopyToBuffer` align 必须 ≥1**：传 0 → EINVAL → size 0 → 空切片 panic（`b[0]` 越界）
-13. **sws 像素比对的参照选择**：sws 缺省 FAST_BILINEAR、ffmpeg CLI 缺省 Bicubic（色度边缘分歧）；rgb24 CLI 路径自带 dithering——逐位等价的正确参照是 `rgba64le` 低字节
-14. **解码循环**：单包直收对 libjxl 不够（首包不吐帧 EAGAIN）——收帧-读包循环 + `SendPacket(nil)` EOF 冲洗；帧跨函数传递用 `Ref()` 克隆（内部帧 free 后调用方仍有效）
-
-**office_oxide 静态产线（2026-11-08）**：`build_cli/mac/office_static.sh`——v0.1.16 @ cargo（需 brew rust），crate-type 自带 staticlib → `office/libs/liboffice_oxide.a`（44MB，链接按需取件实际增重 ~12MB）+ 头文件；**克隆后必须清除 examples/cmd 与游离 *.go**（污染宿主模块 `go build ./...` 包图——踩过）。作者 Yury F.（pdf_oxide 1179⭐ 同作者）；许可 MIT/Apache-2.0。手搓 cgo 薄壳（SRCDIR libs 模式，同 ffmpegcli），不用其官方 Go 包（env-var 链接不满足裸构建自含）。构建产线入口 `build.sh` 已串接（office/libs 缺失自动触发）。
-
-**7z 写入直调引擎（2026-11-22 用户拍板「全量接入官方 C」）**：`build_cli/mac/sevenzip_static.sh`——ip7z/7zip tag 25.01 Alone2 bundle（全格式读+写引擎）铸 `internal/sevenzipcli/libs/libzpack_7zcli.a`（~3.7MB，311 对象）；许可=7-Zip LGPL + unRAR 特许（**Rar*.o 归档阶段剥除，unRAR 限制代码不入产物**）。直调形态同 ffmpeg（main 改名 `extern "C" zpack_7z_main` 进程内调用），差异=**7z 不 exit 正常返回退出码**。接线：`core/sevenz.go` sevenzCompress（@listfile+`-scsUTF-8 -spd` 清单进名、快路径 chdir 基目录保树/staging 硬链接克隆兜底、chdir 全程 mutex、已存在先删、退出码 ≥2=错误 1=警告容忍、分卷走通用切分器）；`.7z` 经 DetectWriteFormat 进 compress。**产线四坑**：①注册靠静态 ctor——普通 .a 按需拉取拉不到注册对象（E_NOTIMPL），`ld -r` 全对象合并单一可重定位对象再 ar 单成员归档（=whole-archive 语义；cgo 拒绝带路径的 -Wl,-force_load）；②DISABLE_RAR 只被 Format7zF 的 Arc_gcc.mak 认，Alone2+cmpl_*.mak 无视；③USE_ASM=1 撞 `and` 宏 × -Wc++-keyword（clang 把 .S 当 C++）+ var_*.mak 的 -Weverything 撞 C 代码——`USE_ASM= CFLAGS_WARN="-Wno-everything"` 双覆盖；④main 改名后可执行链接必败（预期，只要 .o）。已知限制：`--jobs`/`--password-table`/注释对 7z 忽略（logf 提示）；Windows 产线待铺（M2）。互操作：homebrew 7zz 26.05 交叉读 ✓；自家 extract（bodgit）连 mhe 加密头都解 ✓。
-
-**Windows 刻录后端（2026-11-24 交付；`internal/imapi2` 引擎胶水 + `cli/burn_windows.go` 命令面）**：用户定案「有现成成熟的库就不要造轮子」——全用系统现成能力：`imapi2.dll`（IDiscMaster2 设备枚举 / IDiscRecorder2 刻录机 / IDiscFormat2Data 数据写入 / IDiscFormat2Erase 擦除）+ `imapi2fs.dll`（IFileSystemImage 目录→镜像，ISO9660+Joliet+UDF 含多区段导入）+ shlwapi `SHCreateStreamOnFileEx`（文件流）；调用经 go-ole **按方法名走 IDispatch**，零新增依赖、纯 Go 构建（`CGO_ENABLED=0`）即可用。Go 生态无现成的 IMAPI2 调用封装（检索仅 deploymenttheory/go-bindings-win32 含生成的接口定义，2026-07 新建，未采用）。与 mac/Linux 的差异：目录/散文件流式生成直烧、**无临时 ISO**；单目录 → 镜像根装其内容，多输入 → 每项唯一名装入镜像根；`.iso/.img/.bin` 文件流直烧；`--speed` 按介质支持档位就近落档；光盘名称——未给 `--volid` 时单个目录输入用目录名、追加区段沿用盘上卷标，Windows 上中文名可用（规则见陷阱 9）；live（UDF 包写入）仍未接入。
-**陷阱清单（全部真机踩过：Win11 26200 + lenovo UltraslimDVD USB + DVD-R）**：
-1. **本机无 imapi2ms.dll（脚本封装层）**：ProgID（IMAPI2.MsftDiscMaster2 等）未注册，PowerShell `New-Object -ComObject` 报类未注册——按 **CLSID** 创建核心对象即可（取自注册表 HKCR\CLSID，与 SDK coclass 逐个核对）；核心对象自带类型信息，可按方法名解析。接口定义取自 microsoft/win32metadata 的 SDK IDL（`generation/WinSDK/RecompiledIdlHeaders/um/imapi2*.idl`、`imapi2*error.h`）——**别凭记忆写方法顺序**（实测与印象不同）。
-2. **go-ole 的边界**：`Item` 是带参属性（DISPID_VALUE）须 GetProperty；`VolumeNameISO9660/Joliet/UDF` 只读，只有 `VolumeName` 可写（各文件系统按自身上限自动截断：ISO9660 30 字符 / Joliet 16 字符）；go-ole 对 `*VARIANT` 只按引用传、不支持 VT_UNKNOWN，而数组参数（MultisessionInterfaces）与流参数（Write / AddFile）要求按值——`invokeRaw` 按值走同一条 IDispatch::Invoke 通道（自带 DISPPARAMS 镜像结构）。**按声明顺序数虚函数表槽位不可靠**（实测偏到别的方法、返回 IMPORT_SEEK_FAILURE），已弃用。
-3. **空白的一次写入盘上 `put_MultisessionInterfaces` 返回 IMAPI_E_IMPORT_SEEK_FAILURE（0xC0AAB156）**——官方文档注明的预期行为，容忍继续。
-4. **卷标**：`ImportedVolumeName` 对 UDF 盘带 dstring 压缩标识前导字节（实测读回 `"\bZPACK"`），原样写回被判「含无效字符」（IMAPI_E_INVALID_VOLUME_NAME）；且导入后镜像里卷标是空的，不显式沿用则新区段变时间戳卷标（实测盘名变成 `2026.11.24_0118`）→ `sanitizeVolumeName`（8 位剥前导；16 位按 UDF 规格大端还原，**未实盘验证**）+ `applyVolumeName`。
-5. **状态语义**：封盘的一次写入盘对外报只读介质类型并带写保护位（2026-11-24 真机实测封盘的 DVD-R：类型 DVD-ROM、状态 0xA000 = 写保护|不支持——**不含封盘位**，我曾把它误读成含封盘位）→ 「只读类型 + 写保护位」判为已封盘 / 只读（与压盘无法区分），只有可擦写类型上的写保护位才报写保护；没放盘时读介质类型报 E_IMAPI_RECORDER_MEDIA_NO_MEDIA（0xC0AA0202）而非空值 → 归一成 no-media。
-6. **首区段被引擎填充到约 193MB**（DVD-ROM 兼容模式，同资源管理器母盘式）：31MB 镜像实测刻了约 100 秒，下一可写位置在 93952 扇区。写速度表单位 kB/s（DVD-R 实测 `[5410 2705]` ≈ 4×/2×），`SetWriteSpeed` 单位是扇区/秒；CD 1×=176.4 kB/s → 基准按 0.1 kB/s 记，否则档位边界错位。
-7. **封盘后不弹出时 Windows 仍挂载上一区段的视图**（卷标、文件列表都是旧的；强制独占访问卸载再挂载也不刷新）——封盘内容须**重新进盘后校验**。原始扇区读免管理员可行（Go `os.Open` 打开 `\\.\E:` 设备路径；.NET FileStream 拒绝设备路径），但也只读得到系统已识别的区段范围。
-8. **验收脚本防真实刻录**：verify.sh 检出刻录机时跳过多文件真实写入用例（刻录不可逆；无刻录机的机器上用例数不变）。
-9. **光盘名称规则（2026-11-24 用户定案）**：名称属于最后一个区段——空白盘随意起；已有内容的盘缺省沿用、显式 `--volid` 才改；已封盘不能改。缺省名：单个目录输入用目录名，其余形态（镜像 / 多输入 / 单文件）沿用旧规则取当前目录名（`burnResolveVolumeName`）。**Windows 上中文名可用**——系统镜像库原生接受 Unicode（探针实测「备份」→ UDF/Joliet 原样、ISO9660 层变 `__`，Windows 读 UDF 故显示中文）；显式与缺省名都过 `burnWindowsVolumeName` 温和规范化：控制字符丢弃（引擎拒收）、路径非法字符换下划线（引擎会原样留在 UDF 卷标里）、截 32 字符（引擎不报错但 Joliet 截 16 / ISO9660 截 32）。mac/Linux 显式 `--volid` 仍原样交外部工具（旧行为），缺省名过 `burnSanitizeVolid`（只留 A-Z0-9_）。**GUI 刻录页「光盘名称」行**（`ui/gui/burnname.go` 的 `planBurnVolumeName` 纯函数）：仅空白盘（或勾了「先擦空再烧」）出输入框，其余状态一句话说明——非空白态不摆灰掉的输入框；起刻只在可改名且非空时传 `--volid`（`burnArguments` 纯函数）。输入框的占位文字不参与无头 `Find`：界面测试按标签位置点击、用 `TextInputActive` 判断是否落进输入框。
-10. **GUI 无头测试在 Windows 实测机上原本整套挂死**（2026-11-24）：`Service.BurnDevices` 的「未找到引擎」分支是同步回调，刻录页回调里的 `mygo.RunOnMain` 在无头环境永远等不到主循环——`TestLeadSentenceStaysReadableAtMinWidth` 的刻录页目标没预设 `burnQueried`，必挂（10 分钟超时被杀）。`go test` 程序在临时目录，`repoBin` 向上找不到仓库 bin，无头测试里引擎恒「未找到」。修法：回调一律异步。同批修掉 `TestConvertSummary` 在 Windows 的失败（测试把带反斜杠的路径直接拼进 JSON 串，整段信封解析失败）。修后 GUI 全套 32 过 / 4 跳过——跳过的是需要仓库 `bin/zpack` 的引擎生命周期测试（Windows 产物名带 .exe，`repoEngine` 没认）。**教训：Service 层给页面的回调必须在后台协程里给**（页面回调一律经 RunOnMain 投递）。
-真机验证记录（盘上文件逐个比对 SHA-256）：旧盘——区段 1（ISO 镜像 31MB）、区段 2（追加目录 15MB，导入 4 个旧文件）全部一致，最后一轮封盘未复核；新盘——区段 A（目录 6.1MB）一致，区段 B（两散文件 + 封盘 + 弹出）**重新进盘后 5 个文件全部一致**、卷标沿用 ZPACK、原始扇区可见两个区段各自的描述符（16 / 93968 扇区）。
-**未结项清单（2026-11-24 收尾时点——全部未完成；接手刻录相关改动先看这里）**：
-1. **【未做·被卡】中文名光盘与「目录名作缺省名」的真盘实刻**。已验到的程度：引擎对名称的接受规则在内存镜像上探针验证过（中文名可用、超长自截、控制字符拒收），CLI 规范化与 GUI 传参只有单测 / 无头测试。卡点：两张测试盘已封盘；之后放进光驱的两张新盘光驱认不出——引擎报 E_IMAPI_RECORDER_MEDIA_INCOMPATIBLE（0xC0AA0203「介质不兼容或为未知的物理格式」）、刻录机 CurrentProfiles 为空、READ_TOC 报「设备未就绪」、Windows MediaLoaded=False，连续观察半分钟不变；疑为盘型超出光驱能力（本机不支持蓝光）/ 放反 / 未卡牢，待用户检查。**拿到能识别的空白盘后，一张盘验三件事**：①单个中文目录名输入、不给 `--volid` → 盘名 = 目录名；②追加区段不给 `--volid` → 中文名保持不变（同时验证 `sanitizeVolumeName` 的 16 位 dstring 大端还原分支——目前只有单元测试）；③追加时显式 `--volid` → 改名生效。每步校验法同上（Windows 读 E:\ 比对哈希与卷标；封盘后须重新进盘再读）。
-2. **【未做】`--blank` 擦除路径未实跑**（手头没有可擦写盘）。连带风险：封盘后的可擦写盘若也被报成 ROM 类型，按类型表判的「可擦写」会失效——拿到 RW 盘后改为问引擎 `IDiscFormat2Erase::IsCurrentMediaSupported`。
-3. **【未做】mac/Linux 刻录路径本次未实跑**（只做了交叉编译与 vet）。这两个平台上缺省光盘名仍过 `burnSanitizeVolid`（中文名会变成 ZPACK），GUI 名称行的字符集提示也只做了交叉编译检查、未在真机看过。
-4. **【未做】刻录百分比进度未接入**（需自建 COM 事件接收器；现为每 5 秒一条心跳日志）。
-5. **【未做】live 优盘模式（UDF 包写入）未接入**——`--mode live` 在各平台均明确拒绝（Windows 计划走 IDiscFormat2RandomWrite）。
-6. **【建议·待拍板】盘读不出时提示误导**：引擎侧只给 `status=unknown` + note；GUI 刻录页显示「需空白光盘 / 放入空白光盘后可以设置名称」，而盘已经在光驱里；设备下拉也没有状态后缀。建议新增「无法识别」状态并给排查提示（盘型 / 放反 / 未卡牢 / 划伤）。
-7. **【建议·待拍板】盘已封盘或没放盘时 GUI 主按钮「刻录」仍可点**，点了才由引擎报错。未改的原因：要先想清 mac/Linux 的状态判定差异，避免误拦。
-8. **【未复核】第一张测试盘的最后一轮**（两散文件 + 封盘）没在重新进盘后复核；同机制的第二张盘已验证通过，风险低。
-9. **【环境缺口】GUI 测试在 Windows 上有 4 项跳过**：3 项引擎生命周期测试找不到仓库 `bin/zpack`（Windows 产物名带 .exe，`repoEngine` 没认）；1 项字体探针按需运行。
-10. **【未做】完整版产物未重铸**：`bin/zpack.exe` 仍是 2026-11-09 的旧构建，本次全部实测用的是纯 Go 开发版 `bin/zpack-dev.exe`。按「bin/zpack 恒为完整版」定案，交付前须跑 `build_cli/windows/build.sh` 重铸。
-
-真机只读回归：`ZPACK_IMAPI2_LIVE_TEST=1 go test ./internal/imapi2 -run TestLiveReadOnly`（不写盘）。
-
-**✅ Windows 首实测（2026-11-08，Win11 26200 x64 + Git Bash + Go 1.27.3 windows/amd64）**：纯 Go 构建通过（`CGO_ENABLED=0 go build` → 16.99MB/-s -w）；`go vet` 三平台（windows/linux/darwin）全过；`go test ./...` 全绿。**修复 7 个 Windows 特有潜伏 bug（mac 上全部无症状）**：
-1. **tar 读侧句柄泄漏**（`core/tar.go` openTarStream）：底层流开了只关解压层不关本体——Windows 删被占文件失败暴露（TempDir 清理报「being used by another process」）；closeChain 链式关闭（解压层→底层流）。
-2. **分卷创建「先删后关」**（`core/core.go` splitArchiveIntoVolumes）：`defer Close` 要到 return 后才执行，删原档时句柄还开着 → Windows 拒删；显式先 Close 再 Remove。教训同上——**Windows 上「关闭先于删除」是硬约束，defer 顺序不算数**。
-3. **cli 手拼绝对路径**（`cli/list.go` absPath）：手写 `cwd+"/"+p` 且以「`/` 开头」判绝对——Windows 上 `C:/...` 盘符路径被当相对拼到 CWD 后；改用 `filepath.Abs`。教训：**Go 的 `path/filepath` 就是 os.path 等价物，手拼路径 = 平台 bug 温床**；条目名/glob 匹配这类「逻辑路径」场景用 `path`（恒 `/`），文件系统场景用 `filepath`。
-4. **office COM 未钉线程**（`office/engine_windows.go`）：COM apartment 初始化是每 OS 线程的，goroutine 被调度器迁线程后报「尚未调用 CoInitialize」；withCOMSession：LockOSThread + CoInitializeEx + 配对 CoUninitialize（三路 COM 全包）。
-5. **LibreOffice 隔离 profile 畸形 URI**（`office/engines.go`）：手拼 `file://C:\...`（反斜杠）→ profile 初始化失败（libpng Write Error / 弹「bootstrap.ini 已损坏」窗）；经 `url.URL{Scheme:"file", Path:...}` 构造（卷符路径补前导 `/` 成 `file:///C:/...`，自动转义）。
-6. **glob 语义跨平台漂移**（`internal/cmdutil/glob.go` + `core/zpackignore.go`）：`filepath.Match` 的 `*` 按平台分隔符避让——Windows 上避开 `\` 不避开 `/`，`dist/*` 误匹配 `dist/sub/output.js`（.zpackignore/--exclude 语义漂移）；统一 `path.Match` + 入参 ToSlash。
-7. **tar 符号链接无特权整体失败**：Windows 未开开发者模式时 `os.Symlink` 返回 ERROR_PRIVILEGE_NOT_HELD(1314) → 整包解压失败；降级为拷贝归档内目标成员（bsdtar 同款）+ 前向引用待办补拷 + stderr 日志；附带 `entryName` 收集时 ToSlash 归一（条目名恒 `/` 风格不变量，`core/common.go`）。
-
-**office 三引擎 Windows 全通**（此前②全部盲写）：`--try-msoffice`（Word.Application COM）✓ / `--try-wps`（KWPS.Application，**首启冷启动 >180s 属预期，二次秒级**）✓ / `--try-libreoffice`（隔离 profile 修复后）✓——.doc→.docx 三引擎产物均正常；**Excel 族也已实测**（Excel.Application + KET.Application，.xls→.xlsx ✓，产物经 soffice 回读 csv 数据完整；顺手修复第 8 个 bug：外部引擎层 `target_format` 写死 "docx"——改按输出扩展名推导）。**门禁**：verify.sh 在 Git Bash 可跑（需 stat shim：`stat -f%z`→`stat -c%s` 转发脚本置 PATH 前；shasum/unzip Git Bash 自带）；修复后剩余 6 具名失败均为**脚本坐标系噪音**（python3/perl 以 `/tmp` 坐标写文件 vs MSYS 给 exe 的参数转成 `C:/Users/.../Temp`——两套坐标系错位；crypto 全链路与 hash --check 在 Windows 坐标下手动验证全正常），非产品 bug。verify-image.sh 需系统 ffmpeg 造夹具（实测机未装 → 不可跑；image 家族 convert/rotate/compress/merge/info 用 Go 标准库造夹具手动冒烟全过）。**平台差异备忘**：Git Bash 的 MSYS 参数路径自动转换（`/tmp/x`→`C:/Users/.../Temp/x`，`MSYS_NO_PATHCONV=1` 关闭）；`gofmt -l` 在 autocrlf checkout 下全量误报 CRLF；win exe 依赖仍仅系统出厂 DLL。
-
-**仍未实测**：①office COM 的 PowerPoint.Application/KWPP.Application 路径（与 Word/Excel 同构、共用钉线程修复，逻辑未跑——实测机无 .ppt 夹具来源）；②macOS --try-msoffice AppleScript 路径（开发机无 Word）。
-
-### Windows 完整版产线全记录（build_cli/windows，2026-11-09 首跑贯通；同日配料对齐 mac 定案）
-
-**✅ 已全线跑通且与 mac 配料对齐（2026-11-22 实测机三跑真贯通）**（编码器全家完整版 **82MB**：x264/x265/vpx8/9/aom/jxl/mp3lame/opus + ffmpeg 直调/media/audio/HDR/office 内置全开；import 表仅系统出厂 DLL；实机冒烟：x264 实转码、media info 探测+建议、media compress 公式压缩、libjxl 编码、ffmpeg 直调 -version、crypto password 全过）。**架构定案：Windows 走本机原生 MinGW 产线（MSYS2/UCRT64 gcc），zig cc 交叉路线退役**。**零解压残留（2026-11-09 用户定案）**：与 mac 的常驻 `src/` 源码树不同——所有 clone/解压/构建树在 `mktemp` 临时目录、`trap` 退出即清（`KEEP_WORK=1` 保留调试现场）；仓库常驻仅三脚本 + prefix 缓存（.gitignore）；prefix 幂等（产物在则整块跳过，重跑零下载零解压）。
-
-**脚本三件**（`bash build_cli/windows/build.sh` 一条命令全流程，对齐 mac/build.sh 形态；子命令 `deps`/`build` 可单跑）：`build.sh`（总入口：工具链环境→deps→office→cgo 组装→DLL 白名单校验）/ `deps_static.sh`（编码器全家 + FFmpeg n9.0 + fftools 直调库 → prefix，`FORCE=1` 全量重建）/ `office_static.sh`（office_oxide v0.1.16，MSYS2 rust windows-gnu staticlib）。云端同构产线 `.github/workflows/build-windows.yml`（windows runner + msys2 action + prefix 缓存 + artifact——**用户 push 后生效**）。前置一次性：`pacman -S --needed git make perl diffutils mingw-w64-ucrt-x86_64-{toolchain,cmake,nasm,pkgconf,libiconv,rust}`。
-
-**配料表（对齐 mac，版本钉死）**：libjxl v0.11.1（SKCMS）/ libaom v3.11.0 / x264（videolan git master）/ x265（**Bitbucket master + x265Version.txt 版本文件法**，4.1 线）/ lame 3.100（--disable-frontend）/ opus v1.5.2 / libvpx v1.15.0（x86_64-win64-gcc target）/ FFmpeg **n9.0** 官方 tarball + office_oxide v0.1.16。ffmpeg configure 关键旗标：`--target-os=mingw32 --disable-shared --enable-static --disable-ffplay --disable-xlib --disable-libxcb --enable-libjxl --enable-libaom --enable-gpl --enable-libx264 --enable-libx265 --enable-libmp3lame --enable-libopus --enable-libvpx --enable-iconv --extra-libs=-liconv`。VideoToolbox 是 mac 专属硬编（Windows 对应 d3d11va/dxva2 硬解默认内置，无对应旗标）。GPL 义务同 mac。
-
-**陷阱清单（全部实际踩过；改产线/调 Windows 集成前先读，编号接 mac 清单）**：
-15. **`-Dmain=` 改名在 Windows 失效**：fftools/cmdutils.h 在 `_WIN32` 分支 `#undef main`（防 SDL 覆盖的历史代码）把宏取消——mac 产线手法失效。
-16. **C main 符号入链 = `fatal error: randinit twice` + 段错误**：曾试「原名 main 编入 + 转发包装」——MinGW CRT（crt2.o）捕获 main 在初始化路径调用，与 Go runtime 再入冲突。**治本：`objcopy --redefine-sym main=zpack_ffmpeg_cli_main` 目标文件层改名**（既绕 #undef 又消除 C main）。
-17. **ffmpeg 在 _WIN32 无视传入 argv**：cmdutils.c 的 `prepare_app_arguments` 用 `GetCommandLineW()` 重取——直调拿到的是**宿主 zpack.exe 的命令行**，`zpack ffmpeg` 的 "ffmpeg" 子命令名被当位置参数（输出名变 "ffmpeg"）。产线 sed 删除两处调用（补丁幂等放 prepare 主体，勿放解压分支——嵌套事故时会被跳过）。
-18. **GNU ld 静态库严格按序**：libavcodec 引用 libiconv 须在其后（mac ld64 两遍扫描无此问题）——`-liconv` 注入 libavcodec.pc 的 Libs 行；configure `--extra-libs` 只进 Libs.private 不生效。
-19. **pkg-config 把 `-Wl,*` 重排到行尾**：Bstatic 包裹手法对 .pc 无效——MSYS2 运行库（z/bz2/lzma/iconv/stdc++/pthread）一律替换为 **.a 绝对路径**（`gcc -print-file-name=libXXX.a` 给路径；勿用 `-print-libgcc-file-name`——那是 gcc 私有目录）。winpthread 特殊：静态 libstdc++.a 自身引用 pthread_*，解铃须在其后——各包 #cgo 段顺序无法保证，用 `go build -ldflags '-extldflags "-Wl,-Bstatic -lpthread -Wl,-Bdynamic"'` 钉到链接行末尾。
-20. **Rust staticlib 不自带链接指令**：liboffice_oxide.a 的 Rust std 要消费者补 `-lntdll -luserenv -lws2_32 -lbcrypt -lcrypt32`（Nt*/GetUserProfileDirectoryW 等）；`-ldl` 是 unix 概念，MinGW 无此库——office 链接旗标拆 `linkflags_windows.go`/`linkflags_other.go`。
-21. **GNU sed BRE 的 `\(..\|..\)` 组合在 MSYS2 失配**：`\([ "]\|$\)` 写法静默不替换——拆成朴素两条（`s| -lz | path |g` + `s| -lz$| path|`）。
-22. **MSYS2 产线环境变量全靠手工**：`bash -lc` 不继承 LocalAppData/APPDATA（go 找不到 GOCACHE/GOENV）——显式 export；GOPROXY 同理（proxy.golang.org 不可达）。
-23. **网络**：ffmpeg.org/GitHub 直连龟速（~60KB/s），走本机代理 16s 下完 12MB tarball；tuna/ustc 无 ffmpeg releases 镜像。**代理按机器区分（2026-11-22 实测）**：mac 开发机=`http://127.0.0.1:7890`（7897 不通），Windows 实测机=`http://127.0.0.1:7897`——git 网络操作失败重试时先挂对端口号再裸连。
-24. **目录被残留进程 CWD 占住删不掉**（Windows 特有，`Device or resource busy`）：rm 前确认无 shell 驻留；脚本兜底「内容并入 + dotfiles 单独 mv」（glob `*` 不含 dotfiles，rmdir 会因残留物失败）。
-25. **pacman -Syu 会自杀**：升级 msys2-runtime/bash 时杀掉自身终端，后续安装静默丢失——先跑 -Syu（等它自杀）再单独跑 -S 包列表。
-26. **prefix 缓存与补丁的耦合**：pc 后处理只在 make install 分支跑——补丁/后处理更新时 prefix 命中会跳过，须手动重放或清 prefix；cgo 侧 `-L` 目录里库文件内容变化不触发 go 重链（mac #7 同款），build 脚本恒 `go clean -cache`。
-27. **x265 三连坑**（Windows 专属）：a) Git Bash 的 git 走 schannel 对 Bitbucket 握手失败——`git -c http.sslBackend=openssl`；b) Version.cmake 用 `git describe` 推版本 + MinGW 有 windres 才走 RC 版本块——depth-1 无 tag 推出空串 cmake 崩（`-D` 传值会被 git 推导覆盖）——**治本：clone 后 `rm -rf .git` + 手写 `x265Version.txt`**（Version.cmake 的 tarball 路径读显式版本）；c) 稳定 tag 3.6 的 `cmake_policy(SET CMP0054 OLD)` 被 MSYS2 cmake 4.x 拒（policy 已删除，`CMAKE_POLICY_VERSION_MINIMUM` 逃生阀管不到 SET）——用 master（已适配）。另：GitHub 的 videolan/x265 镜像停更 2020 不可用。
-28. **lame 3.100 frontend 撞 gcc 14+**：隐式函数声明默认错误化——`--disable-frontend`（只要 libmp3lame，同 x264 --disable-cli 哲学）。
-29. **libjxl 静态闭包**（mac #2 的 Windows 加重版）：brotli/hwy 互引顺序在多 pc 展开下失控——libjxl.pc 去 Requires、Libs 全闭包按依赖序重写；cmake 系对象后缀是 `.obj`（非 .o）。
-30. **libjxl dllimport**（Windows 专属）：头文件默认 dllimport 声明 → 链接器找 `__imp_` 符号必挂——静态链须 `-DJXL_STATIC_DEFINE`，注入全部 jxl pc 的 Cflags（mac 无 dllimport 机制故未踩）。
-31. **x265 新版 pc 闭包**：新版 cmake 已自装 x265.pc，但 C++ 运行时在 Libs.private 不被 `pkg-config --libs` 带出——无条件 sed 确保 Libs 行含 `-lstdc++ -lpthread`（mac 手写 pc 块已过时；mac clang 驱动自动链 C++ 故未踩）。
-32. **jxl 全家物理合并**：GNU ld 按序 + pkg-config 展开顺序不可控 → jxl↔jxl_cms 跨库互引在 cgo 终链必挂——`ar x` 解包六个 .a（jxl/jxl_cms/hwy/brotli×3）合并为单一 `libjxl_merged.a`（nullglob：空 glob 会把字面 `*.o` 传给 ar）。
-33. **ffmpeg 9 的 pc 生成器变化**：依赖闭包散装直写 Libs（8.x 走 Requires.private）+ cgo 展开重排——jxl 符号由 merged 兜底库紧跟 `-lav*` 注入三个 av pc（散装残留无害）。
-34. **MSYS2 nasm 3.02 无 `-Ox` 旗标 → libaom 配置中止**（2026-11-22 实测机首跑踩坑）：MSYS2 当前 `mingw-w64-ucrt-x86_64-nasm 3.02-1`（2026-07 构建）在 `nasm -h`/`-hf` 帮助文本里不再出现 `-Ox` 字样（优化改为 `-Oflags...` 形态），而 libaom `build/cmake/aom_optimization.cmake` 的 `test_nasm()` 以 `if(NOT "${nasm_helptext}" MATCHES "-Ox") FATAL_ERROR "Unsupported nasm: multipass optimization not supported."` 探测——字符串匹配必失败，cmake configure 在 libaom（deps 第 2/8 步）直接中止。libjxl（第 1/8 步）不受影响已编译通过。修法三选一：①装旧版 nasm 2.16.x 置 PATH 前；②给 aom_optimization.cmake 打补丁放宽该检查；③`-DAOM_TARGET_CPU=generic` 关汇编（性能损失，不推荐）。**产线复跑前先解决此坑**，否则 prefix 永远缺 libaom。
-**已修复（提交 a1c91e1）**：`build_cli/windows/deps_static.sh` fetch aom 后补丁块——行号守卫（218/221 行原文比对，tr -d 容 CRLF）+ heredoc 写 11 行 cmake（`file(WRITE nasm_probe.asm ...)` + `execute_process(nasm -Ox -f win64 ...)` 真实汇编探测，失败仍 FATAL_ERROR 原文案）+ sed 前后段拼接回写；LF/CRLF 两形态模拟验证过。libaom 已实测编译安装成功（log:741 Found assembler）。
-
-
-35. **ffmpeg tarball 下载通道堵死（代理环境）**（2026-11-22 实测机二跑踩坑）：ffmpeg.org 经本机代理 TLS 中断（curl exit 35），GitHub codeload 归档通道 body 传输停滞（HEAD 通、下载 0B/s）——但 **git 协议通道全程畅通**（同 run 的 jxl/aom/x264/x265/vpx 都是 git clone 成功）。对策三层：①`deps_static.sh` ffmpeg 段改多源回退（FFMPEG_TARBALLS 数组逐源尝试 + `tar -tzf` 完整性校验 + `--max-time 600` 有界）；②`ZPACK_FFMPEG_SEED` 本地种子旁路——`git clone --depth 1 --branch n9.0` 后 tar 打包（排除 .git，RELEASE 文件在=版本检测无忧），经 cygpath 转 /c/ 形态喂 tar（**MSYS tar 把 `C:/` 当远程主机名**，`tar: Cannot connect to C: resolve failed`）；③get 不到时明确报错退出。另：**DSH 后台包装器 fd 跨 runtime 交接会坏**（niubash 包装 → MSYS2 bash 的 stdio 重定向 EBADF，`echo: write error: Bad file descriptor` 秒退；内外层重定向都救不了）——绕法=Node child_process.spawn(detached) 直接拉 MSYS2 bash，stdio 挂 Node 原生 fd，环境变量显式传（PATH/HOME/proxy）。
-
-36. **office_oxide git clone 代理 SSL 中断**（2026-11-22 实测机三跑踩坑）：deps 8/8 全过后的最后一关——office_oxide clone 半途 `SSL_read: unexpected eof`（代理链路抖动，与 #35 同族）。修法（提交 8aa0c61）：office_static.sh 克隆三次退避重试（失败 rm -rf 残树 + sleep 8 再试）；复跑即过。**git 网络操作一律假设可能中断，脚本内克隆/下载必须带重试**。
-
-**已知缺口**（vs brew 版，配料待补）：`drawtext` 滤镜（freetype+fribidi+harfbuzz）、`subtitles` 滤镜（libass，mac 走 CoreText 免 fontconfig）、`zscale` 滤镜（zimg）、`libsvtav1`（AV1 快编）。encoders 202 个已反超 brew（195）。
+- **ffmpeg CLI 进程内直调、零释放**：`zpack ffmpeg` 是把 ffmpeg 的 main 改名后静态链进本体的普通 C 函数调用——运行时不往磁盘释放任何可执行文件、不起子进程（运行时释放可执行文件 = 污染磁盘 + 杀毒误报 + 并发冲突 + 慢，已被用户否决）。
+- **刻录三个平台各用各的后端**（铁律 5）：介质状态词表、写入前的拒绝规则、光盘名称规则、真机验证记录与未结项见 [specs/burn.md](specs/burn.md)；GUI 刻录页的对应规则见 [specs/gui.md](specs/gui.md)。**任何异常介质状态都不得走到写入。**
 
 ## 目录结构
 
 ```
-core/                 ← 核心算法引擎（纯库，顶层产品面）：core.go（Compress/Extract API+Format+Logf）+ format.go（魔数嗅探/扩展名判定）+ common.go（收集/排除/安全判定/智能解压/进度）+ zip.go + tar.go
-media/                ← 媒体功能包
-build_cli/            ← 平台产线：mac/（ffmpeg_static.sh 全静态配料 + build.sh 组装——见「静态产线全记录」节）；windows/（build.sh 总入口 + deps_static.sh 编码器全家 + office_static.sh——见「Windows 完整版产线全记录」节，2026-11-09 贯通）；linux 待铺
-cli/                  ← CLI 命令面（顶层产品面）：root.go（装配）+ commands.go（旗标解析校验 → 调 core → 输出契约呈现）
+core/                 ← 压缩包引擎（纯库，顶层产品面；名字是历史遗留，实际只管压缩/解压）：core.go（Compress/Extract API+Logf）+ format.go（魔数嗅探/扩展名判定）+ common.go（收集/排除/安全判定/智能解压/进度）+ zip.go / tar.go / 单流格式 / 分卷 / 7z / rar 读取 …
+image/ media/ office/ pdf/   ← 各功能的引擎（纯库）：图片 / 视频+音频 / 文档转换 / PDF
+cli/                  ← CLI 命令面（顶层产品面），按功能分子包：root.go（装配）+ archive/ burn/ crypto/ image/ media/ office/ pdf/ tools/（每个子包一份 doc.go）
 ui/                   ← UI 产品面（顶层）：聚合一切构建 UI 的产物——GUI 壳（gui/）+ 右键菜单（right-click/：macOS Finder/Windows Explorer/Linux 文件管理器）；全部是"启动器"，经 CLI 二进制契约干活（见 ui/doc.go 架构铁律）
 cmd/zpack/            ← CLI 二进制入口（薄 main；未来并排 cmd/zpack-ui）
-internal/             ← 纯管道：cmdutil（AppName + 旗标小件）+ output（输出契约层；cli 专用，core 禁用）+ 引擎进程内直调层（ffmpegcli / sevenzipcli）+ imapi2（Windows 刻录引擎胶水——按方法名调系统自带 IMAPI2，见「Windows 刻录后端」节）
-verify/verify.sh      ← 行为门禁（纯 Go）；verify-media.sh ← 媒体门禁（需完整版）
+internal/             ← 纯管道：cmdutil（AppName + 旗标小件）+ stdout（输出契约层；cli 专用，core 禁用）+ cliutil（命令面公共底座：help 守卫 / 位置参数 / 日志去向）+ 引擎进程内直调层（ffmpegcli / sevenzipcli）+ imapi2（Windows 刻录引擎胶水——按方法名调系统自带 IMAPI2）
+specs/                ← 各功能的规格（行为与设计的权威说明；README.md 是入口与「改 spec → 同步代码」流程）
+verify/verify.sh      ← 行为门禁；verify-media.sh ← 媒体门禁（需完整版）；verify-image.sh ← 图片门禁
+build_cli/            ← 平台产线：mac/ windows/（全记录与陷阱清单见 specs/build.md）；linux 待铺
 docs/                 ← 研究资料目录（本地私藏——逆向研究文档不入库）
 ```
 
@@ -330,54 +105,21 @@ docs/                 ← 研究资料目录（本地私藏——逆向研究文
 ## 路线图（优先级序，2026-11-02 修订）
 
 1. **tar/tar.gz 全链**（进行中）：标准库 `archive/tar`+`compress/gzip` 零新依赖；写（compress 按扩展名）+ 读（extract 魔数：gzip `1F 8B` / ustar@257）+ CLI 扁平化改造一次做
-2. ~~`extract` 通吃 7z/rar~~ **✅ 已交付（2026-11-02 批次 C）**：bodgit/sevenzip v1.6.5（7z 随机访问读取，**文件级并行解出**；**加密读取**（`NewReaderWithPassword`，`--password`））+ nwaples/rardecode v1.1.3（RAR 1.0-5.0 读取，自家多卷命名自动续卷；加密在读取时浮出并明示；v1.1.3 头无链接标记→符号链接按普通文件落地；**串行解出**——rar 引擎无并行机制惯例；**加密读取**（密码传入 `OpenReader`；部分加密档案预扫降级+逐文件密码错误跳过——混合密码已知限制））。夹具入库 `core/testdata/`（7z 中文路径/RAR4/RAR5/多卷）。遗留：无。~~7z 只读不写（2026-11-03 旧定案）~~ **已解禁（2026-11-22 用户拍板）：7z 全量接入官方 C++**（7-Zip 25.01 Alone2 进程内直调，见「7z 写入直调引擎」节）；rar 仍永不写（法律）。~~解出并行化~~ ✅ 已交付（2026-11-03：7z 文件级并行 + 全路径 file_count 语义统一为排除 skipped）
+2. ~~`extract` 通吃 7z/rar~~ **✅ 已交付（2026-11-02 批次 C）**：bodgit/sevenzip v1.6.5（7z 随机访问读取，**文件级并行解出**；**加密读取**（`NewReaderWithPassword`，`--password`））+ nwaples/rardecode v1.1.3（RAR 1.0-5.0 读取，自家多卷命名自动续卷；加密在读取时浮出并明示；v1.1.3 头无链接标记→符号链接按普通文件落地；**串行解出**——rar 引擎无并行机制惯例；**加密读取**（密码传入 `OpenReader`；部分加密档案预扫降级+逐文件密码错误跳过——混合密码已知限制））。夹具入库 `core/testdata/`（7z 中文路径/RAR4/RAR5/多卷）。遗留：无。~~7z 只读不写（2026-11-03 旧定案）~~ **已解禁（2026-11-22 用户拍板）：7z 全量接入官方 C++**（7-Zip 25.01 Alone2 进程内直调，见 specs/build.md）；rar 仍永不写（法律）。~~解出并行化~~ ✅ 已交付（2026-11-03：7z 文件级并行 + 全路径 file_count 语义统一为排除 skipped）
 3. ~~读取硬化~~ **①加密读取已交付（2026-11-03）**：zip 加密读取全通（WinZip AES-128/192/256 AE-1/AE-2 + ZipCrypto——零第三方依赖，PBKDF2-HMAC-SHA1×1000/AES-CTR/10B HMAC 全自实现，`--password` 旗标）；7z 加密读取（`NewReaderWithPassword`）；rar 加密读取（密码传入 `OpenReader`）；部分加密降级（混合密码场景预扫降级+逐文件密码错误跳过）。遗留：`.z01` 分卷/v7 tar/sparse/fuzz 语料
 4. `--exclude` 支持 glob（如 `*.bak` 模式）
 5. `--codec zlib` 档（病态超重复语料比值敏感场景，zlib 逐块比 klauspost 省 ~23%）
 6. **UI 面**（引擎稳定后，见 ui/doc.go）：GUI 壳（`ui/gui/`，壳技术另议——asuka/mygo/nsgo 调研完毕待原型验证）+ **右键菜单 mac 侧已交付**（2026-11-19，见下）+ Windows Explorer/Linux 待铺——全部是"启动器"，经 stdout JSON 契约驱动 CLI 二进制；GUI 二进制届时新增 `cmd/zpack-ui`
-
-   **GUI 交互铁律（2026-11-21 用户定案，所有可点元素无例外）**：
-   - **凡可点击必带 hover 特效 + 按下反馈**——hover 变色/加深/放大任一，Pressed 有"被按下去"的感觉（下沉/缩放/变色任一）；静止态可隐藏（如行 hover 浮现的操作钮），但浮现后同样要完整反馈。无声无息的可点元素= bug。**实心彩色控件例外**（如红底徽章钮，f55ac32）：底色反馈会被本体吞掉，hover 反馈可以「显著放大」代偿（用户定案 2026-11-21）。
-   - **符号（减号/叉/对勾/箭头等）一律 SVG**（mygo `icon()` 管线，16×16 描边 path），禁止特殊 Unicode 字形当图标——"✕"曾因字体缺字渲染成空方块，用户以为删除功能不存在；任务状态 ✓/✗ 字形同样已换 iconCheck/iconCross（用户 2026-11-21 定案）。
-   - **样式覆盖后自查反馈连带**：剥掉组件自带底色/边框（如把 ui.Select 融入连体字段）会把 hover 底色一起盖掉——覆盖后必须逐帧条件回填 hover/Pressed 反馈并补 `Cursor(ui.CursorPointer)`（2026-11-21 违反后补的防呆条目）。
-   - **反馈矩阵常驻验收（2026-11-23 全页面审计第二批）**：`ui/gui/feedback_test.go` 把上两条做成测试——73 个页面目标 + 侧栏项逐个渲染静止/悬停/按住三帧量全窗像素差（阈值 4、≥20px）并断言手型光标，另有 `TestPathsShowInFull`（路径完整显示）；**新增可点元素必须在 `feedbackTargets` 登记**（豁免标 `rowOnly` 并写明理由）。反馈语汇唯一定义点=`pressFeedback`/`leadBrowseButton`/`pickButton`/`copyButton`，页面代码不得再内联 `if X.Pressed() || X.Hovered()`；转换类主按钮走 `ui.PrimaryButton`（框架自带 AccentHover/AccentPressed——覆盖 Background 即关掉框架面，只在禁用态覆盖）。头渲陷阱三条：页面须单独渲染（带侧栏时 `Find("加密")` 命中的是导航项）、窗口拉高到 1100 让目标都在屏内、`Tester.Image` 复用缓冲比较前先拷贝；`Release` 会触发点击——写剪贴板的元素（复制钮/历史卡）在无头下一点即死锁（`Clipboard.WriteText` 走 `RunOnMain`），矩阵只 `Press` 不 `Release`。**文件名 / 路径一律完整显示——不截断、不在中间变色**（2026-11-23 用户定案；单行省略 + Tooltip、目录段另色省略两版都被否）。路径放不下就换行；字段行靠 `MinWidth(FIELD_MIN_WIDTH)` 钉在控件列内，尾部「选择」钮不会被长英文目录名顶出框外。
-   - **清单行 / 卡片的路径用 `pathCell`**（整段纯文字换行，完整显示——`TestPathsShowInFull` 常驻：长路径必须折成多行）；设置行副标 12px 字在 84px 列里一行七个汉字，超了折行、八字掉孤字——**副标一律改短文案**（`TestLabelHintsStayOnOneLine` 常驻）。
-   - **主行动行只用 `ctaRow` / `primaryCTA` / `cancelButton`**（钮高 44、上距 24 全页面统一；主按钮一律 `ui.PrimaryButton`）。引导行放不下才换行=`Row.Wrap()`+句子 `Basis(下限).Grow(1)`（刻录页先例；副作用=拉宽后按钮靠右）。**页面函数假定清单非空**（空态由 pane 走 hero）：无头测试须经 `heroAwarePage`；**清单增删在建帧结束后才落地**——压缩台 / PDF 合并的参数区同帧还要读首输入，先删后读删最后一项即越界崩溃（2026-11-23 实测）。
-   - **数值 / 规格输入必须有前端校验**（`ui/gui/validate.go` 纯函数 → `settingControl` 就地红字 + 禁用主按钮）：规则逐条照引擎解析写，铁律「GUI 判错的引擎一定也判错」——宁可漏判不可误拦；必填项空着只禁用不飘红。
-   - **体积写法与字段小钮（2026-11-23 用户反馈定案）**：GUI 的 `humanSize` 全局——整数位不带小数（`3GB` / `5MB`）、否则一位小数（`2.3MB`）、**数字与单位之间不留空格**（不要写成「3.0 GB」）；清单行 / 文件字段里的体积标签字号 12（`SIZE_LABEL_FONT_SIZE`，次要信息）。字段尾部的「选择」钮一律 `pickButton`（自带 4px 右内缩——悬停色块不贴字段描边；`TestPickButtonInset` 常驻）。
-   - **`iconRaw`（自带 fill 的固定色图标）必须配 `ui.Image` 渲染；`ui.Icon` 是 currentColor 单色遮罩管线**——把 iconRaw 喂给 `ui.Icon` 会把固定色烧成黑色（哈希页/归档清单行的 iconFile 两次踩坑，2026-11-22）。判别法：定义处走 `icon()`（stroke=currentColor）→ `ui.Icon`+TextColor；走 `iconRaw()`（写死 fill）→ `ui.Image`，无 TextColor。新建页面清单行复制现成行的图标调用时，先看它用的哪条管线。
-   - **光标链断点（2026-11-22 实测定案）**：mygo `updateCursor` 沿 hover 链 innermost-first 找**首个设了 cursor 的节点**，遇 `flagClickable` 且未设 cursor 的节点直接 break（runtime.go:1946）——官方可点组件（Radio/Checkbox/Switch/Select 触发器）全部 `flagClickable` 但不设 cursor，**放在 ButtonBase 里会把外层 Pointer 挡成箭头**。整框统一手型的正解=给这些组件的返回值链式补 `.Cursor(ui.CursorPointer)`（压缩策略 radio 实证：圆点区箭头、字区小手的割裂感即此因）。
-   - **多行控件行的 label 对齐用头渲实测，不猜（2026-11-22 定案）**：`openSettingRowTop`（AlignItems(Start) 版 openSettingRow）里 label 列与控件区第一个元素的字带天然差一个「控件框 Padding top」（如 ButtonBase Padding(5,5) → label 偏上 5px）——修法=label 列 `.Padding(5, 0, 0, 0)` 补偿同值；`AlignItems(ui.Baseline)` 对「无直系文本的控件框」解析不稳（实测偏下 3.5px），弃用。验证管线：临时 go test `ui.NewTester(页面闭包,w,h)`+`png.Encode(tester.Image())` 落 PNG→PIL 数字带中心差（判定 ≤1px 为齐；注意 headless 渲染 scale=1 无 Retina，DIP=像素）。先例：压缩策略四 radio 行（title 心 vs label 心 +0.5px 达标）。
-   - mygo 细节：`Cursor(ui.CursorPointer)` 不随 ButtonBase 自动给，须手动；动画 `Animate(key,target,d)`/`AnimateColor`（ui.Snappy 预设够用），条件调用即帧内生效，ReduceMotion 框架自动直跳。
-   - **外观三态开关（2026-11-22 用户定案「外观必须可调，不止跟随系统」）**：设置页外观行 = `ui.Segmented(c, &a.themeMode, themeModeNames...)`（跟随系统/浅色/深色，实现全在 `ui/gui/appearance.go`）——切换即 `mygo.Theme.SetSource(themeSource(mode))`（Windows 走 uxtheme preferred app mode，运行期可切；mac 对应 NSApp appearance）并落盘 `%AppData%/zpack/gui-settings.json`（`{"theme_mode":0|1|2}`，mac/linux 同字段在 UserConfigDir/zpack/）。启动序：`loadThemeMode()` 在 main() 先于 WhenReady 读回 → WhenReady 内 `mygo.Theme.SetSource` 窗口创建前施加；文件损坏/越界回退跟随系统。主题重建框架自理（ui 默认主题随 isDark 变化自动重铸，无需手动 Invalidate）。
-   - **Windows 图标全出血（2026-11-22 用户定案「Windows 图标应撑满，改动不得影响 mac/linux」）**：Windows 任务栏/标题图标不用 mac 的 80.5% 留白 squircle 版（任务栏里明显小一圈）——`ui/gui/resources/icon-windows.png`（icon.png 裁透明边距满幅重排，go:embed `iconWindowsPNG`）在 Windows 分支经 `Dock.SetIcon` 施加（Windows 后端 SetDockIcon=任务栏+窗口图标；mac/linux 恒 iconPNG）；exe 级图标（Explorer 文件图标/任务栏钉选）= `ui/gui/winres.rc`（资源 ID 1 ICON）经 windres 铸 `ui/gui/resource_windows_amd64.syso`（文件名带 `_windows_amd64` 后缀，仅 Windows 构建消费——mygo 窗口类图标即从 exe 资源 1 LoadIconW，见 internal/windows/app.go registerClasses）。重生成：`export PATH="/c/msys64/ucrt64/bin:$PATH"; cd ui/gui && windres --use-temp-file -O coff -o resource_windows_amd64.syso winres.rc`（裸跑报 preprocessing failed——windres 要 gcc 在 PATH）。
-   - **窗口控制钮/标题条高度按平台（2026-11-22 用户反馈「按钮高得夸张」）**：`TitleBarHeight` mac=52（红绿灯锚定）、Windows=36——mygo caption 按钮宽高=titleBarHeight()（internal/windows/titlebar.go:375，原生 32pt），52 曾把最小化/最大化/关闭拉成 52pt 巨钮；36=原生比例+悬停热区余量。内容区 head 公式同步 `max(bar.Height+8, 44)`（曾 `+16` 抬到 68）。
-   - **三平台默认字体=内嵌 MiSans 可变字体（2026-11-22 用户问「是否支持可变字重字体」）**：`ui/gui/resources/fonts/MiSans-VF.ttf.gz`（20.1MB→gzip 14.4MB，**派生版**，见下）go:embed 启动解压经 `ui.RegisterFont` 注册为 "MiSans" 族，`brandTheme` 落 `theme.Font` 一处全局生效（mygo Theme.Font=context root family——SetUIFamily 是 pango 死路，这是唯一正道）；**500/600 中间字重是 VF 真实例而非回退**（mygo 内置控件 tabs/sidebar/table/toast/form 大量 FontWeight(500/600)，静态 R+B 会让层级塌掉）；显式 `Font("monospace")` 调用点（路径/代码）不受影响。Windows dwrite 按字重取实例已探针验证（200–700 墨水覆盖严格递增）；mac CoreText/Linux pango VF 支持成熟未实测。失败回退系统字体不阻断启动。许可=小米免费商用（fonts/README.md 含派生注记）。
-- **MiSans VF 非标准字重阶梯陷阱 + 默认字重抬升（2026-11-23 用户「默认字重稍微大一些」）**：MiSans VF 的 wght 轴是 **150–700 默认 330** 的非 CSS 标准阶梯——命名实例 Thin150/ExtraLight200/Light250/Normal305/Regular330/**Medium380**/Demibold450/Semibold520/Bold630/Heavy700；dwrite 最近匹配规则下默认请求 400 命中 Medium 380（视觉偏细的根因）。字重抬升走**字体元数据手术**而非改 UI 代码（ui.Theme 无 Weight 字段；fork/逐元素 FontWeight 均被否）——fontTools 把 Medium 实例坐标 380→450（仅 fvar 一处元数据，字形零改动，轴默认值绝不可动否则腐蚀变体数据），默认请求落点抬到 Demibold 450；显式 FontWeight(500/600/700) 命中不变（500→Semibold520/600→Bold630/700→Heavy700 精确）。嵌入文件即此派生版；ui.Theme 无 Weight 字段，全局字重只能靠字体本体。
-   - **文字禁半透明（2026-11-23 输入框 vs 普通字清晰度差异定案）**：用户问「输入框和 UI 同字体，普通字为何发糊」——源码+探针定位：`Opacity(<1)` 的文字元素被 mygo 按 alpha 叠加渲染（ui/paint.go:1065 `glyphColor.Alpha(p.opacity)`），ClearType 亚像素彩色边缘被冲淡成灰雾；不透明文字（输入框值、标签）走亚像素定位+彩色图集（internal/text/raster.go:304 `subpixel := opaque && s.subpixel`）天然锐利。主犯=各工具页提示行 `FontSize(12).TextColor(t.TextMuted).Opacity(0.55)` 三重软化（灰字+半透明+小字）——已全部去掉 Opacity（7 处），muted 灰本身已是次级语义，残余 Opacity 仅图标水印与动画渐显。教训：**次级文字用 TextMuted 色阶表达，不用透明度**。
-   - **深色底正文字号下限=13（2026-11-23 字体模糊诊断定案）**：用户反馈 GUI 字体「模糊」——误诊排除（系统 ClearType ON、mygo 常量正确、DPI 200% 正常，真凶非渲染管线）后实证：MiSans VF 无 hinting 表（fpgm/prep/gasp 全无）+ 深色底 ClearType 亚像素彩色噪点 + 12px DIP=24 设备px 小字最敏感，三者叠加致小字发虚。对策：FontSize 整体上调一档（12→13/11→12/10→11，降序替换防连锁，187 处）；新 UI 代码正文用 13 起步，10/11 仅限微型注脚。若仍嫌虚的后续选项：注册 static Medium 为独立族并切默认（VF 字重插值可到 450 但 ui.Theme 无 Weight 字段无法全局设）/ fork mygo 给深色底换灰度 AA。
-- 格式守卫与失败可见（2026-11-23 用户定案）：格式判定只看文件内容不看扩展名——GUI 侧 classifyMagic 只拒「明确认识」的错族文件（认不出的长尾放行引擎裁决），引擎判格失败经两路 toast 浮出：归档两页 Inspect/list 信封判语直出「格式不支持：<名>」；全部任务 watchTask 失败兜底网 `task.Title 失败：<引擎 error_info>`（toast 队列 pendingToasts 帧首 drain——c.Toast 仅帧构建期可用，帧外回调一律入队）。Windows head 高度与标题按钮带严格同高（headH=bar.Height=36，齐平不加深）。
-
-   **右键菜单 macOS 双轨交付（ui/right-click/macos/）**：
-   - **Quick Action 轨（装机可用，免签名）**：`quickaction.sh` → `~/Library/Services/` 三服务（zpack 压缩/解压/测试，Finder 右键→快速操作）。核心工程：document.wflow 用**真样例模板克隆**（plistlib 改参 `COMMAND_STRING`/`inputMethod=1`——现代 RunShellScriptAction 认 COMMAND_STRING，手写 `source`+`inputAsArguments` 是不执行的老参数集）；heredoc 转义纪律（\$ 运行期转义、引号裸写、严禁反斜杠引号）与解压补 `cd`（智能解压落服务进程 CWD 而非归档目录）两个坑已固化
-   - **FinderSync 轨（✅ 已装机全链可用，2026-11-21）**：`build-xcode.sh` → `/Applications/zpack Finder Menu.app`（2026-11-21 宿主让位改名——`/Applications/zpack.app` 归 GUI 本体正名；扩展经 pluginkit -a 重登记。Xcode 工程 `xcode/`：Swift appex + SwiftUI 宿主壳 + 内嵌 zpack 引擎）。一级「zpack ▸」菜单（压缩为 ZIP/TAR.GZ、解压到此处、测试归档——按选中物魔数动态出项，归档判定=内嵌 zpack list 退出码）；**三层图标体系（2026-11-21 用户两轮定案：①双色 Z（蓝 #376DB5+青 #72C3A0）是品牌资产必须保留——首版重绘误改纯蓝已被否；②「不要渐变」指底板渐变/阴影 → 底板纯平浅色 #F5F8FB；③「显大一圈」根因=旧主图 squircle 顶满 1024 画布 → 修复=内容 824/1024=80.5% 四周透明边距（Apple 模板同款；NSWorkspace.icon 渲染实测不透明占比 66%）**：app 本体=squircle 浅底+双色 Z（`zpack.icns`，源=assets/zpack-app-icon-1024.png，GUI 侧 ui/gui/resources/icon.png 同图同源，mygo pngToICNS 自动派生）、右键一级菜单=SVG 造型透明底双色（`zpack-menu.icns`，`isTemplate=false` 保彩色；源=assets/zpack-icon.svg+.1024.png；**造型缩至 90% 居中、四周透明**——2026-11-23 用户定案：原大偏大；画布仍 16×16 点，只缩造型；生成器 `ui/right-click/macos/gen-menu-icon.py`，改比例只动 `SCALE` 一个数；BICUBIC 分步降采样——LANCZOS 在 16/32 像素档会散出振铃杂边）、子菜单纯文字。图标重生成器=/tmp/regen_icons2.py 已用即弃（git 取回原双色满幅图→饱和掩膜裁 Z 层保双色→LANCZOS 等比贴入超采样 squircle→iconutil 铸 icns）；全新 xcodebuild 产物 appex 无 Resources 目录，build-xcode.sh cp 前已 mkdir -p
-   - **FinderSync 通信架构定案（任务文件通道——血泪实测三连败后的唯一全通解）**：appex（沙箱+硬化）只管菜单构建与选中分类；动作=①任务 JSON 写 appex 自家容器（`~/Library/Containers/<appex-id>/Data/zpack-job.json`——沙箱内写自家=永远合法）②`NSWorkspace.openApplication` 拉起宿主（非沙箱，不带参数）③宿主轮询 5 秒取单即删（防重复执行）→跑内嵌引擎→原生弹窗→一单一命退出；裸启动 5 秒无单即退（防吞下一单）。**弹窗交互规范（Windows 侧将来同款）**：确定=默认钮、**回车即确认**、按钮标题带 **5 秒倒计时**（`确定 (5)…(1)`，不管它就自动确认关窗——Timer 必须挂 `modalPanel` RunLoop 模式，模态期间 default 模式不跑）；打开文件夹=次要钮无快捷键防误触；超时（stopModal）与手动确认同归；**弹窗聚焦定案**：①启动时（didFinishLaunching）即 `NSApp.setActivationPolicy(.regular)`——accessory/LSUIElement 临到弹窗才升，窗口服务器激活注册来不及；②弹窗时 `activate(ignoringOtherApps:)` + `makeKeyAndOrderFront` + 浮层 level；验证法=弹窗期间 `osascript` 查 frontmost 进程名（肉眼不可靠）。**NSAlert 双 primary 陷阱**：先加的钮=右侧+自动默认——次要钮先加会被默认化，再给另一钮设 `\r` → 两钮全 primary；正确姿势=确定先加（唯一 `\r`），打开文件夹后加且 `keyEquivalent="\r"` 清空；**压缩命名=去扩展名**（照片.jpg→照片.zip，绝不 .jpg.zip）+ **同名不覆盖自动序号**（照片.zip 已在→照片 2.zip→照片 3.zip——CLI 契约仍覆盖，仅 Finder 面走序号保护）
-   - - **GUI 组件先查再造（2026-11-21 用户定案，震怒教训）**：ui/gui 任何交互行为动手前必查 `ui/gui/MYGO-COMPONENTS.md`（mygo v0.10.0 全组件清单+343 Element 方法速查+使用审计）——清单拖拽排序曾手搓 8 轮仍变高行错位，框架 `ui.List`+`ListState.Reorder` 开箱即得（0e9eb02 退役 217 行手搓）；深度定制须注明「机件合规」，纯手搓须在清单记弃用理由。
-
-**FinderSync 陷阱清单（改右键/签名/图标前先读，全部实测踩过）**：
-     - **死路三条（2026-11-21 逐条实测否决，勿再走）**：①沙箱 appex 自己 spawn zpack——写用户目录被拒，且 NSAlert 在 appex 进程弹不出（扩展无 UI 权）；②`NSWorkspace.OpenConfiguration.arguments` 传任务参数——**从沙箱扩展发起的 LS 启动会静默丢参数，回调还谎报成功**（Terminal 直跑同 API 则正常）；③自定义 URL scheme（CFBundleURLTypes+GURL AppleEvent）——**本机 macOS 26 上 GURL 事件冷/热启动均不送达**（最小纯 AppKit app+开发证书+`onOpenURL`/`setEventHandler`/`currentAppleEvent` 三接收路径全空；LS 拉起 app 本身正常，事件投递层整层哑）。结论：扩展→宿主只信文件读写+进程启动两个原语
-     - **同 ID 多副本注册=右键消失/图标没了的元凶（2026-11-21 首踩，2026-11-23 复发后查明全貌）**：Xcode 图形界面构建会把 ~/Library/Developer/Xcode/DerivedData 下的产物登记进 **LaunchServices**（宿主与 appex 各一条记录）；pkd 每次 Finder 重启都与 LaunchServices 重新同步——**只 `pluginkit -r` 拔不干净**，重启后旧副本又被捞回来当选（旧副本里没有 zpack-menu.icns → 菜单在、图标没了）。正解=两处一起处理：LaunchServices 里该 bundle id 名下的其它宿主全部 `lsregister -u` → 真身宿主与 appex 都 `lsregister -f`（对 appex 路径会报 `failed to scan -10811`，但登记已生效）→ `pluginkit -a` 真身。已固化 build-xcode.sh，收尾四项验收：LaunchServices 名下只剩真身 / Finder 重启后当选路径连查两次稳定 / 真身封印完好 / 扩展已启用（旧版收尾只认扩展 ID 出现，命中假注册也报 ✓）
-     - **已签名包内文件禁止原地替换**：换 Resources/zpack 这类「刷新引擎」也必须重签（`refresh-engine.sh`），封印一坏系统就弃用真身；`ui/gui/install.sh` 同理——引擎是 mygo 签名之后才注入的（还带资源叉），注入后 adhoc 重签并校验。诊断三连：`pluginkit -mAvv -i <appex-id>` 看 Path 是否 /Applications 真身 → `codesign --verify --deep --strict` 看封印 → `lsregister -dump | grep` 看有没有旧宿主
-     - **appex 手动 codesign 必带 `--options runtime`**（裸签抹掉 Hardened Runtime=macOS 26 pluginkit 拒载）；签名顺序先 appex 后 app 外壳
-     - **选中项快照**：`selectedItemURLs()` 在动作触发时（菜单已关）可能失效——`menu(for:)` 里快照存实例变量，动作读快照
-     - **宿主一单一命**：干完弹窗退出；裸启动即退。常驻实例会把下次 LS 启动退化成 activate——参数/事件/任务文件轮询窗口全错过
-     - qlmanage 渲 SVG 必拍平白底——透明底用 Chrome headless `--default-background-color=00000000`；icns=PIL iconset 十件套+`iconutil -c icns`
-     - appex 也要 main（NSApplicationMain）；bin/zpack 自定义图标资源叉须 `xattr -cr` 清否则 codesign 拒签；扩展注册走 pluginkit 与宿主进程无关（勿裸 open 宿主）
-     - 诊断利器：appex 写文件探针到自家容器（统一日志在 appex 里常不可靠）；宿主非沙箱可写 /tmp
+   GUI 交互铁律（所有可点元素的反馈规则、字体与主题定案）、FinderSync 通信架构、右键菜单的签名与安装陷阱、组件先查再造——全部在 [specs/gui.md](specs/gui.md)，**动 `ui/` 之前必读**。
 7. ~~**剥离完成 SOP**~~ ✅ **已完成**：exkit 侧已删除 `zip` 命令与 verify 对应段、klauspost+x/text 依赖已退场、AGENTS.md/README 已指向 zpack（exkit 提交 04b8464，门禁 170→171）
 
 ## 环境事实
 
 - 开发机（mac）：Go 1.27.3（brew，/opt/homebrew）
 - Windows 实测机（2026-11-08 首测）：Win11 26200 x64，Git Bash（MSYS 路径自动转换需留意），Go 1.27.3（C:\Program Files\Go，PATH 不含——先 `export PATH="/c/Program Files/Go/bin:$PATH"`）；本机装齐 MS Office + WPS + LibreOffice（三引擎实测条件）；MSYS2/UCRT64 工具链（C:\msys64，产线用——gcc 16.2/rust/make/nasm/pkgconf，`/c/msys64/usr/bin/bash -lc` 进产线 shell 时需显式 export LOCALAPPDATA/APPDATA/GOPROXY）；系统代理 127.0.0.1:7897（Git Bash 的 curl/git 不自动走——外网下载手动 export）
+- Windows 实测机二（2026-11-24）：Win10 22H2 x64，用户目录 `C:\Users\zhc`，仓库 `E:\code_files\zpack`，Git Bash，Go 1.27.3（PATH 含）；**内置**光驱 HL-DT-ST DVD-RAM GHC0N（MA02，SATA，盘符 F:）；`proxy.golang.org` 不可达（命令带 `GOPROXY=https://goproxy.cn,direct`）、GitHub 直连快、`*.googlesource.com` 不可达、本机未配代理。完整版产线首跑 09:30–13:25 全线贯通（MSYS2 20260927 经 winget；UCRT64 gcc 16.2.0-7 / rust 1.100.0-2 / cmake 4.5.1 / nasm 3.02；deps 8 步 1h43m，其中 FFmpeg 57min），产物 83MB、32 个导入 DLL 全为系统出厂。本机专属坑：①裸 `winget` 从 agent shell 起不来（Permission denied）——用完整别名路径 `C:\Users\zhc\AppData\Local\Microsoft\WindowsApps\winget.exe` 从 PowerShell 调；②`mirror.msys2.org` 返回 503——mirrorlist 前置国内镜像（原文件备份在 `%TEMP%\zpack-fullbuild\msys2-backup\`）；③**Watt Toolkit（Steam++）把 github.com 指到 127.0.0.1 并用自签根重签 TLS**——schannel 客户端信任，MSYS2 的 git/curl（仅 OpenSSL）报 `unable to get local issuer certificate (20)`，须经 `GIT_SSL_CAINFO` / `CURL_CA_BUNDLE` / `SSL_CERT_FILE` 传「系统 CA + 该根」的 bundle；④libaom 与 libjxl 的 skcms 子模块在 googlesource——用 `GIT_CONFIG_COUNT` + `url.insteadOf` 改走 `github.com/m-ab-s/aom`（v3.11.0 = d6f30ae4…，与 Homebrew 公式记录的提交一致）和 `github.com/google/skcms`（gitlink 42030a77…）；⑤cargo 忽略 `HOME`、只认 `%USERPROFILE%`——不设 `CARGO_HOME` 会在用户目录生成 `.cargo`（51MB）；⑥进程创建约 100ms（装着腾讯电脑管家），构建比云端慢约 2.5 倍。完整环境见 `%TEMP%\zpack-fullbuild\scripts\job-build.sh`。
 - 依赖（go.mod，全纯 Go）：cobra（路由）、klauspost/compress（flate/gzip/zstd）、golang.org/x/text（GBK 解码）、ulikunitz/xz + pierrec/lz4/v4 + andybalholm/brotli（批次 B，+1.78MB mac/+2.46MB win）、bodgit/sevenzip + nwaples/rardecode（批次 C，+0.80MB mac/+0.83MB win）、kdomanski/iso9660（批次 D）、sorairolake/lzip-go + nradchenko/go-wim（批次 E-1）、kentalee/go-lzx（批次 E-2 cab）；win exe 始终仅 kernel32.dll
+
+## 文档沿革
+
+2026-11-24 之前本文约 115 KB，逐命令的输出表、命令规格、两套产线全记录、刻录后端全记录、GUI 交互铁律都写在里面。按功能整理后这些内容归位到 `specs/`；要看整理前的原文，见提交 50604b7 的 `AGENTS.md`（`git show 50604b7:AGENTS.md`）。

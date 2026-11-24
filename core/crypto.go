@@ -190,16 +190,20 @@ func zipAESEncryptData(plaintext []byte, password string, strength byte, rngSour
 	return append(ciphertext, authCode...), salt, keys.verify, nil
 }
 
-// zipAESDecodingReader 解码管线：读 salt+2B 校验值 → 验密码 → AES-CTR 解密（尾 10B HMAC
-// 尽力校验：内层流在末块后停止拉取时不触发，密码正确性由 2B 校验值先行保证——与
-// 业界同级防护）
+// zipAESDecodingReader 解码管线：读 salt+2B 校验值 → 验密码 → AES-CTR 解密。
+//
+// 尾 10B 是认证码（HMAC-SHA1，只覆盖认证码之前的密文）。读尽时校验；内层是 deflate 时解压器读到流末就停，
+// 由 zipWrapInnerDecompress 把解密流读尽来触发校验——AE-2 没有 CRC（标准库见 CRC=0 直接跳过），
+// 完整性全靠这把 HMAC。
+// 2026-11-24 修复：此前的尾校验拿「解密后的末尾 10B」去比「全部密文的 HMAC」，永远不等——内层是 Store
+// （--level 0 加密）的条目一读到底就报「密码错误」。
 type zipAESDecodingReader struct {
-	source      io.Reader
-	stream      cipher.Stream
-	mac         hash.Hash
-	tail        []byte // 已解密但未吐出的明文（尾段含 HMAC 前瞻缓冲）
-	expectedMAC []byte
-	done        bool
+	source  io.Reader
+	stream  cipher.Stream
+	mac     hash.Hash
+	pending []byte // 已读入、尚未确认的密文（末尾始终保持 10B 前瞻，防止把认证码当密文解出去）
+	plain   []byte // 已解出、尚未吐出的明文
+	done    bool
 }
 
 // newZipAESDecodingReader 构造：先验 2B 密码校验值，错则立即 ErrWrongPassword
@@ -230,40 +234,40 @@ func newZipAESDecodingReader(source io.Reader, password string, strength byte) (
 	}), nil
 }
 
-// Read 分块解密：保持 10B 前瞻，密文耗尽且恰余 10B 时校验 HMAC 后给 EOF
+// Read 分块解密：密文里除了末尾 10B 前瞻，其余都是确认的密文——计入 HMAC 并解出；
+// 密文读尽时剩下的 10B 就是认证码，与 HMAC 比对后才给 EOF
 func (reader *zipAESDecodingReader) Read(buffer []byte) (int, error) {
 	for {
-		if len(reader.tail) > ZIP_AES_HMAC_LEN {
-			n := copy(buffer, reader.tail[:len(reader.tail)-ZIP_AES_HMAC_LEN])
-			reader.tail = reader.tail[n:]
-			return n, nil
+		if len(reader.plain) > 0 {
+			plainCount := copy(buffer, reader.plain)
+			reader.plain = reader.plain[plainCount:]
+			return plainCount, nil
 		}
 		if reader.done {
-			if len(reader.tail) == ZIP_AES_HMAC_LEN {
-				// 密文流尽且尾 10B 为认证码：校验
-				if !hmac.Equal(reader.tail, reader.expectedMAC) {
-					return 0, ErrWrongPassword
-				}
-				reader.tail = nil
-			}
-			if len(reader.tail) > 0 {
-				n := copy(buffer, reader.tail)
-				reader.tail = reader.tail[n:]
-				return n, nil
-			}
 			return 0, io.EOF
 		}
 		chunk := make([]byte, 4096)
-		readLen, readErr := reader.source.Read(chunk)
-		if readLen > 0 {
-			reader.mac.Write(chunk[:readLen])
-			decrypted := make([]byte, readLen)
-			reader.stream.XORKeyStream(decrypted, chunk[:readLen])
-			reader.tail = append(reader.tail, decrypted...)
+		readCount, readErr := reader.source.Read(chunk)
+		if readCount > 0 {
+			reader.pending = append(reader.pending, chunk[:readCount]...)
+			confirmedCount := len(reader.pending) - ZIP_AES_HMAC_LEN
+			if confirmedCount > 0 {
+				reader.mac.Write(reader.pending[:confirmedCount])
+				decrypted := make([]byte, confirmedCount)
+				reader.stream.XORKeyStream(decrypted, reader.pending[:confirmedCount])
+				reader.plain = append(reader.plain, decrypted...)
+				reader.pending = append([]byte{}, reader.pending[confirmedCount:]...)
+			}
 		}
 		if readErr == io.EOF {
 			reader.done = true
-			reader.expectedMAC = reader.mac.Sum(nil)[:ZIP_AES_HMAC_LEN]
+			if len(reader.pending) != ZIP_AES_HMAC_LEN {
+				return 0, fmt.Errorf("加密数据不完整（认证码长度 %d，应为 %d）", len(reader.pending), ZIP_AES_HMAC_LEN)
+			}
+			if !hmac.Equal(reader.pending, reader.mac.Sum(nil)[:ZIP_AES_HMAC_LEN]) {
+				return 0, ErrWrongPassword
+			}
+			reader.pending = nil
 		} else if readErr != nil {
 			return 0, readErr
 		}
@@ -386,19 +390,14 @@ func (stream *zipCryptoStream) Read(buffer []byte) (int, error) {
 	return readLen, readErr
 }
 
-// zipBridgeAES / zipBridgeZipCrypto 桥接码（进程内改写 method 用，不落盘；值域避开真实方法号）
+// 加密条目的桥接码值域（进程内改写 method 用，不落盘；避开真实方法号）。
+// archive/zip 的解码器只拿到字节流、拿不到条目，所以每个「方案 + 强度 + 内层方式 + 校验字节 + 密码」
+// 互不相同的条目组各占一个桥接码——zipExtract 的预扫按序分配（2026-11-24 修复：此前只按强度 + 内层方式
+// 分配，同码的解码器闭包捕获的是首个条目的密码，--password-table 给不同文件配不同密码时后面的全在用错的密码）
 const (
-	ZIP_BRIDGE_AES_BASE       uint16 = 0x7000 // | strength<<8 | innerMethod
-	ZIP_BRIDGE_ZIPCRYPTO_BASE uint16 = 0x7100 // | innerMethod
+	ZIP_BRIDGE_FIRST uint16 = 0x7000
+	ZIP_BRIDGE_LAST  uint16 = 0x7FFF
 )
-
-func zipBridgeAES(strength byte, innerMethod uint16) uint16 {
-	return ZIP_BRIDGE_AES_BASE | uint16(strength)<<8 | (innerMethod & 0xff)
-}
-
-func zipBridgeZipCrypto(innerMethod uint16) uint16 {
-	return ZIP_BRIDGE_ZIPCRYPTO_BASE | (innerMethod & 0xff)
-}
 
 // zipDetectWinZipAES 识别 WinZip AES 条目：method 99 → 解析 extra 0x9901 拿强度与内层方法
 func zipDetectWinZipAES(zipEntry *zip.File) (strength byte, innerMethod uint16, isAES bool) {
@@ -435,9 +434,31 @@ func zipWrapInnerDecompress(source io.Reader, decryptFactory func(io.Reader) (io
 		}
 		return io.NopCloser(decrypted), nil
 	}
-	flateReader := kflate.NewReader(decrypted)
-	return flateReader, nil
+	// Deflate：解压器读到流末就停，外层解密流的尾校验（HMAC）要靠读尽来触发
+	return &drainVerifiedReader{decrypted: decrypted, flate: kflate.NewReader(decrypted)}, nil
 }
+
+// drainVerifiedReader 内层 deflate 流结束后把外层解密流读尽，触发 WinZip AES 的尾 10B HMAC 校验
+// （不读尽就等于没校验：AE-2 没有 CRC，完整性全靠这把 HMAC）
+type drainVerifiedReader struct {
+	decrypted io.Reader
+	flate     io.Reader
+	drained   bool
+}
+
+func (reader *drainVerifiedReader) Read(buffer []byte) (int, error) {
+	readCount, readErr := reader.flate.Read(buffer)
+	if readErr != io.EOF || reader.drained {
+		return readCount, readErr
+	}
+	reader.drained = true
+	if _, drainErr := io.Copy(io.Discard, reader.decrypted); drainErr != nil {
+		return readCount, drainErr
+	}
+	return readCount, readErr
+}
+
+func (reader *drainVerifiedReader) Close() error { return nil }
 
 // errorReadCloser 构造期错误的懒暴露包装（zip.Decompressor 签名无 error，
 // 错误在首次 Read 浮出——标准库惯例模式）
@@ -446,9 +467,9 @@ type errorReadCloser struct{ err error }
 func (reader errorReadCloser) Read([]byte) (int, error) { return 0, reader.err }
 func (reader errorReadCloser) Close() error             { return nil }
 
-// zipEncryptEntryForWrite 写入侧：deflate 输出 → WinZip AES 加密包（salt+verify+CTR+HMAC）
+// zipEncryptEntryForWrite 写入侧：已压缩数据（Store 或 deflate）→ WinZip AES 加密包（salt+verify+CTR+HMAC）
 // 返回加密数据、0x9901 extra 字段、新 method(99)、原始未压尺寸
-func zipEncryptEntryForWrite(compressedData []byte, password string, originalSize int64) (
+func zipEncryptEntryForWrite(compressedData []byte, password string, originalSize int64, innerMethod uint16) (
 	encryptedData []byte, extraField []byte, encryptedSize int64, err error) {
 	// AES-256：salt 16B
 	salt := make([]byte, 16)
@@ -474,7 +495,8 @@ func zipEncryptEntryForWrite(compressedData []byte, password string, originalSiz
 	encryptedData = append(encryptedData, ciphertext...)
 	encryptedData = append(encryptedData, authCode...)
 
-	// 0x9901 extra：version=2(AE-2) + 'AE' + strength=3(AES-256) + 真实 method=8(deflate)
+	// 0x9901 extra：version=2(AE-2) + 'AE' + strength=3(AES-256) + 内层真实 method（0=Store / 8=Deflate）——
+	// 必须与数据的实际压缩方式一致：写死 deflate 时 --level 0 加密产出的归档连自家 extract 都解不开（2026-11-24）
 	extraField = make([]byte, 11)
 	binary.LittleEndian.PutUint16(extraField[0:2], 0x9901)
 	binary.LittleEndian.PutUint16(extraField[2:4], 7)
@@ -482,7 +504,7 @@ func zipEncryptEntryForWrite(compressedData []byte, password string, originalSiz
 	extraField[6] = 'A'
 	extraField[7] = 'E'
 	extraField[8] = 3
-	binary.LittleEndian.PutUint16(extraField[9:11], 8)
+	binary.LittleEndian.PutUint16(extraField[9:11], innerMethod)
 
 	return encryptedData, extraField, int64(len(encryptedData)), nil
 }

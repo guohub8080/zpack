@@ -28,6 +28,11 @@ func TestPlanBurnVolumeName(t *testing.T) {
 		{"已封盘", "full", "备份", true, false, false, "已封盘", "", ""},
 		{"没放盘", "no-media", "备份", true, false, false, "需空白光盘", "", ""},
 		{"没检测到刻录机（状态为空）", "", "备份", true, false, false, "需空白光盘", "", ""},
+		{"状态异常的盘（Windows 引擎报 damaged）", "damaged", "备份", true, false, false, "此盘无法写入", "", ""},
+		{"须先擦除的盘", "erase-required", "备份", true, false, false, "需先擦除", "", ""},
+		{"写保护的盘", "write-protected", "备份", true, false, false, "写保护", "", ""},
+		{"不支持的盘", "unsupported", "备份", true, false, false, "不支持该盘", "", ""},
+		{"macOS 有盘时状态原样透传：同样不可命名", "DVD-R", "备份", true, false, false, "需空白光盘", "", ""},
 		{"计划先擦空的可擦写盘可命名", "appendable", "备份", false, true, true, "仅空白盘可设", "留空用默认名", "备份"},
 	}
 	for _, testCase := range cases {
@@ -141,5 +146,17 @@ func TestBurnVolumeNameRow(t *testing.T) {
 	}
 	if !empty.HasText("放入空白光盘后可以设置名称") {
 		t.Error("没放盘时应有提示")
+	}
+
+	// 盘在光驱里但状态异常：不再说「放入空白光盘」，而是说明这张盘写不了
+	damaged := render(newBurnApp("damaged"))
+	if focusField(damaged) {
+		t.Error("状态异常的盘不应出输入框")
+	}
+	if !damaged.HasText("这张盘上一个区段没有正常关闭，无法写入") {
+		t.Error("状态异常的盘应有说明")
+	}
+	if damaged.HasText("放入空白光盘后可以设置名称") {
+		t.Error("盘已在光驱里时不应再提示放入空白光盘")
 	}
 }

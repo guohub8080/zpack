@@ -31,6 +31,14 @@ func planBurnVolumeName(status, name string, singleDir, erase bool) burnVolumeNa
 			plan.hint, plan.lockedText = "沿用盘上名称", "这张盘已有内容，名称保持不变"
 		case "full":
 			plan.hint, plan.lockedText = "已封盘", "这张盘已封盘，不能再写入"
+		case "damaged":
+			plan.hint, plan.lockedText = "此盘无法写入", "这张盘上一个区段没有正常关闭，无法写入"
+		case "erase-required":
+			plan.hint, plan.lockedText = "需先擦除", "打开「先擦空再烧」后可以设置名称"
+		case "write-protected":
+			plan.hint, plan.lockedText = "写保护", "这张盘处于写保护状态，无法写入"
+		case "unsupported":
+			plan.hint, plan.lockedText = "不支持该盘", "当前刻录机不支持这张光盘"
 		}
 		return plan
 	}

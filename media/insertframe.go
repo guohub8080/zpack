@@ -22,6 +22,9 @@ func InsertFrame(input, coverImagePath, output, position string) (*InsertFrameRe
 	if position != "front" && position != "back" {
 		return nil, fmt.Errorf("position 需为 front 或 back，收到: %s", position)
 	}
+	if rejectErr := rejectInPlace([]string{input}, output); rejectErr != nil {
+		return nil, rejectErr
+	}
 	probe, probeErr := probeFile(input)
 	if probeErr != nil {
 		return nil, fmt.Errorf("读取视频失败: %w", probeErr)

@@ -20,10 +20,20 @@ MODE="${1:-all}"
 
 export PATH="/ucrt64/bin:/c/Program Files/Go/bin:$PATH"
 
-# MSYS2 login shell 不继承 Windows 用户环境（陷阱 #22）：go 找不到 GOCACHE/GOENV
-export LOCALAPPDATA="${LOCALAPPDATA:-C:\Users\pop\AppData\Local}"
-export USERPROFILE="${USERPROFILE:-C:\Users\pop}"
-export APPDATA="${APPDATA:-C:\Users\pop\AppData\Roaming}"
+# MSYS2 login shell 不继承 Windows 用户环境（陷阱 #22）：go 找不到 GOCACHE/GOENV。三项有缺时按
+# 「系统盘:\Users\<当前用户>」推导；推导不出（用户目录被挪过位置）就明确报错让调用方 export——
+# 此前这里写死另一台机器的用户目录（C:\Users\pop），换机即指向不存在的路径（2026-11-24 换机实测）
+if [ -z "${LOCALAPPDATA:-}" ] || [ -z "${USERPROFILE:-}" ] || [ -z "${APPDATA:-}" ]; then
+	profileName="$(whoami)"
+	if [ ! -d "/c/Users/$profileName/AppData/Local" ]; then
+		echo "✗ 无法定位用户目录：LOCALAPPDATA / USERPROFILE / APPDATA 未设置，且 /c/Users/$profileName 下没有 AppData/Local——请显式 export 后重跑" >&2
+		exit 1
+	fi
+	profileDir="$(cygpath -w "/c/Users/$profileName")"
+	export USERPROFILE="${USERPROFILE:-$profileDir}"
+	export LOCALAPPDATA="${LOCALAPPDATA:-$profileDir\\AppData\\Local}"
+	export APPDATA="${APPDATA:-$profileDir\\AppData\\Roaming}"
+fi
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 
 cd "$ROOT"
@@ -64,5 +74,6 @@ build|all)
   echo "✓ DLL 全部系统出厂"
   echo "✓ $ROOT/bin/zpack.exe（完整版 $(du -h bin/zpack.exe | cut -f1)）"
   ;;
+deps) ;; # 仅依赖产线到此为止——此前落入 *) 分支恒 exit 1，云端产线从未跑到 cgo 阶段（2026-11-24 实测机首跑查明）
 *) echo "用法: $0 [deps|build|all]" >&2; exit 1 ;;
 esac

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -191,12 +192,18 @@ func waitTask(t *testing.T, task *Task) TaskView {
 }
 
 // repoEngine 是仓库产线的完整版引擎；没有就跳过依赖它的用例。
+// Windows 产物名带 .exe——此前只认裸名 bin/zpack，Windows 上三项引擎用例恒跳过（2026-11-24 补）
 func repoEngine() string {
-	candidate := filepath.Join("..", "..", "bin", "zpack")
-	if !isExecutable(candidate) {
-		return ""
+	candidates := []string{filepath.Join("..", "..", "bin", "zpack")}
+	if runtime.GOOS == "windows" {
+		candidates = append(candidates, filepath.Join("..", "..", "bin", "zpack.exe"))
 	}
-	return candidate
+	for _, candidate := range candidates {
+		if isExecutable(candidate) {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // TestTaskLifecycleWithEngine 用真实引擎走一遍：成功任务收尾后通道关闭、产物路径以信封为准。

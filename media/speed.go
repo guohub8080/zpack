@@ -17,6 +17,9 @@ func Speed(input, output string, factor float64, pitchMode string) (*SpeedResult
 	if factor <= 0 || factor > 10 {
 		return nil, fmt.Errorf("--factor 需 0.1-10，收到 %f", factor)
 	}
+	if rejectErr := rejectInPlace([]string{input}, output); rejectErr != nil {
+		return nil, rejectErr
+	}
 	probe, probeErr := probeFile(input)
 	if probeErr != nil {
 		return nil, fmt.Errorf("读取视频失败: %w", probeErr)

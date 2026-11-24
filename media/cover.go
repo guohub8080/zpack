@@ -21,6 +21,9 @@ import (
 // AddCover 添加封面（attached_pic）——视频流零重编（remux 速度）
 // 封面图自动缩放到视频尺寸（不保比例——封面必须精确匹配视频尺寸才不变形）
 func AddCover(input, coverImagePath, output string) (*CoverResult, error) {
+	if rejectErr := rejectInPlace([]string{input}, output); rejectErr != nil {
+		return nil, rejectErr
+	}
 	// 1. 探测视频尺寸
 	probe, probeErr := probeFile(input)
 	if probeErr != nil {
