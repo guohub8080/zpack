@@ -414,14 +414,15 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 | 1 | 状态位含「已封盘」（FINALIZED） | `光盘已封盘，无法继续写入` | 同左，不放行 |
 | 2 | 含「写保护」且介质类型是只读类型（CD-ROM / DVD-ROM / HD DVD-ROM / BD-ROM） | `光盘是只读盘（<类型>：压盘或已封盘），无法继续写入` | 同左，不放行 |
 | 3 | 含「写保护」，其余类型 | `光盘处于写保护状态，无法写入` | 同左，不放行 |
-| 4 | 含「损坏」（DAMAGED） | `光盘状态异常（上一个区段没有正常关闭或需要恢复），无法写入；<提示>` | 不拦，交给擦除流程 |
-| 5 | 含「上一区段写了一半」（NON_EMPTY_SESSION） | `光盘上一个区段没有写完，无法继续写入；<提示>` | 不拦，交给擦除流程 |
-| 6 | 含「须先擦除」（ERASE_REQUIRED） | `光盘需要先擦除才能写入；<提示>` | 不拦，交给擦除流程 |
-| 7 | 含「不支持」（UNSUPPORTED） | `刻录机不支持在 <类型> 上刻录` | 同左，不放行 |
+| 4 | 含「不支持」（UNSUPPORTED） | `刻录机不支持在 <类型> 上刻录` | 同左，不放行 |
+| 5 | 含「损坏」（DAMAGED） | `光盘状态异常（上一个区段没有正常关闭或需要恢复），无法写入；<提示>` | 不拦，交给擦除流程 |
+| 6 | 含「上一区段写了一半」（NON_EMPTY_SESSION） | `光盘上一个区段没有写完，无法继续写入；<提示>` | 不拦，交给擦除流程 |
+| 7 | 含「须先擦除」（ERASE_REQUIRED） | `光盘需要先擦除才能写入；<提示>` | 不拦，交给擦除流程 |
 | 8 | 数据写入器不支持当前介质 | `当前介质 <类型> 不支持数据刻录` | 同左，不放行 |
 
-- `<提示>`（`burnRecoveryHint`）：介质可擦写 → `加 --blank 先擦除再刻`；否则 → `请换一张空白盘`。
-- **原则：任何异常状态都不得走到写入**。带 `--blank` 放行的那三种（4、5、6）不是「放行写入」，而是「放行去擦除」——擦完重读介质，再按不带 `--blank` 的规则判一次。擦完仍异常就还是拒绝（此时 `<提示>` 仍是「加 --blank 先擦除再刻」，文案对这种情形略绕，见第 9 节）。
+- `<提示>`（`burnRecoveryHint`）：介质可擦写 → `加 --blank 先擦除再刻`；否则 → `请换一张空白盘`。**已经擦过一遍**（擦完重读仍异常）时一律是「请换一张空白盘」——不能再叫人加 `--blank`，他已经加过了。
+- **原则：任何异常状态都不得走到写入**。带 `--blank` 放行的那三种（5、6、7）不是「放行写入」，而是「放行去擦除」——擦完重读介质，再按不带 `--blank` 的规则判一次（这次 `<提示>` 一律是「请换一张空白盘」）。擦完仍异常就还是拒绝。
+- **「不支持」排在「损坏 / 须先擦除 / 半截区段」之前**，与 `burn devices` 的 `StatusName` 同一顺序（2026-11-24 对齐；此前 `DAMAGED | UNSUPPORTED` 的盘一边显示 `unsupported`、一边被拒成「光盘状态异常…请换一张空白盘」）。理由：刻录机根本写不了这种盘，恢复与否无从谈起，「不支持」是更根本的结论。同一张盘，两处给同一个结论。
 - 状态位里只有「空白」（BLANK）、「可追加」（APPENDABLE）、「只能再写一个区段」（FINAL_SESSION）、「只能覆写」（OVERWRITE_ONLY）的盘不拦。
 - `burn devices` 里显示 `full` 的盘，写入时的拒绝文案取决于命中哪一行：封盘位 → 「光盘已封盘」；只读类型 + 写保护位 → 「光盘是只读盘（…：压盘或已封盘）」。实测封盘后的 DVD-R 是后者（它对外报成 DVD-ROM，见 6.4）。
 
@@ -654,7 +655,7 @@ GUI 不直连引擎，全部经这两条命令的 stdout JSON 驱动（见 gui s
 
 ### 6.15 改动时容易破坏的东西
 
-- **`burnMediaRefusal` 的判定顺序**。认不出 → 封盘 → 只读类型 + 写保护 → 写保护 → 损坏 → 半截区段 → 须先擦除 → 不支持 → 写入器不支持。「认不出」排在一切状态位之前：它的类型与状态位都不可信（2026-11-24 用户拍板）。顺序一变，同一个状态位组合会报出不同的文案（比如 `DAMAGED | UNSUPPORTED` 现在报「状态异常…请换一张空白盘」，而 `burn devices` 报的是 `unsupported`——两处顺序本来就不完全一致，是有意为之还是巧合【待确认】）。
+- **`burnMediaRefusal` 的判定顺序**。认不出 → 封盘 → 只读类型 + 写保护 → 写保护 → 不支持 → 损坏 → 半截区段 → 须先擦除 → 写入器不支持，与 `StatusName` 同一顺序。「认不出」排在一切状态位之前：它的类型与状态位都不可信（2026-11-24 用户拍板）；「不支持」排在异常状态之前（同日对齐，理由见 4.3）。顺序一变，同一个状态位组合会报出不同的文案——`DAMAGED | UNSUPPORTED` 必须两边都是「不支持」（`TestBurnMediaRefusal` 里有这一例）。
 - **`StatusName` 的优先级**：`full` 要压过其他位；「只读类型 + 写保护」必须判成 `full` 而不是 `write-protected`，否则封盘的一次写入盘会在 `burn devices` 里显示成写保护、在 GUI 里不被 `burnBlockReason` 以「已封盘」拦截。
 - **追加区段不沿用卷标**：`burnWindowsSource` 里「没给 `--volid` 且盘非空白 → 卷标置空」这一句，以及 `applyVolumeName` / `chooseVolumeName`，任何一处改动都可能让盘名变回时间戳或乱码（6.6）。没有 Windows 卷标可读时不要硬写。
 - **任何异常状态走到 `Write`**：新增写路径必须先过 `burnMediaRefusal`（6.5）。
@@ -731,7 +732,7 @@ GUI 不直连引擎，全部经这两条命令的 stdout JSON 驱动（见 gui s
 | `TestBurnResolveVolumeName` | 缺省卷标的来源规则（表驱动） |
 | `TestBurnWindowsVolumeName`（仅 Windows） | Windows 卷标规范化（表驱动） |
 | `TestBurnDeviceEntry`（仅 Windows） | 引擎设备条目 → 输出契约条目 |
-| `TestBurnMediaRefusal`（仅 Windows） | 写入前拒绝的 15 种组合（表驱动） |
+| `TestBurnMediaRefusal`（仅 Windows） | 写入前拒绝的 20 种组合（表驱动；含「损坏 | 不支持」两边同一结论、擦完仍异常时提示换盘） |
 | `TestBurnImageOnUsedDiscWarning`（仅 Windows） | 镜像 + 非空白盘才警告；空白盘、目录、多输入不警告（表驱动） |
 | `internal/stdout` 的 `TestWarnLogLine` | 警告行带 `[WARN]` 标签 |
 | `internal/imapi2` 的 `TestMediaStatusName` / `TestMediaErasable` / `TestIsRomMediaType` / `TestPickWriteSpeed` / `TestIsSCode` / `TestSanitizeVolumeName` / `TestChooseVolumeName` 等 | 状态名、可擦写、只读类型、速度落档、错误码识别、卷标还原与取舍（三平台都跑） |
@@ -777,7 +778,7 @@ ZPACK_IMAPI2_LIVE_TEST=1 go test ./internal/imapi2 -run TestLiveReadOnly
 - **macOS / Linux 追加区段时不沿用盘上名称**：目录 / 多输入恒把第一步算出的名字（目录名、当前目录名或显式值）作 `-volid`（Linux），macOS 上干脆不定。与「已有内容的盘缺省沿用」的定案不符——这套规则目前只在 Windows 后端里实现。盘上的实际表现【待确认】（这两个平台没实跑过）。
 - **macOS / Linux 的 `size_bytes` 不是写入量**：是非目录输入的文件大小之和；输入全是目录时是第一个输入 `os.Stat` 的大小（没有意义）。`image` 是已经删除的临时 ISO 路径。两个字段在这两个平台上的语义与 Windows 不同，也没有文档说明过是否有意如此。
 - ~~**「光盘是只读盘（DVD-ROM：压盘或已封盘），无法继续写入」对读不出来的盘有误导性**~~ **已解决（2026-11-24 用户拍板）**：新增 `unrecognized` 状态，读不出的盘在 `burn devices`、GUI、写入拒绝文案里都按「光驱认不出这张光盘」处理并带排查提示（见 3.1、4.3、6.4、6.10）。遗留一点：软件层面分不出是放反、划伤还是盘型不支持，排查提示只能把这几种都列出来；「只读类型 + 写保护」形态的追加读取还没有实盘验证过。
-- **擦除之后仍然异常时的提示绕**：带 `--blank` 擦完重读仍异常时，拒绝文案里的提示还是「加 --blank 先擦除再刻」——用户已经加过了（cli/burn/burn_windows.go:141-144、209-215）。
+- ~~**擦除之后仍然异常时的提示绕**~~ **已解决（2026-11-24）**：带 `--blank` 擦完重读仍异常时，拒绝文案里的提示不再叫人「加 --blank」（他已经加过了），一律是「请换一张空白盘」（`burnMediaRefusal` 的第三个参数 `erased`，4.3）。
 - **Windows 上往有数据的盘写镜像时不导入上一区段**：镜像输入走的是整文件直烧（`burnWindowsSource`，cli/burn/burn_windows.go），不经过镜像库的 `ImportFileSystem`。后果与对策见 4.1.3：2026-11-24 用户拍板**警告后允许**（stderr 打一条 `[WARN]`，GUI 在主按钮上方出「写入提醒」行）。遗留：【待确认】镜像之后再追加镜像，旧区段的文件在新视图里到底还看不看得见——没有实测过；按「系统挂载最后一个区段的文件系统」推断是看不到，警告文案据此措辞并留了余地。（「镜像区段之后追加目录」是验证过的，旧文件仍在。）
 - **macOS / Linux 上外部工具的 stderr 没有时间戳**，是原样透传的（cli/burn/burn.go:690）；`error_info` 里只有「… 刻录失败: exit status N」，看不到工具给的真正原因。
 - **`burnLinux` 的参数 `stagedFromDir` 没有被使用**（cli/burn/burn.go:658）——是「目录原生刻录」旧设计的遗留。
@@ -817,7 +818,7 @@ ZPACK_IMAPI2_LIVE_TEST=1 go test ./internal/imapi2 -run TestLiveReadOnly
 | 6 | ISO9660 层的卷标上限是 30 还是 32 个字符 | AGENTS.md 两处记录互相矛盾 |
 | 7 | 「光驱里放着读不出来的盘」的具体物理原因 | 只有现象记录（`DVD-ROM / full`、从第 0 扇区起 CRC 错误），没法判断是放反、划伤还是盘型不支持 |
 | 8 | 空目录在 macOS / Linux 上是否保留 | 只在 Windows 上验证过 |
-| 9 | `StatusName` 与 `burnMediaRefusal` 的判定顺序不完全一致（`DAMAGED` 与 `UNSUPPORTED` 同时置位时，一边报 `unsupported`、一边报「状态异常」）是有意还是巧合 | 代码没有注释说明 |
+| 9 | ~~`StatusName` 与 `burnMediaRefusal` 的判定顺序不完全一致（`DAMAGED` 与 `UNSUPPORTED` 同时置位时，一边报 `unsupported`、一边报「状态异常」）是有意还是巧合~~ **已解决（2026-11-24）**：对齐成同一顺序，「不支持」在前，理由见 4.3 | — |
 | 10 | macOS / Linux 追加区段后，旧区段的文件在新视图里是否还可见 | 没有实测；代码不导入上一区段，只能按 ISO9660 的一般行为推断 |
 | 11 | 光驱里放着读不出来的盘时，`burn devices` 的 `path` 是盘符还是引擎标识 | 直接报「介质不兼容」的形态：2026-11-24 实测是盘符（`E:\`），Windows 当时也没有挂载它。被报成 `DVD-ROM / full` 的那种形态没有留下输出，按代码推断也是盘符（盘符跟刻录机走，不跟盘走） |
 
@@ -828,3 +829,4 @@ ZPACK_IMAPI2_LIVE_TEST=1 go test ./internal/imapi2 -run TestLiveReadOnly
 | 2026-11-24 | 初版：从代码与 AGENTS.md 整理 | 40fb9e7 |
 | 2026-11-24 | 新增 `unrecognized` 状态：光驱认不出的盘（读不出身份，或被报成只读盘但读不出任何文件系统）在 `burn devices`、GUI、写入拒绝文案里都按「认不出」处理并带排查提示（3.1、3.3、4.1.1、4.3、5、6.4、6.5、6.10、9） | （提交后回填） |
 | 2026-11-24 | 往有数据的盘写镜像：从「不声不响地写」改为**警告后允许**——stderr 打一条 `[WARN]`（conventions.md 第 4 节首次启用警告级别），GUI 在主按钮上方出「写入提醒」行；只在读得到介质状态的 Windows 上有（3.4、4.1.2、4.1.3、5、8.2、9） | （提交后回填） |
+| 2026-11-24 | 写入前拒绝与 `burn devices` 对齐判定顺序：「不支持」排到「损坏 / 须先擦除 / 半截区段」之前，`DAMAGED \| UNSUPPORTED` 两边都是「不支持」；带 `--blank` 擦完仍异常时提示改为「请换一张空白盘」（4.3、6.15、8.2、9） | （提交后回填） |

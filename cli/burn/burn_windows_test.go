@@ -51,57 +51,70 @@ func TestBurnMediaRefusal(t *testing.T) {
 		name    string
 		media   imapi2.Media
 		erasing bool   // 是否请求了 --blank
+		erased  bool   // 是否是擦除之后重读的结果
 		want    string // 期望的 error_info；空串=可写
 	}{
 		{"空白 DVD-R 可写", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_DVDDASHR, State: imapi2.MEDIA_STATE_BLANK | imapi2.MEDIA_STATE_APPENDABLE, SupportedByWriter: true,
-		}, false, ""},
+		}, false, false, ""},
 		{"光驱认不出的盘（实测：引擎报介质不兼容）", imapi2.Media{Unrecognized: true},
-			false, "光驱认不出这张光盘，无法写入；" + imapi2.UNRECOGNIZED_MEDIA_HINT},
+			false, false, "光驱认不出这张光盘，无法写入；" + imapi2.UNRECOGNIZED_MEDIA_HINT},
 		{"认不出但被报成只读盘的：先按认不出报，不因请求擦除而换一条", imapi2.Media{
 			Unrecognized: true, Type: imapi2.MEDIA_TYPE_DVDROM,
 			State: imapi2.MEDIA_STATE_WRITE_PROTECTED | imapi2.MEDIA_STATE_UNSUPPORTED,
-		}, true, "光驱认不出这张光盘，无法写入；" + imapi2.UNRECOGNIZED_MEDIA_HINT},
+		}, true, false, "光驱认不出这张光盘，无法写入；" + imapi2.UNRECOGNIZED_MEDIA_HINT},
 		{"带封盘位的介质", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_DVDPLUSR, State: imapi2.MEDIA_STATE_FINALIZED | imapi2.MEDIA_STATE_APPENDABLE,
-		}, false, "光盘已封盘，无法继续写入"},
+		}, false, false, "光盘已封盘，无法继续写入"},
 		{"封盘的 DVD-R（实测 DVD-ROM + 写保护位）与压盘同样报只读", imapi2.Media{
 			Type:  imapi2.MEDIA_TYPE_DVDROM,
 			State: imapi2.MEDIA_STATE_WRITE_PROTECTED | imapi2.MEDIA_STATE_UNSUPPORTED,
-		}, false, "光盘是只读盘（DVD-ROM：压盘或已封盘），无法继续写入"},
+		}, false, false, "光盘是只读盘（DVD-ROM：压盘或已封盘），无法继续写入"},
 		{"可擦写盘的写保护", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_DVDRAM, State: imapi2.MEDIA_STATE_WRITE_PROTECTED,
-		}, false, "光盘处于写保护状态，无法写入"},
+		}, false, false, "光盘处于写保护状态，无法写入"},
 		{"写入器不支持的介质", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_DVDDASHRW, State: imapi2.MEDIA_STATE_APPENDABLE,
-		}, false, "当前介质 DVD-RW 不支持数据刻录"},
+		}, false, false, "当前介质 DVD-RW 不支持数据刻录"},
 		{"损坏的一次写入盘（实测）：只能换盘", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_DVDDASHR, State: imapi2.MEDIA_STATE_DAMAGED, SupportedByWriter: true,
-		}, false, "光盘状态异常（上一个区段没有正常关闭或需要恢复），无法写入；请换一张空白盘"},
+		}, false, false, "光盘状态异常（上一个区段没有正常关闭或需要恢复），无法写入；请换一张空白盘"},
 		{"损坏的一次写入盘带 --blank：由后面的不可擦除分支报错", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_DVDDASHR, State: imapi2.MEDIA_STATE_DAMAGED, SupportedByWriter: true,
-		}, true, ""},
+		}, true, false, ""},
 		{"损坏的可擦写盘：未要求擦除时提示先擦除", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_DVDDASHRW, State: imapi2.MEDIA_STATE_DAMAGED | imapi2.MEDIA_STATE_ERASE_REQUIRED, SupportedByWriter: true,
-		}, false, "光盘状态异常（上一个区段没有正常关闭或需要恢复），无法写入；加 --blank 先擦除再刻"},
+		}, false, false, "光盘状态异常（上一个区段没有正常关闭或需要恢复），无法写入；加 --blank 先擦除再刻"},
 		{"损坏的可擦写盘：请求擦除后放行，交给擦除流程", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_DVDDASHRW, State: imapi2.MEDIA_STATE_DAMAGED | imapi2.MEDIA_STATE_ERASE_REQUIRED, SupportedByWriter: true,
-		}, true, ""},
+		}, true, false, ""},
 		{"须先擦除的可擦写盘", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_CDRW, State: imapi2.MEDIA_STATE_ERASE_REQUIRED, SupportedByWriter: true,
-		}, false, "光盘需要先擦除才能写入；加 --blank 先擦除再刻"},
+		}, false, false, "光盘需要先擦除才能写入；加 --blank 先擦除再刻"},
 		{"上一区段没写完的一次写入盘", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_DVDDASHR, State: imapi2.MEDIA_STATE_NON_EMPTY_SESSION, SupportedByWriter: true,
-		}, false, "光盘上一个区段没有写完，无法继续写入；请换一张空白盘"},
+		}, false, false, "光盘上一个区段没有写完，无法继续写入；请换一张空白盘"},
 		{"状态位指明不支持该介质", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_BDR, State: imapi2.MEDIA_STATE_UNSUPPORTED, SupportedByWriter: true,
-		}, false, "刻录机不支持在 BD-R 上刻录"},
+		}, false, false, "刻录机不支持在 BD-R 上刻录"},
 		{"已封盘的盘不因请求擦除而放行", imapi2.Media{
 			Type: imapi2.MEDIA_TYPE_DVDPLUSRW, State: imapi2.MEDIA_STATE_FINALIZED,
-		}, true, "光盘已封盘，无法继续写入"},
+		}, true, false, "光盘已封盘，无法继续写入"},
+		{"损坏且不支持：先说不支持（与 burn devices 的 unsupported 同一结论）", imapi2.Media{
+			Type: imapi2.MEDIA_TYPE_DVDPLUSRW, State: imapi2.MEDIA_STATE_DAMAGED | imapi2.MEDIA_STATE_UNSUPPORTED, SupportedByWriter: true,
+		}, false, false, "刻录机不支持在 DVD+RW 上刻录"},
+		{"可擦写盘擦完重读仍须先擦除：只能换盘，不再叫人加 --blank", imapi2.Media{
+			Type: imapi2.MEDIA_TYPE_CDRW, State: imapi2.MEDIA_STATE_ERASE_REQUIRED, SupportedByWriter: true,
+		}, false, true, "光盘需要先擦除才能写入；请换一张空白盘"},
+		{"可擦写盘擦完重读仍是损坏态：同样只能换盘", imapi2.Media{
+			Type: imapi2.MEDIA_TYPE_DVDDASHRW, State: imapi2.MEDIA_STATE_DAMAGED, SupportedByWriter: true,
+		}, false, true, "光盘状态异常（上一个区段没有正常关闭或需要恢复），无法写入；请换一张空白盘"},
+		{"一次性盘擦没擦过都只能是换盘", imapi2.Media{
+			Type: imapi2.MEDIA_TYPE_DVDDASHR, State: imapi2.MEDIA_STATE_NON_EMPTY_SESSION, SupportedByWriter: true,
+		}, false, true, "光盘上一个区段没有写完，无法继续写入；请换一张空白盘"},
 	}
 	for _, testCase := range cases {
-		refusal := burnMediaRefusal(testCase.media, testCase.erasing)
+		refusal := burnMediaRefusal(testCase.media, testCase.erasing, testCase.erased)
 		switch {
 		case testCase.want == "" && refusal != nil:
 			t.Errorf("%s: 不应拒绝，得到: %v", testCase.name, refusal)

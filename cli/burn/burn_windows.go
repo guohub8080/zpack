@@ -131,7 +131,7 @@ func burnWindowsInner(inputs []string, flags burnFlags) (int64, error) {
 	} else {
 		stdout.LoggerInfo(fmt.Sprintf("介质: %s（%s），剩余 %s", media.TypeName(), media.StatusName(), burnFormatBytes(media.FreeBytes())))
 	}
-	if refusal := burnMediaRefusal(media, flags.blank); refusal != nil {
+	if refusal := burnMediaRefusal(media, flags.blank, false); refusal != nil {
 		return 0, refusal
 	}
 
@@ -147,7 +147,7 @@ func burnWindowsInner(inputs []string, flags burnFlags) (int64, error) {
 			return 0, err
 		}
 		// 擦完重读：擦除没能恢复的异常状态同样当场拒绝
-		if refusal := burnMediaRefusal(media, false); refusal != nil {
+		if refusal := burnMediaRefusal(media, false, true); refusal != nil {
 			return 0, refusal
 		}
 	}
@@ -196,8 +196,9 @@ func burnWindowsInner(inputs []string, flags burnFlags) (int64, error) {
 // 并带写保护位（2026-11-24 真机实测封盘的 DVD-R：DVD-ROM + 0xA000，并不含封盘位），与压盘无法区分。
 // erasing=请求了 --blank：可擦写盘的异常状态（损坏 / 须先擦除 / 上一区段写了一半）擦除即恢复，
 // 交给擦除流程、擦完重读介质再判；一次性盘没有擦除这条路，当场拒绝——不能带着异常状态走到写入
-// （2026-11-24 内置光驱实测：damaged 的 DVD-R 上，镜像直烧路径此前会直接调到 Write）
-func burnMediaRefusal(media imapi2.Media, erasing bool) error {
+// （2026-11-24 内置光驱实测：damaged 的 DVD-R 上，镜像直烧路径此前会直接调到 Write）。
+// erased=这已经是擦除之后重读的结果：提示里不能再叫人「加 --blank」（他已经加过了），只能换盘
+func burnMediaRefusal(media imapi2.Media, erasing, erased bool) error {
 	switch {
 	case media.Unrecognized:
 		// 认不出的盘先于一切状态位：它的类型与状态位都不可信（可能只是被报成了只读盘）
@@ -208,23 +209,26 @@ func burnMediaRefusal(media imapi2.Media, erasing bool) error {
 		return fmt.Errorf("光盘是只读盘（%s：压盘或已封盘），无法继续写入", media.TypeName())
 	case media.State&imapi2.MEDIA_STATE_WRITE_PROTECTED != 0:
 		return errors.New("光盘处于写保护状态，无法写入")
-	case !erasing && media.State&imapi2.MEDIA_STATE_DAMAGED != 0:
-		return fmt.Errorf("光盘状态异常（上一个区段没有正常关闭或需要恢复），无法写入；%s", burnRecoveryHint(media))
-	case !erasing && media.State&imapi2.MEDIA_STATE_NON_EMPTY_SESSION != 0:
-		return fmt.Errorf("光盘上一个区段没有写完，无法继续写入；%s", burnRecoveryHint(media))
-	case !erasing && media.State&imapi2.MEDIA_STATE_ERASE_REQUIRED != 0:
-		return fmt.Errorf("光盘需要先擦除才能写入；%s", burnRecoveryHint(media))
+	// 「不支持」先于「损坏 / 须先擦除 / 半截区段」：刻录机根本写不了这种盘，恢复与否无从谈起。
+	// 与 burn devices 的 StatusName 同一顺序——同一张盘两处给同一个结论
 	case media.State&imapi2.MEDIA_STATE_UNSUPPORTED != 0:
 		return fmt.Errorf("刻录机不支持在 %s 上刻录", media.TypeName())
+	case !erasing && media.State&imapi2.MEDIA_STATE_DAMAGED != 0:
+		return fmt.Errorf("光盘状态异常（上一个区段没有正常关闭或需要恢复），无法写入；%s", burnRecoveryHint(media, erased))
+	case !erasing && media.State&imapi2.MEDIA_STATE_NON_EMPTY_SESSION != 0:
+		return fmt.Errorf("光盘上一个区段没有写完，无法继续写入；%s", burnRecoveryHint(media, erased))
+	case !erasing && media.State&imapi2.MEDIA_STATE_ERASE_REQUIRED != 0:
+		return fmt.Errorf("光盘需要先擦除才能写入；%s", burnRecoveryHint(media, erased))
 	case !media.SupportedByWriter:
 		return fmt.Errorf("当前介质 %s 不支持数据刻录", media.TypeName())
 	}
 	return nil
 }
 
-// burnRecoveryHint 异常状态介质恢复到可写的办法：可擦写盘先擦除（--blank），一次性盘只能换盘
-func burnRecoveryHint(media imapi2.Media) string {
-	if media.Erasable() {
+// burnRecoveryHint 异常状态介质恢复到可写的办法：可擦写盘先擦除（--blank），一次性盘只能换盘；
+// erased=已经擦过一遍仍异常——可擦写盘这时也只能换盘
+func burnRecoveryHint(media imapi2.Media, erased bool) string {
+	if media.Erasable() && !erased {
 		return "加 --blank 先擦除再刻"
 	}
 	return "请换一张空白盘"
