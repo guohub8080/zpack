@@ -738,7 +738,7 @@ Windows 完整版对比 brew 版 ffmpeg 还有的缺口（配料待补，AGENTS.
 | 图片门禁 | `verify/verify-image.sh` | 见第 8.3 节 |
 | 真实体感语料 | `scripts/genenv/main.go`、`scripts/genenv/README.md` | 见第 4.7 节 |
 | 装机位刷新 | `ui/right-click/macos/refresh-engine.sh` | 见第 4.2 节、第 6.9 节 |
-| GUI 与右键菜单的构建脚本 | `ui/right-click/macos/build.sh`、`build-xcode.sh`、`quickaction.sh`、`ui/gui/install.sh` | 归 [gui.md](gui.md) |
+| GUI 与右键菜单的构建脚本 | `ui/right-click/macos/build-xcode.sh`、`quickaction.sh`、`ui/gui/install.sh`（第一代 Objective-C 版的 `build.sh` 已于 2026-11-24 删除） | 归 [gui.md](gui.md) |
 
 ## 8. 验收用例
 

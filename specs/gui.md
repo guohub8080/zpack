@@ -866,7 +866,7 @@ GUI 不向用户展示引擎的 stderr。它唯一的用途是任务管线里找
 
 **FinderSync 的架构是三次失败后定下来的**（据 AGENTS.md:384、388，mac 实测）：
 
-- 在沙箱扩展进程里直接起 `zpack` 干活——**死路**：写用户目录被拒，而且扩展进程没有界面权限，弹不出对话框。仓库里还留着一套这么做的 Objective-C 实现（`src/ZpackSync.m` + `build.sh`），它把结果改用 osascript 系统通知回报，但沙箱的限制还在。
+- 在沙箱扩展进程里直接起 `zpack` 干活——**死路**：写用户目录被拒，而且扩展进程没有界面权限，弹不出对话框。第一代正是这么做的 Objective-C 实现（`src/ZpackSync.m` + `build.sh`，把结果改用 osascript 系统通知回报，但沙箱的限制还在）——已于 2026-11-24 删除（用户定案），要看原文去找删除之前的那次提交。
 - 给宿主传参也不行：`NSWorkspace.OpenConfiguration.arguments` 从沙箱扩展发起时会被静默丢弃，回调还谎报成功；自定义 URL scheme 的 GURL 事件在 macOS 26 上冷 / 热启动都不送达。
 - 结论：**扩展 → 宿主只信两个原语——文件读写与进程启动**。现在的分工：
 
@@ -1001,7 +1001,7 @@ GUI 不向用户展示引擎的 stderr。它唯一的用途是任务管线里找
 | 宿主 | `ui/right-click/macos/xcode/zpackFinderMenu/MyApp.swift` | 取单、跑内嵌引擎、解析进度、结果文案、取消 |
 | 进度窗 | `ui/right-click/macos/xcode/zpackFinderMenu/JobWindow.swift` | 运行态 / 完成态、两个记忆对钩、倒计时 |
 | 模板遗留 | `ui/right-click/macos/xcode/zpackFinderMenu/ContentView.swift` | Xcode 模板自带的「Hello, world!」，宿主没有用到 |
-| 第一代实现 | `ui/right-click/macos/build.sh`、`src/ZpackSync.m`、`src/host_main.m`、`src/host-Info.plist`、`src/appex-Info.plist` | Objective-C 版：在扩展进程里直接起引擎、系统通知回报。已被 Xcode 版取代（6.8），仓库里仍保留 |
+| ~~第一代实现~~ | ~~`ui/right-click/macos/build.sh`、`src/ZpackSync.m`、`src/host_main.m`、`src/host-Info.plist`、`src/appex-Info.plist`~~ | Objective-C 版：在扩展进程里直接起引擎、系统通知回报。已被 Xcode 版取代（6.8）；2026-11-24 按用户定案删除。`src/` 下只留 `document.wflow.template`（快速操作的模板，`quickaction.sh` 在用） |
 | 图标源 | `assets/zpack.icns`、`zpack-menu.icns`、`zpack-icon.svg`、`zpack-icon-1024.png`、`zpack-app-icon-1024.png` | app 图标与菜单图标两套 |
 
 ### 7.3 GUI 依赖的命令面
@@ -1175,11 +1175,11 @@ ZPACK_GUI_FONT_PROBE=1 go test -run TestFontProbe -count=1 -v .   # 字体探针
 16. **密码经 argv 传给引擎**（3.1），压缩 / 解压期间在进程列表里可见。
 17. **Finder 右键（Swift 版）的几个问题**（读代码得出，未在 mac 上复现）：
     - 菜单项动作把**整份选中清单**交给宿主（`xcode/zpackSync/FinderSync.swift:98-124`），而引擎的 `extract` 与 `test` 只取第一个位置参数（`cli/archive/extract.go:103-106`、`cli/archive/list.go:46-61`）。多选时「解压到此处」「测试归档」只处理第一个；混合选择时第一个若不是归档就直接失败。菜单分类时算好的「归档 / 非归档」两组没有传给动作。
-    - 构建菜单时对**每个**选中的非目录文件同步起一次 `zpack list`，没有上限（`FinderSync.swift:45-50`、`86-94`）；被取代的 Objective-C 版有 20 个的探测上限（`src/ZpackSync.m:9`、`80`）。
+    - 构建菜单时对**每个**选中的非目录文件同步起一次 `zpack list`，没有上限（`FinderSync.swift:45-50`、`86-94`）；已删除的第一代 Objective-C 版曾有 20 个的探测上限。
     - 扩展里的引擎查找有一个写死的开发机路径 `~/WebstormProjects/zpack/bin/zpack`（`FinderSync.swift:25`）；宿主则只认自己 bundle 里的引擎（`MyApp.swift:338-344`）。
     - 宿主里还留着 GURL 与 `--zpack-job` 两条通道（`MyApp.swift:44-51`、`67-72`、`107-125`），注释与 AGENTS.md「GURL 不可达、任务文件才是主通道」的结论互相矛盾；另有一个没人调用的 `extractField`（`MyApp.swift:347-357`）。
     - 宿主的体积写法是 `2.3 MB`（带空格、一位小数，`MyApp.swift:228-237`），与 GUI 的 `2.3MB`（4.5）不一致。
-18. **第一代 Objective-C 版右键菜单仍留在仓库里**（`build.sh`、`src/`），与现行的 Xcode 版并存，文档没有说明它的去留。【待确认】是否已废弃、可否删除。
+18. ~~**第一代 Objective-C 版右键菜单仍留在仓库里**（`build.sh`、`src/`），与现行的 Xcode 版并存，文档没有说明它的去留。~~ **已删除（2026-11-24 用户定案）**：`ui/right-click/macos/build.sh` 与 `src/` 下的 `ZpackSync.m`、`host_main.m`、`host-Info.plist`、`appex-Info.plist` 一并移除，仓库里不再有被取代的那一套。现行的是 Xcode 版（`build-xcode.sh` + `xcode/`）与快速操作（`quickaction.sh` + `src/document.wflow.template`），都没动。删除只在仓库里做，本机是 Windows，没法核对 macOS 上已装的那套旧菜单——装过它的话要手工清（6.8）。
 19. **`main.go` 单文件 5856 行**，24 个页面与全部小件都在里面；压缩台与解压台各自内嵌了一份设置行闭包（ui/gui/main.go:1202-1222、1714-1723），与公共的 `openSettingRow` / `openSettingRowTop` 重复。
 20. **页面代码里仍有内联的悬停 / 按下判断**，违反「反馈语汇只有一处定义」：压缩台与解压台的密码眼睛钮（ui/gui/main.go:1383-1387、1777-1781）、`toolSegmented` 未选中段（1830-1834）、Base64 历史卡删除钮（2638-2642）、图片预览画框（2749-2753）、图片压缩策略单选行（3310-3324）。
 21. **Windows 上「可追加」的提示写的是尚未实现的能力**（「后续将支持真 UDF 优盘式」，ui/gui/main.go:5728）。
@@ -1196,7 +1196,7 @@ ZPACK_GUI_FONT_PROBE=1 go test -run TestFontProbe -count=1 -v .   # 字体探针
 | AGENTS.md:374 | 内容区标题条高度 `max(bar.Height+8, 44)` | 等于 `bar.Height`（ui/gui/main.go:712-717）；同一份文档的 AGENTS.md:379 写的才是现状 |
 | AGENTS.md:375-376 | MiSans VF 注册为 `MiSans` 族作默认；500 / 600 中间字重是真实例；默认字重靠「Medium 380→450」的字体手术抬到 450 | 默认字体是 W450 静态单实例，注册为 `MiSans`（ui/gui/main.go:92-101、126-127、135-137）；完整 VF 另注册为 `MiSans VF`，只给粗体标题（129-131、139）。静态族上请求任何字重都是同一个面 |
 | AGENTS.md:384 | 右键弹窗是模态 `NSAlert`：确定 = 默认钮、打开文件夹 = 次要钮、超时走 `stopModal`；还有「NSAlert 双 primary 陷阱」 | 是自建的非模态 `NSWindow`（`xcode/zpackFinderMenu/JobWindow.swift:36-47`）：一个「确定」钮 + 「完成后打开文件夹」「完成后自动关闭」两个对钩，倒计时用普通 `Timer`（173-186） |
-| AGENTS.md:381-385 | 右键菜单「双轨」只列了快速操作与 Xcode 版 FinderSync | 仓库里还有第三套：`build.sh` + `src/*.m` 的 Objective-C 版 |
+| AGENTS.md:381-385 | 右键菜单「双轨」只列了快速操作与 Xcode 版 FinderSync | 仓库里曾有第三套：`build.sh` + `src/*.m` 的 Objective-C 版——2026-11-24 已删除，现在文档与仓库一致 |
 | ui/gui/DESIGN.md:72 | 窗口最小 720×480，默认 900×580 | 最小 500×480，默认 675×580（ui/gui/main.go:5125-5126） |
 | ui/gui/DESIGN.md:35 | 标题条高度 `max(bar.Height+16,56)` | 控制钮在右时 `bar.Height`，否则 52 |
 | ui/gui/DESIGN.md:58、121 | 侧栏「归档」组三项；「归档浏览入口让位，代码保留」 | 四项，归档浏览在侧栏第四位（ui/gui/main.go:551-555）；代码注释 ui/gui/main.go:451、4784 也还写着「入口已让位 / M2 占位」 |
@@ -1224,7 +1224,7 @@ ZPACK_GUI_FONT_PROBE=1 go test -run TestFontProbe -count=1 -v .   # 字体探针
 1. Windows 上除了设 `ZPACK_BIN`，有没有别的办法让装到仓库之外的 GUI 找到引擎（3.2、9.2 第 1 条）——仓库里看不到。
 2. 现在嵌入的 `MiSans-VF.ttf.gz` 是不是做过「Medium 380→450」手术的派生版（6.5）。
 3. macOS 的多选文件对话框选不到文件夹这一条，在 Windows 上是否成立（2.3）。
-4. 第一代 Objective-C 版右键菜单（`build.sh` + `src/`）是否已废弃、可否删除（9.2 第 18 条）。
+4. ~~第一代 Objective-C 版右键菜单（`build.sh` + `src/`）是否已废弃、可否删除~~ **已定案（2026-11-24）**：删除，见 9.2 第 18 条。
 5. GUI 测试的实际通过数（8.1）：本次没有运行。
 
 另有两类属于「没条件验」，不是拿不准：Linux 上 GUI 没构建过、没跑过（7.4）；AGENTS.md 里记为 mac 实测的右键菜单各项（签名、LaunchServices、GURL 不可达等）与字体渲染读数，本机无法复验，按文档与脚本原样收录（第 6 节）。
@@ -1240,3 +1240,4 @@ ZPACK_GUI_FONT_PROBE=1 go test -run TestFontProbe -count=1 -v .   # 字体探针
 | 2026-11-24 | 刻录页「写入模式」提示按平台如实区分（提成纯函数 `burnModeHint`）：macOS 的「可追加」不再说「还能继续追加」，改为说明 macOS 不会把新内容并入原有文件；Windows / Linux 文案不变。写入提醒行一节补充 macOS 的处理（2.6、8.1） | f9cff89 |
 | 2026-11-24 | 压缩台补「选择文件夹…」按钮（2026-11-24 用户定案）：空态 hero 与引导行各一处，与刻录页共用 `leadDirPickButton`；刻录空态 hero 也补上同一个按钮。压缩台引导行改为放不下才换行（多一个按钮后最小窗口里不换行会把句子挤成竖条）。反馈矩阵 73 → 76（2.3、2.4、8.1、8.4） | 39b71c4 |
 | 2026-11-24 | 修复：换选刻录机时「先擦空再烧」不随设备复位，`--blank` 会照传给另一台里没打算擦的盘——设备下拉之后调 `syncBurnDeviceSwitch` 复位；回归用例 `TestBurnBlankResetsOnDeviceSwitch`（6.6、8.1、9.2 #6）。不在当日用户拍板的 11 条之内，属于动到刻录页时顺手修的缺陷 | b43c013（代码与用例，随并行会话的 PDF 编辑器提交进了库）、9dca7b0（本 spec） |
+| 2026-11-24 | 删除第一代 Objective-C 版右键菜单（用户定案 11 条之一）：`ui/right-click/macos/build.sh` 与 `src/` 下的 `ZpackSync.m`、`host_main.m`、`host-Info.plist`、`appex-Info.plist`；Xcode 版与快速操作不动（6.8、7、9.2 #18、9.3、9.4 #4） | （提交后回填） |
