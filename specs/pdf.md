@@ -1,13 +1,13 @@
 # PDF（pdf）
 
-> 对已有的 PDF 做页面级操作：合并、抽页、统一页面尺寸、旋转、读元信息——纯 Go，不碰 cgo。最后核对日期：2026-11-24（对应提交 `40fb9e7`）。
+> 对已有的 PDF 做页面级操作：合并、抽页、统一页面尺寸、旋转、读元信息、渲染为图片——操作面纯 Go（pdfcpu），渲染走 cgo（MuPDF，分层 stub）。最后核对日期：2026-11-24（对应提交 `40fb9e7`）。
 
 这份 spec 是该功能的**行为与设计的权威说明**。代码与 spec 不一致时：spec 是有意修改的，改代码；spec 过时了，先修 spec。
 每条规则都以代码为准核对过；拿不准的标了「【待确认】」。
 
 ## 1. 功能定义
 
-对**已有的 PDF** 做页面级操作：合并、抽页、统一页面尺寸、旋转、读元信息。引擎是 pdfcpu（v0.16.4，Apache-2.0）的一层薄封装，纯 Go、零 cgo（pdf/pdf.go:1）。
+对**已有的 PDF** 做页面级操作：合并、抽页、统一页面尺寸、旋转、读元信息、渲染为图片。操作面引擎是 pdfcpu（v0.16.4，Apache-2.0）的一层薄封装，纯 Go（pdf/pdf.go:1）；渲染引擎是 MuPDF（github.com/gen2brain/go-fitz 绑定），cgo，**分层 stub**（纯构建报「需完整版」，与 media 惯例同构）。
 
 | 子命令 | 做什么 | 典型场景 |
 |---|---|---|
@@ -16,11 +16,13 @@
 | `pdf resize` | 把（选中的）页面统一到某个纸型或自定义尺寸，页面内容等比缩放、居中 | 扫描件、手机拍照生成的 PDF 各页大小不一，统一成 A4 |
 | `pdf rotate-left` / `rotate-right` / `rotate-180` | 改页面的 `/Rotate` 属性，内容字节不动 | 拍照 PDF 方向不对 |
 | `pdf info` | 页数、首页尺寸、体积、首页旋转角、是否含文字页；`--all-pages` 给逐页明细 | 动 resize 之前先体检 |
+| `pdf render` | 把（选中的）页面渲染为 PNG/JPG 图片，每页一个文件 | PDF 存成图片；GUI 页面编辑器的预览图来源 |
 
 **不做什么：**
 
 - 不改页面内容本身：不编辑文字、不加水印 / 页码 / 表单（pdfcpu 有这些能力，没有接）。
-- 不生成 PDF，不与图片 / Office 互转，不 OCR。
+- 不生成 PDF（render 是 PDF→图片单向）。
+- 不与 Office 互转，不 OCR。
 - 不加密、不解密：没有密码旗标，加密的 PDF 读不了。
 - `extract` 只产出一个文件，不按页拆成多份。
 - 不支持镜像（mirror）：PDF 没有对应的页面属性，只能改写内容流，文字会镜像成不可读（pdf/rotate.go:1-3）。
@@ -35,6 +37,7 @@
 | `zpack pdf resize <输入.pdf> --size <尺寸> [--pages <规格>] [--force] [--output <路径>]` | 统一页面尺寸（cli/pdf/pdf.go:139） |
 | `zpack pdf rotate-left\|rotate-right\|rotate-180 <输入.pdf> [--pages <规格>] [--output <路径>]` | 旋转（cli/pdf/pdf.go:194） |
 | `zpack pdf info <输入.pdf> [--all-pages]` | 元信息（cli/pdf/pdf.go:243） |
+| `zpack pdf render <输入.pdf> [--pages <规格>] [--dpi <值>] [--format png\|jpg] [--output <目录>]` | 页面渲染为图片（cli/pdf/pdf.go render 分支） |
 
 | 旗标 | 含义 | 取值与校验 | 缺省 |
 |---|---|---|---|
@@ -43,6 +46,9 @@
 | `--force` | resize：选中的页里有文字页也照样缩放 | 布尔旗标，没有值 | 不给（遇到文字页就拒绝） |
 | `--output <路径>`（别名 `-o`） | 输出文件。已存在则覆盖 | 目录必须已存在；**merge 不认这个旗标** | 同目录下的 `<名>-extract.pdf` / `<名>-resized.pdf` / `<名>-rotated.pdf` |
 | `--all-pages` | info：在结果里附上逐页明细 | 布尔旗标 | 不给 |
+| `--dpi <值>` | render：渲染分辨率 | 正整数，36–600 | 96 |
+| `--format png\|jpg` | render：输出图片格式 | png / jpg（不分大小写） | png |
+| `--output <目录>` | render：输出目录。必须已存在 | render 认目录不认文件名 | 输入同目录 |
 | `--quiet` | 不输出过程日志（宽尾提示、`--force` 警告） | — | 不给 |
 | `--help` / `-h` | 打印帮助，exit 0 | — | — |
 
@@ -106,6 +112,17 @@
 ## 3. 输出契约
 
 五个子命令成功时都是标准信封 `{"is_success":true,"data":{...}}`，exit 0。下面列的是 data 载荷的字段，**顺序就是代码里结构体的声明顺序**（`pdf info --all-pages` 例外，见 3.5）。
+
+### 3.7 render
+
+```json
+{"input":"<绝对路径>","output_dir":"<绝对路径>","format":"png","dpi":96,
+ "page_count":3,"files":[{"page":1,"path":"<绝对路径>","width_px":794,"height_px":1123},...]}
+```
+
+- `files` 数组顺序 = 页码升序（与 `--pages` 的解析结果一致）；`page` 是 1 起的原文档页码。
+- 产出文件名：`<输入基名>-p<N>.<ext>`（如 `report-p3.png`），落在 `--output` 目录；同名覆盖。
+- `width_px` / `height_px` 由页面 pt 尺寸 × dpi / 72 换算（四舍五入），横页保持横。
 
 ### 3.1 merge
 
@@ -457,7 +474,27 @@ zpack pdf info 合同.pdf --all-pages | zpack json get data.pages.2.width_pt
 
 #### 子命令本身不对
 
-没给子命令、或不是这七个之一：四行顶层用法，exit 1（cli/pdf/pdf.go:49）。这四行里**没有列 `resize`**（文案漏了，实际支持）。
+没给子命令、或不是这八个之一：顶层用法多行，exit 1（cli/pdf/pdf.go:49）。
+
+### 4.4 render 渲染细则
+
+**正常路径**：`ParsePagesSpec` 选页（缺省全部页）→ 逐页 MuPDF 渲染 → `--output` 目录落 `<基名>-p<N>.<ext>`。渲染按页独立：第 k 页失败即整体失败（error JSON），**已写出的前 k-1 个文件不回滚**（与 extract 的「已写出部分不回滚」同哲学），stderr 报失败页码。
+
+**边界与退化**：
+
+| 输入 | 行为 |
+|---|---|
+| 输入不存在 / 不是 PDF / 加密 | `路径不存在：…` / `无法读取 PDF: …`（fitz 打开失败的原文）——与 info 同款前置校验 |
+| `--dpi` 非法（非数字 / <36 / >600） | `--dpi 需 36–600 的正整数，收到: <值>` |
+| `--format` 非 png/jpg | `--format 支持 png/jpg，收到: <值>` |
+| 页码规格非法 | 与 extract 同款报错（ParsePagesSpec） |
+| `--output` 目录不存在 | `目录不存在：<绝对路径>`（不自动创建——与「目录必须已存在」惯例一致） |
+| 输出同名已存在 | 覆盖（与 `--output` 惯例一致） |
+| 空页选择（PDF 0 页） | `PDF 无页面可渲染` |
+
+**jpg 质量**：固定 90（视觉无损档，与 image 家族惯例同源），不设 `--quality` 旗标（要更细的控制留给后续）。
+
+**性能**：逐页串行渲染（MuPDF 文档对象不支持并发页面渲染的线程安全模型）；`--pages 1-3` 三页比全文档快——引擎按选页惰性渲染，不先渲全文档。
 
 ## 5. 平台差异
 
@@ -543,6 +580,13 @@ zpack pdf info 合同.pdf --all-pages | zpack json get data.pages.2.width_pt
 - GUI **总是**传 `--output`，值是 `uniquePath(目录/<名>-xxx.pdf)` 保证不存在的路径，从不原地处理，所以 6.8 的删文件问题 GUI 碰不到。
 - GUI 纸型下拉固定四项：`a4`、`a4l`、`letter`、`210x297mm`（ui/gui/main.go:3748）。`letter` 那一项会撞上 6.6 的缺陷。
 - GUI 的前端校验 `validatePagesSpec`（ui/gui/validate.go:60）照着引擎的页码语法写，但它不知道总页数，越界只能交给引擎报。改 `ParsePagesSpec` 的规则时要同步改它。
+
+### 6.12 渲染引擎选型与「保存图片 / GUI 预览」双层架构（2026-11-24 用户定案）
+
+- **CLI `pdf render`（保存图片）= MuPDF 嵌入**：`github.com/gen2brain/go-fitz`（MIT 绑定）携带 MuPDF 源码（**AGPL**）随 cgo 编译进二进制——项目许可证路线按 AGPL 兼容走（2026-11-24 用户拍板；铁律 2：许可证如实告知由用户决定）。一套 Go 代码三平台通用，渲染质量业界标杆，体积 +约 15MB。
+- **GUI 页面编辑器的缩略图预览 = 各平台系统渲染器**（另一次用户定案）：Windows.Data.Pdf（Win10+ 内置）/ PDFKit（mac）/ poppler-glib（Linux）——零许可证负担、系统原装速度；这是**展示辅助**（gui.md 的「纯展示辅助逻辑」分类），归 GUI 层、不走 CLI 子进程（CLI 不需要渲染页码——操作面与展示面分离）。与铁律 5（刻录三平台各用各的后端）同构。
+- 分层落位：`pdf/render_cgo.go`（`//go:build cgo`，fitz 引擎）+ `pdf/render_nocgo.go`（stub 报「需完整版」）——纯 Go 开发循环不受影响；Windows 完整版产线无需改 deps（go-fitz 自带 MuPDF 源码随 cgo 编译，MSYS2 gcc 原生支持）。
+- 渲染形态：逐页独立渲染，DPI 由页面 pt 尺寸换算像素（pt × dpi / 72）；横页保持横（尊重页面自身的宽高关系，与 6.5 的 resize 逻辑独立）。
 
 ### 6.11 产物不是逐字节确定的
 
@@ -704,3 +748,4 @@ zpack pdf resize 样张.pdf --size letter --output 新建目录/x.pdf; echo $?  
 | 2026-11-24 | 初版：从代码与 AGENTS.md 整理 | 40fb9e7 |
 | 2026-11-24 | 修复：`resize --size letter` / `legal` 等 53 个纸型报「需纸型」（纸型表是混合大小写的键；尾缀 L/P 规则误伤 legal）；命令失败后不再删除输出路径上原有的文件 | 118dde3 |
 | 2026-11-24 | 修复：`--quiet` 此前只被解析、没有地方读取，现在静默引擎过程日志 | 6d31586 |
+| 2026-11-24 | 新增：`pdf render`（页面渲染为 PNG/JPG；MuPDF/go-fitz 引擎分层 stub，AGPL 义务记录；GUI 预览用系统渲染器的双层架构定案见 6.12） | 见 render 提交 |

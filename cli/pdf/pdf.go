@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -45,9 +46,82 @@ func runPdf(args []string) {
 		pdfRotate(subcommand, restArgs)
 	case "info":
 		pdfInfo(restArgs)
+	case "render":
+		pdfRender(restArgs)
 	default:
-		stdout.ErrorPrint("用法: pdf merge <1.pdf 2.pdf [3.pdf...]> <输出.pdf>\n或: pdf extract <输入.pdf> [--pages 1-3,5,8-] [--output 输出.pdf]\n或: pdf resize <输入.pdf> --size a4|letter|210x297mm [--pages 1-3] [--force] [--output 输出.pdf]\n或: pdf rotate-left|rotate-right|rotate-180 <输入.pdf> [--pages 1-3] [--output 输出.pdf]\n或: pdf info <输入.pdf>")
+		stdout.ErrorPrint("用法: pdf merge <1.pdf 2.pdf [3.pdf...]> <输出.pdf>\n或: pdf extract <输入.pdf> [--pages 1-3,5,8-] [--output 输出.pdf]\n或: pdf resize <输入.pdf> --size a4|letter|210x297mm [--pages 1-3] [--force] [--output 输出.pdf]\n或: pdf rotate-left|rotate-right|rotate-180 <输入.pdf> [--pages 1-3] [--output 输出.pdf]\n或: pdf info <输入.pdf>\n或: pdf render <输入.pdf> [--pages 1-3,5] [--dpi 96] [--format png|jpg] [--output 目录]")
 	}
+}
+
+// pdfRender 页面渲染为图片（MuPDF 引擎，cgo 分层 stub——纯构建报「需完整版」）
+func pdfRender(args []string) {
+	options := engine.RenderOptions{DPI: engine.RENDER_DPI_DEFAULT, Format: "png"}
+	var positional []string
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		arg := args[argIndex]
+		switch {
+		case arg == "--pages":
+			if argIndex+1 >= len(args) {
+				stdout.ErrorPrint("--pages 需要一个页码规格参数")
+			}
+			options.PagesSpec = args[argIndex+1]
+			argIndex++
+		case arg == "--dpi":
+			if argIndex+1 >= len(args) {
+				stdout.ErrorPrint("--dpi 需要一个数值参数")
+			}
+			dpiValue, parseErr := strconv.Atoi(args[argIndex+1])
+			if parseErr != nil || dpiValue < engine.RENDER_DPI_MIN || dpiValue > engine.RENDER_DPI_MAX {
+				stdout.ErrorPrint(fmt.Sprintf("--dpi 需 36–600 的正整数，收到: %s", args[argIndex+1]))
+			}
+			options.DPI = dpiValue
+			argIndex++
+		case arg == "--format":
+			if argIndex+1 >= len(args) {
+				stdout.ErrorPrint("--format 需要一个格式参数")
+			}
+			options.Format = engine.NormalizeRenderFormat(args[argIndex+1])
+			if options.Format == "" {
+				stdout.ErrorPrint(fmt.Sprintf("--format 支持 png/jpg，收到: %s", args[argIndex+1]))
+			}
+			argIndex++
+		case arg == "--output", arg == "--output-dir":
+			if argIndex+1 >= len(args) {
+				stdout.ErrorPrint("--output 需要一个目录参数")
+			}
+			options.OutputDir = args[argIndex+1]
+			argIndex++
+		case !strings.HasPrefix(arg, "-"):
+			positional = append(positional, arg)
+		}
+	}
+	if len(positional) != 1 {
+		stdout.ErrorPrint("用法: pdf render <输入.pdf> [--pages 1-3,5] [--dpi 96] [--format png|jpg] [--output 目录]")
+	}
+	inputPath, _ := filepath.Abs(positional[0])
+	if _, statErr := os.Stat(inputPath); statErr != nil {
+		stdout.ErrorPrint("路径不存在：" + inputPath)
+	}
+	if options.OutputDir == "" {
+		options.OutputDir = filepath.Dir(inputPath)
+	}
+	absoluteOutputDir, _ := filepath.Abs(options.OutputDir)
+	if dirStat, statErr := os.Stat(absoluteOutputDir); statErr != nil || !dirStat.IsDir() {
+		stdout.ErrorPrint("目录不存在：" + absoluteOutputDir)
+	}
+
+	// 页码规格：缺省全部页——总页数由 pdfcpu 读（操作面同源）
+	pageNumbers, specErr := engine.ResolveRenderPages(inputPath, options.PagesSpec)
+	if specErr != nil {
+		stdout.ErrorPrint(specErr.Error())
+	}
+
+	result, renderErr := engine.RenderDocument(inputPath, options, pageNumbers)
+	if renderErr != nil {
+		// render 的失败带页码上下文；整包失败不回滚已写出文件（specs/pdf.md 4.4）
+		stdout.ErrorPrint(renderErr.Error())
+	}
+	stdout.JSONPrint(result)
 }
 
 // pdfMerge 合并：末位位置参数=输出（同 image merge 惯例），参数序即页序
