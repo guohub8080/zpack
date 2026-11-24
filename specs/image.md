@@ -59,7 +59,7 @@
 - **以 `-` 开头的参数一律当旗标**，所以以 `-` 开头的文件名无法作为位置参数传入。
 - **只有被识别的旗标才吞掉下一个参数当值**。未知旗标的值如果不以 `-` 开头，会落成位置参数：`image convert a.png b.png --jobs 4` 里 `--jobs` 被忽略、`4` 成了第三个位置参数，结果报用法错误。
 - **旗标缺值**统一报「`<旗标> 缺少值（…）`」；数值越界统一报「`<旗标> 需 … 的整数，收到: <原值>`」。
-- **没有 `--quiet`**，也没有进度条。
+- **`--quiet`**（2026-11-24 用户定案补齐；此前只是被当作未知旗标忽略）：过程日志静默，stderr 只剩「开始执行」那一行，stdout 不变。image 全族都认它；有过程日志可静默的是 `compress --target-size`（策略说明）和 `resize`（物理尺寸换算说明）。也没有进度条。
 - **输出文件已存在时直接覆盖**，没有跳过 / `--force` 语义。
 
 ### 2.2 `image new`
@@ -331,6 +331,7 @@
 ### 3.6 stderr
 
 - 统一开始日志 `zpack image 开始执行`（只记到 `image` 一级，不含子命令名，cli/root.go:52）。
+- 带 `--quiet` 时，下面这些过程日志全部静默，stderr 只剩「开始执行」那一行（去向由 `cliutil.EngineLogf(args)` 按本次调用的参数判定，与其它命令同一套）。
 - `resize` 用了物理尺寸时，一行换算说明：`物理尺寸 3.50cm × 按比例 @ 300 PPI → 413 × 0 像素`。只给一侧时另一侧显示「按比例」，但后面那个像素数是 0（换算在引擎里才完成，日志打在那之前）。
 - `compress --target-size` 的策略说明，每条任务 1–2 行（image/compress_target.go:83、103、121、140、155、183）：
   - `size 优先：质量钉 q=90，缩尺寸换体积`
@@ -803,7 +804,7 @@ HEIC 本质是 ISOBMFF 容器 + 单帧 HEVC，FFmpeg 的 mov 解复用器加 hev
 
 - **是按 mac 写的**：用了 `stat -f%z` 和 `md5 -q`。Windows 的 Git Bash 里 `stat` 要转发垫片，而 `md5` 根本不存在（只有 `md5sum`）。`img_xval` 函数（103–109 行）对两个命令的 stderr 做了丢弃，`md5` 找不到时两边都得到空串，**五个像素级比对会空过**。在这台 Windows 机器上已确认 `md5` 不存在。
 - **需要系统 ffmpeg / ffprobe**，没装就跑不了（AGENTS.md:288 记录过实测机没装）。
-- `verify/verify.sh` 里没有任何 image 用例（`grep -c image` 为 0），图片门禁完全独立。
+- `verify/verify.sh` 里只有两组 image 用例，其余图片行为全在 `verify-image.sh`：「失败时不得删文件」一节的 3 条，和「image --quiet 生效」一节的 7 条（2026-11-24 新增：`resize` 不带 `--quiet` 有换算说明、带 `--quiet` 时 exit 0 / stderr 只剩开始执行一行 / stdout 仍是成功 JSON；`compress --target-size --quiet` 的 exit 与 stderr 行数）。夹具用 `image new` 造，纯 Go 构建即可跑。
 
 ### `verify/verify-media.sh`（需完整版 `bin/zpack`）
 
@@ -886,3 +887,4 @@ bin/zpack image convert a.exr out.png; echo $?       # 完整版：exit 0
 |---|---|---|
 | 2026-11-24 | 初版：从代码与 AGENTS.md 整理 | 40fb9e7 |
 | 2026-11-24 | 修复：命令失败后不再删除输出路径上原有的文件（含就地压缩失败删源文件）；`livephoto` 不再输出双重信封 | 118dde3 |
+| 2026-11-24 | image 全族认 `--quiet`（2026-11-24 用户定案补齐）：`compress --target-size` 的策略说明与 `resize` 的物理尺寸换算说明静默，去向由 `cliutil.EngineLogf(args)` 判定（2.1、3.6、8） | （提交后回填） |

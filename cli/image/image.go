@@ -228,7 +228,8 @@ func imageCompress(args []string) {
 	var result *engine.ImageResult
 	var compressErr error
 	if targetBytes > 0 {
-		result, compressErr = engine.CompressTargetSize(absoluteInput, absoluteOutput, targetBytes, priority, cliutil.StderrLogf)
+		// --quiet：日志去向按本次调用的参数判定（同其它命令的 EngineLogf）
+		result, compressErr = engine.CompressTargetSize(absoluteInput, absoluteOutput, targetBytes, priority, cliutil.EngineLogf(args))
 		if compressErr == nil {
 			result.TargetBytes = targetBytes // 引擎层不回填目标值（纯函数纪律）
 		}
@@ -555,8 +556,10 @@ func imageResize(args []string) {
 		if cmHeight > 0 {
 			heightLabel = fmt.Sprintf("%.2fcm", cmHeight)
 		}
-		stdout.LoggerInfo(fmt.Sprintf("物理尺寸 %s × %s @ %d PPI → %d × %d 像素",
-			widthLabel, heightLabel, engine.PhysicalPPI(ppi), opts.Width, opts.Height))
+		if logf := cliutil.EngineLogf(args); logf != nil { // --quiet 时为 nil
+			logf("物理尺寸 %s × %s @ %d PPI → %d × %d 像素",
+				widthLabel, heightLabel, engine.PhysicalPPI(ppi), opts.Width, opts.Height)
+		}
 	} else if inchWidth > 0 || inchHeight > 0 {
 		if inchWidth > 0 {
 			opts.Width = engine.InchToPixels(inchWidth, ppi)
@@ -571,8 +574,10 @@ func imageResize(args []string) {
 		if inchHeight > 0 {
 			heightLabel = fmt.Sprintf("%.2finch", inchHeight)
 		}
-		stdout.LoggerInfo(fmt.Sprintf("物理尺寸 %s × %s @ %d PPI → %d × %d 像素",
-			widthLabel, heightLabel, engine.PhysicalPPI(ppi), opts.Width, opts.Height))
+		if logf := cliutil.EngineLogf(args); logf != nil { // --quiet 时为 nil
+			logf("物理尺寸 %s × %s @ %d PPI → %d × %d 像素",
+				widthLabel, heightLabel, engine.PhysicalPPI(ppi), opts.Width, opts.Height)
+		}
 	}
 	if opts.Width == 0 && opts.Height == 0 && opts.Percent == 0 && opts.MaxWidth == 0 {
 		stdout.ErrorPrint("需要指定缩放方式：--cm / --inch / --width / --height / --percent / --max")

@@ -23,7 +23,7 @@
 | 数值参数 | 严格校验：非法或越界 → error JSON + exit 1。整数必须整个字符串是合法十进制整数（`"5abc"`、`""` 不算） | `internal/cmdutil` 的 `ParseIntStrict` |
 | 路径 | 完整支持空格与中文：路径经 argv 直传，禁止拼 shell 字符串 | — |
 | `--help` / `-h` | 任何子命令都可用，打印帮助后 exit 0 | `internal/cliutil` 的 `HelpAwareRun` |
-| `--quiet` | 过程日志全部静默：stderr 只剩「开始执行」那一行，stdout 不变。compress / extract / convert / media 全族 / audio 全族 / pdf 全族支持（2026-11-24 起 pdf 与 audio 才真正生效——此前只解析不生效）。日志去向按**本次调用的参数**判定，不靠包级变量 | `internal/cliutil` 的 `EngineLogf` |
+| `--quiet` | 过程日志全部静默：stderr 只剩「开始执行」那一行，stdout 不变。compress / extract / convert / media 全族 / audio 全族 / pdf 全族 / image 全族支持（2026-11-24 起 pdf、audio、image 才真正生效——此前只解析不生效）。日志去向按**本次调用的参数**判定，不靠包级变量 | `internal/cliutil` 的 `EngineLogf` |
 | 平台不支持 | 必须输出 error JSON「暂不支持 <平台>：<原因>」+ exit 1，禁止静默失败 | — |
 | 中断 | 第一次 Ctrl+C 或 SIGTERM：发出取消请求——**只有压缩包引擎**（compress / extract / convert）的循环会检查它，清理半成品后输出「操作已被用户取消（半成品已清理）」+ exit 1。第二次 Ctrl+C：立即退出，exit 130（不等清理） | `cli/root.go` 的信号处理、`core/cancel.go` |
 
@@ -139,7 +139,7 @@ zpack compress 目录/ --output out.zip > /dev/null 2>&1 && echo "OK" || echo "F
 
 - **压缩包以外的命令按一次 Ctrl+C 不会中断**（原因见第 2 节「取消的范围」）：刻录、视频转码这类长操作想中途停下，得按两次。是否让这些引擎也响应取消，尚无定案。
 - 根命令的 Short 描述「zip 并行架构 + tar/tar.gz；7z/rar 解压规划中」已过时（7z / rar 读取早已交付）；`media` 的 Use 只写了 `<convert|compress>`，实际子命令远不止这两个。帮助文本的修订待办。
-- `image` 不解析 `--quiet`（它的过程日志始终输出）；是否补上尚无定案。
+- ~~`image` 不解析 `--quiet`（它的过程日志始终输出）~~ **已解决（2026-11-24）**：image 全族认 `--quiet`，见 image.md 2.1、3.6。
 
 ## 变更记录
 
@@ -149,3 +149,4 @@ zpack compress 目录/ --output out.zip > /dev/null 2>&1 && echo "OK" || echo "F
 | 2026-11-24 | 数值严格校验补漏：crypto / bench 改用 `ParseIntStrict`（此前 `--length 5abc` 被当成 5） | 6016f9b |
 | 2026-11-24 | 命令面按功能拆子包；过程日志去向改为按调用参数判定，pdf / audio 的 `--quiet` 生效 | 6d31586、40fb9e7 |
 | 2026-11-24 | 启用一直预留着的警告级别：`[WARN]` 标签行（`LoggerWarn`），只给「照常继续、后果不可逆且不直观」的提醒用；首例是往有数据的盘写镜像（burn.md 3.4） | 510fe45 |
+| 2026-11-24 | `image` 全族认 `--quiet`（此前只被当作未知旗标忽略）：压缩的目标体积策略说明、resize 的物理尺寸换算说明静默（2、9） | （提交后回填） |

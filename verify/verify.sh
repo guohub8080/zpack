@@ -1212,6 +1212,23 @@ assert_equal "bench --size 非整数 exit" 1 "$?"
 "$NEW_CLI" crypto genkey --bits 512 >/dev/null 2>&1
 assert_equal "crypto genkey --bits 512（标准库拒绝 <1024 位）exit" 1 "$?"
 
+# ---------- image --quiet 生效（2026-11-24 用户定案：补齐——此前只被当作未知旗标忽略）----------
+imgq_dir="/tmp/zpack-verify-imgq-$$"
+mkdir -p "$imgq_dir"
+"$NEW_CLI" image new "$imgq_dir/photo.png" 400x300 >/dev/null 2>&1
+"$NEW_CLI" image resize "$imgq_dir/photo.png" "$imgq_dir/rs.jpg" --cm 3.5x2.5 >/dev/null 2>"$imgq_dir/resize.log"; new_exit=$?
+assert_equal "image resize 不带 --quiet exit" 0 "$new_exit"
+grep -q '物理尺寸' "$imgq_dir/resize.log" && report_pass || report_fail "image resize 不带 --quiet 有换算说明" "stderr 含「物理尺寸」" "$(cat "$imgq_dir/resize.log")"
+"$NEW_CLI" image resize "$imgq_dir/photo.png" "$imgq_dir/rs.jpg" --cm 3.5x2.5 --quiet >"$imgq_dir/resize.json" 2>"$imgq_dir/resize-quiet.log"; new_exit=$?
+assert_equal "image resize --quiet exit" 0 "$new_exit"
+assert_equal "image resize --quiet stderr 只剩开始执行一行" 1 "$(grep -c . "$imgq_dir/resize-quiet.log")"
+assert_equal "image resize --quiet stdout 仍是成功 JSON" '"is_success":true' "$(grep -o '"is_success":[a-z]*' "$imgq_dir/resize.json")"
+"$NEW_CLI" image convert "$imgq_dir/photo.png" "$imgq_dir/photo.jpg" >/dev/null 2>&1   # 目标体积压缩只对 jpg 生效
+"$NEW_CLI" image compress "$imgq_dir/photo.jpg" --target-size 100KB --output "$imgq_dir/small.jpg" --quiet >"$imgq_dir/compress.json" 2>"$imgq_dir/compress-quiet.log"; new_exit=$?
+assert_equal "image compress --quiet exit" 0 "$new_exit"
+assert_equal "image compress --quiet stderr 只剩开始执行一行" 1 "$(grep -c . "$imgq_dir/compress-quiet.log")"
+rm -rf "$imgq_dir"
+
 # ---------- 失败时不得删文件（2026-11-24 修复：命令失败后曾无条件删除输出路径上的文件） ----------
 guard_dir="/tmp/zpack-verify-guard-$$"; mkdir -p "$guard_dir"
 "$NEW_CLI" image new "$guard_dir/photo.png" 40x30 >/dev/null 2>&1
