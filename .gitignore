@@ -29,6 +29,9 @@ ui/gui/build/
 ui/gui/dist/
 ui/gui/build/
 
+# 注入给 GUI 打包器随包分发的引擎（ui/gui/inject-engine.sh 拷进来的产线产物，几十 MB，不入库）
+ui/gui/resources/*/zpack-cli*
+
 # realEnvTest 真实环境测试数据（scripts/genenv 算法生成，可随时 --clean 重铸）
 realEnvTest/
 ui/gui/gui

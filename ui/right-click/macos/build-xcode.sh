@@ -50,8 +50,8 @@ echo "── 嵌入 Go 引擎 + 双图标 ──"
 # 双图标各司其职：zpack.icns=app 本体（squircle 底板 80.5% 内缩+透明边距）/ zpack-menu.icns=右键菜单（透明底造型）
 # 陷阱备忘：全新 xcodebuild 产物 appex 无 Contents/Resources 目录（历史靠增量残留）——cp 前必须 mkdir -p
 mkdir -p "$APP/Contents/PlugIns/zpackSync.appex/Contents/Resources"
-cp "$ROOT/bin/zpack-cli" "$APP/Contents/Resources/zpack"
-chmod +x "$APP/Contents/Resources/zpack"
+cp "$ENGINE" "$APP/Contents/Resources/zpack-cli"   # 2026-11-24 引擎改名 zpack-cli（宿主与扩展都先找新名、旧名兜底）
+chmod +x "$APP/Contents/Resources/zpack-cli"
 cp "$ROOT/assets/zpack.icns" "$APP/Contents/Resources/"
 cp "$ROOT/assets/zpack-menu.icns" "$APP/Contents/Resources/"
 cp "$ROOT/assets/zpack-menu.icns" "$APP/Contents/PlugIns/zpackSync.appex/Contents/Resources/"

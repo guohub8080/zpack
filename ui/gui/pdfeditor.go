@@ -2,16 +2,25 @@
 // 功能面对齐 PDF Arranger（GPL-3.0 参考实现，换成 zpack 的 Golang/cgo 与契约驱动）。
 //
 // 架构纪律（薄壳铁律）：编辑态是纯前端内存模型；所有落盘都编译成 CLI 调用
-// （collect 保序收集 + rotate 分组叠加）；缩略图渲染是**展示辅助**（非阻塞四定案——
-// specs/pdf.md 6.12 双层架构的 GUI 侧）。
+// （collect 保序收集 + rotate 分组叠加）；缩略图渲染是**展示辅助**。
 //
-// 第一版范围（2026-11-24）：单文档打开、缩略图网格、多选（Ctrl/Shift/A）、拖拽重排、
-// 旋转/删除、缩放档、导出（collect 保序收集 + rotate 分组）；裁剪/页拆分/插图片/元数据待铺。
+// 渲染服务（2026-11-24 二版重写，用户定案两轮反馈）：
+// ① **真渲染旋转页**——旋转不是显示层假转，编辑旋转角应用进位图（rotateRGBA）后重新
+//
+//	渲染贴图，所见即导出所得；
+//
+// ② **导入即进度条**——ui.Progress 显示首渲进度（done/total），不卡住；
+// ③ **非阻塞**——双通道请求队列（urgent=旋转重渲插队 / normal=首渲按序），单渲染协程
+//
+//	串行处理（MuPDF 文档对象非并发安全），网格立即可浏览（未渲页占位）；
+//
+// ④ 首屏优先（前 12 页先入 normal 队）。
 package main
 
 import (
 	"encoding/json"
 	"fmt"
+	"image"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -27,7 +36,7 @@ const EDITOR_THUMB_DPI = 72
 // EDITOR_FIRST_BATCH 打开文档时优先渲染的头批页数（定案「跳页不等按序渲染」的第一块）
 const EDITOR_FIRST_BATCH = 12
 
-// editorZoomTier 缩放档（页面对齐 pdfarranger 的放大/缩小；DIP 尺寸随档）
+// editorZoomTier 缩放档（页面对齐 pdfarranger 的放大/缩小）
 type editorZoomTier struct {
 	label     string  // 工具栏显示（百分比）
 	gridMinW  float32 // GridView 单元最小宽
@@ -49,28 +58,44 @@ type editorPage struct {
 	rotation int
 }
 
-// pdfEditorState 编辑器全部状态
-type pdfEditorState struct {
-	docPath    string                 // 打开的 PDF（第一版：单文档）
-	pageCount  int                    // 源文档总页数
-	pages      []editorPage           // 编辑态页序
-	rotation   map[int]int            // 源页码 → 旋转角（缩略图显示与导出编译共用）
-	thumbs     map[int]ui.ImageSource // 源页码 → 已渲缩略图（第一版全缓存；LRU 待大文档实测）
-	rendering  map[int]bool
-	grid       ui.GridState      // 画布网格（Selected/Selection/Reorder 框架开箱）
-	selection  ui.Selection[int] // 多选（键=编辑序下标）
-	selected   int               // 最后一次点击（-1 无）
-	zoomIdx    int               // 缩放档索引（缺省 1=100%）
-	quitRender chan struct{}     // 换文档时停渲染协程
+// thumbKey 缩略图缓存键：页 × 旋转角（旋转变了就是新图）
+type thumbKey struct {
+	srcPage  int
+	rotation int
 }
 
-// ensureEditorState 懒初始化（含 GridState 的指针接线——Selected/Selection 不接指针
-// 点击永远不生效，第一版漏接被用户指出）
+// thumbRequest 渲染请求
+type thumbRequest struct {
+	srcPage  int
+	rotation int
+}
+
+// pdfEditorState 编辑器全部状态
+type pdfEditorState struct {
+	docPath   string                      // 打开的 PDF（第一版：单文档）
+	pageCount int                         // 源文档总页数
+	pages     []editorPage                // 编辑态页序
+	rotation  map[int]int                 // 源页码 → 旋转角
+	thumbs    map[thumbKey]ui.ImageSource // 缩略图缓存（键=页×角）
+	rendering map[thumbKey]bool
+	grid      ui.GridState      // 画布网格（Selected/Selection/Reorder 框架开箱）
+	selection ui.Selection[int] // 多选（键=编辑序下标）
+	selected  int               // 最后一次点击（-1 无）
+	zoomIdx   int               // 缩放档索引（缺省 1=100%）
+	doneCount int               // 首渲已完成页数（进度条）
+	total     int               // 首渲总页数
+	quit      chan struct{}     // 关闭渲染服务
+	urgent    chan thumbRequest // 旋转重渲（插队）
+	normal    chan thumbRequest // 首渲（按序）
+}
+
+// ensureEditorState 懒初始化（含 GridState 指针接线——Selected/Selection 不接指针
+// 点击恒不生效，第一版漏接被用户指出）
 func (a *app) ensureEditorState() *pdfEditorState {
 	if a.pdfEd == nil {
 		a.pdfEd = &pdfEditorState{
-			thumbs:    map[int]ui.ImageSource{},
-			rendering: map[int]bool{},
+			thumbs:    map[thumbKey]ui.ImageSource{},
+			rendering: map[thumbKey]bool{},
 			selected:  -1,
 			zoomIdx:   1,
 		}
@@ -78,6 +103,13 @@ func (a *app) ensureEditorState() *pdfEditorState {
 		a.pdfEd.grid.Selection = &a.pdfEd.selection
 	}
 	return a.pdfEd
+}
+
+// toast 入 toast 队列（sniff.go 的 pendingToasts 通道——帧外 goroutine/回调入队，帧首 drain）
+func (a *app) toast(message string) {
+	a.toastMu.Lock()
+	a.pendingToasts = append(a.pendingToasts, message)
+	a.toastMu.Unlock()
 }
 
 // editorBrowse 打开文件对话框（goroutine 发起——嵌套事件泵教训见 main.go browseFiles）
@@ -96,7 +128,7 @@ func (a *app) editorBrowse() {
 	}()
 }
 
-// editorOpen 打开文档：CLI 读页数（pdf info）→ 建编辑态 → 启动渲染协程（首屏优先队列）
+// editorOpen 打开文档：CLI 读页数（pdf info）→ 建编辑态 → 启动渲染服务（首屏优先队列）
 func (a *app) editorOpen(docPath string) {
 	absolute, absErr := filepath.Abs(docPath)
 	if absErr != nil {
@@ -117,8 +149,8 @@ func (a *app) editorOpen(docPath string) {
 			return
 		}
 		ed := a.ensureEditorState()
-		if ed.quitRender != nil {
-			close(ed.quitRender) // 换文档：停旧渲染协程
+		if ed.quit != nil {
+			close(ed.quit) // 换文档：停旧渲染服务
 		}
 		ed.docPath = absolute
 		ed.pageCount = envelope.Data.PageCount
@@ -127,61 +159,123 @@ func (a *app) editorOpen(docPath string) {
 			ed.pages[idx] = editorPage{srcPage: idx + 1}
 		}
 		ed.rotation = map[int]int{}
-		ed.thumbs = map[int]ui.ImageSource{}
-		ed.rendering = map[int]bool{}
+		ed.thumbs = map[thumbKey]ui.ImageSource{}
+		ed.rendering = map[thumbKey]bool{}
 		ed.selected = -1
 		ed.selection = ui.Selection[int]{}
-		ed.quitRender = make(chan struct{})
-		go a.renderEditorThumbs(ed)
+		ed.doneCount = 0
+		ed.total = envelope.Data.PageCount
+		ed.quit = make(chan struct{})
+		ed.urgent = make(chan thumbRequest, envelope.Data.PageCount)
+		ed.normal = make(chan thumbRequest, envelope.Data.PageCount)
+		// 首屏优先：前 EDITOR_FIRST_BATCH 页先入队，其余按序（渐进出现）
+		for page := 1; page <= envelope.Data.PageCount; page++ {
+			request := thumbRequest{srcPage: page}
+			if page <= EDITOR_FIRST_BATCH {
+				ed.normal <- request
+			} else {
+				ed.normal <- request // 全部走 normal（urgent 留给旋转重渲插队）
+			}
+		}
+		go ed.renderService(a)
 	})
 }
 
-// renderEditorThumbs 渲染协程：文档打开一次复用；首屏优先队列；退出靠 quitRender 关闭。
-// 非阻塞四定案（specs/gui.md 2.12）：网格立即可浏览（未渲页占位），缩略图到达即贴。
-func (a *app) renderEditorThumbs(state *pdfEditorState) {
-	document, openErr := fitz.New(state.docPath)
+// renderService 常驻渲染协程：urgent（旋转重渲）优先于 normal（首渲）——select 双层实现
+// 插队语义；单协程串行处理（MuPDF 文档对象非并发安全）。
+func (ed *pdfEditorState) renderService(a *app) {
+	document, openErr := fitz.New(ed.docPath)
 	if openErr != nil {
 		a.toast("PDF 打开失败：" + openErr.Error())
 		return
 	}
 	defer document.Close()
 
-	queue := make([]int, 0, state.pageCount)
-	for page := 1; page <= state.pageCount && page <= EDITOR_FIRST_BATCH; page++ {
-		queue = append(queue, page)
-	}
-	for page := EDITOR_FIRST_BATCH + 1; page <= state.pageCount; page++ {
-		queue = append(queue, page)
-	}
-	for _, srcPage := range queue {
+	for {
+		var request thumbRequest
 		select {
-		case <-state.quitRender:
+		case <-ed.quit:
 			return
 		default:
 		}
-		if _, done := state.thumbs[srcPage]; done {
-			continue
+		select {
+		case <-ed.quit:
+			return
+		case request = <-ed.urgent: // 旋转重渲插队
+		default:
+			select {
+			case request = <-ed.urgent:
+			case request = <-ed.normal:
+			case <-ed.quit:
+				return
+			}
 		}
-		state.rendering[srcPage] = true
-		rgba, renderErr := document.ImageDPI(srcPage-1, EDITOR_THUMB_DPI)
-		if renderErr != nil {
-			state.rendering[srcPage] = false
-			continue // 单页失败不阻塞后续（失败页显示占位）
-		}
-		bitmap := ui.NewBitmap(rgba)
-		mygo.RunOnMain(func() {
-			state.thumbs[srcPage] = bitmap
-			delete(state.rendering, srcPage)
-			a.win.Update(func() {}) // 显式触发一帧（缩略图到达即贴）
-		})
+		ed.renderOne(a, document, request)
 	}
 }
 
-// toast 入 toast 队列（sniff.go 的 pendingToasts 通道）
-func (a *app) toast(message string) {
-	a.toastMu.Lock()
-	a.pendingToasts = append(a.pendingToasts, message)
-	a.toastMu.Unlock()
+// renderOne 单页渲染：缓存查 → ImageDPI → 旋转位图（编辑角）→ 贴缓存 + 进度 + 触发一帧
+func (ed *pdfEditorState) renderOne(a *app, document *fitz.Document, request thumbRequest) {
+	key := thumbKey{srcPage: request.srcPage, rotation: request.rotation}
+	if _, done := ed.thumbs[key]; done {
+		return
+	}
+	ed.rendering[key] = true
+	defer delete(ed.rendering, key)
+
+	rgba, renderErr := document.ImageDPI(request.srcPage-1, EDITOR_THUMB_DPI)
+	if renderErr != nil {
+		return // 单页失败不阻塞后续（失败页保持占位）
+	}
+	rotated := rotateRGBA(rgba, request.rotation)
+	bitmap := ui.NewBitmap(rotated)
+	mygo.RunOnMain(func() {
+		ed.thumbs[key] = bitmap
+		// 首渲请求（rotation 与打开态一致）计入进度
+		if request.rotation == 0 && ed.doneCount < ed.total {
+			ed.doneCount++
+		}
+		a.win.Update(func() {}) // 缩略图到达即贴 + 进度条推进
+	})
+}
+
+// rotateRGBA 位图顺时针旋转（degrees ∈ {0,90,180,270}）——Pix 直排（非 At/Set 逐像素）。
+// 编辑旋转角应用进位图：所见即导出所得（2026-11-24 用户定案：要渲染旋转完的页面）。
+func rotateRGBA(src *image.RGBA, degrees int) *image.RGBA {
+	width, height := src.Rect.Dx(), src.Rect.Dy()
+	switch ((degrees % 360) + 360) % 360 {
+	case 90: // 顺时针 90：源 (x,y) → 目标 (h-1-y, x)
+		dst := image.NewRGBA(image.Rect(0, 0, height, width))
+		for y := 0; y < height; y++ {
+			for x := 0; x < width; x++ {
+				sourceIndex := src.PixOffset(x, y)
+				destIndex := dst.PixOffset(height-1-y, x)
+				copy(dst.Pix[destIndex:destIndex+4], src.Pix[sourceIndex:sourceIndex+4])
+			}
+		}
+		return dst
+	case 180:
+		dst := image.NewRGBA(image.Rect(0, 0, width, height))
+		for y := 0; y < height; y++ {
+			for x := 0; x < width; x++ {
+				sourceIndex := src.PixOffset(x, y)
+				destIndex := dst.PixOffset(width-1-x, height-1-y)
+				copy(dst.Pix[destIndex:destIndex+4], src.Pix[sourceIndex:sourceIndex+4])
+			}
+		}
+		return dst
+	case 270: // 顺时针 270（=逆时针 90）：源 (x,y) → 目标 (y, w-1-x)
+		dst := image.NewRGBA(image.Rect(0, 0, height, width))
+		for y := 0; y < height; y++ {
+			for x := 0; x < width; x++ {
+				sourceIndex := src.PixOffset(x, y)
+				destIndex := dst.PixOffset(y, width-1-x)
+				copy(dst.Pix[destIndex:destIndex+4], src.Pix[sourceIndex:sourceIndex+4])
+			}
+		}
+		return dst
+	}
+	return src
 }
 
 // editorSelectedIndices 当前选中的编辑序下标（Selection 优先，落回单选 Selected）
@@ -198,8 +292,8 @@ func (ed *pdfEditorState) editorSelectedIndices() []int {
 	return indices
 }
 
-// editorRotate 选中页旋转（顺时针 dir 次，每次 90°）——编辑态改角后显式触发一帧，
-// 否则立即模式框架不知道状态变了，用户看不到旋转效果（2026-11-24 实测反馈）
+// editorRotate 选中页旋转：编辑态改角 + 投递**真渲染重渲请求**（urgent 插队——
+// 用户点了旋转就等它，渲染完贴真旋转图；编辑期间显示「渲染中」占位）+ 显式触发一帧
 func (a *app) editorRotate(indices []int, clockwise bool) {
 	ed := a.ensureEditorState()
 	for _, index := range indices {
@@ -211,11 +305,12 @@ func (a *app) editorRotate(indices []int, clockwise bool) {
 		} else {
 			ed.pages[index].rotation = (ed.pages[index].rotation + 270) % 360
 		}
+		ed.urgent <- thumbRequest{srcPage: ed.pages[index].srcPage, rotation: ed.pages[index].rotation}
 	}
-	a.win.Update(func() {}) // 旋转立即预览（变化页背景变色 + 缩略图转向）
+	a.win.Update(func() {}) // 立即反馈：格子进「渲染中」态
 }
 
-// editorDelete 删除选中页（同样显式触发一帧）
+// editorDelete 删除选中页
 func (a *app) editorDelete(indices []int) {
 	ed := a.ensureEditorState()
 	remove := map[int]bool{}
@@ -313,6 +408,19 @@ func joinInts(values []int) string {
 	return strings.Join(parts, ",")
 }
 
+// editorToolButton 画布工具行的统一小按钮
+func editorToolButton(c *ui.Context, t *ui.Theme, label string, onClick func()) {
+	button := ui.ButtonBase(c).Height(30).MinWidth(30).Padding(0, 10).Radius(8).
+		Border(1, t.Border).Cursor(ui.CursorPointer).Shrink(0)
+	pressFeedback(button, t)
+	button.Children(func() {
+		ui.Text(c, label).FontSize(13)
+	})
+	if button.Clicked() {
+		onClick()
+	}
+}
+
 // RunToolEnvelope 执行短命令并回传完整信封 raw（页数等 data 字段的消费通道——
 // RunTool 只出 Output/Extra/Err，不带 data 其他字段）。失败信封也在 stdout（契约）。
 func (service *Service) RunToolEnvelope(args []string, callback func(raw []byte, err string)) {
@@ -337,7 +445,7 @@ func (service *Service) RunToolEnvelope(args []string, callback func(raw []byte,
 }
 
 // pagePdfEditor PDF 页面编辑器页（画布页不用 pageColumn 的 640px 定宽——铺满窗口；
-// 其余排版骨架与转换族同构：lead 行 + 工具行 + 卡片容器）
+// 其余排版骨架与转换族同构：lead 行 + 工具行 + 卡片容器 + 渲染进度条）
 func (a *app) pagePdfEditor(c *ui.Context) {
 	ed := a.ensureEditorState()
 	t := c.Theme()
@@ -346,8 +454,7 @@ func (a *app) pagePdfEditor(c *ui.Context) {
 	column.Children(func() {
 		a.convertLeadRow(c, "PDF", ed.docPath, a.editorBrowse)
 
-		// 工具行：旋转/删除/缩放/导出（经典排版：与转换族同一行高与间距；打开走 hero 的
-		// 浏览按钮——空态由 heroPane 接管，本函数只在 docPath 非空时被调用）
+		// 工具行：旋转/删除/缩放/导出（经典排版：与转换族同一行高与间距；空态由 heroPane 接管）
 		toolRow := ui.Row(c).Gap(6).AlignItems(ui.Center).Padding(0, 0, 8, 0)
 		toolRow.Children(func() {
 			editorToolButton(c, t, "旋转左 ⟲", func() { a.editorRotate(a.pdfEd.editorSelectedIndices(), false) })
@@ -379,6 +486,17 @@ func (a *app) pagePdfEditor(c *ui.Context) {
 				FontSize(12).TextColor(t.TextMuted)
 		})
 
+		// 渲染进度条（用户定案「导入 PDF 就有反馈一个进度条而不是卡住」）：
+		// 首渲未完成时常驻（done/total 渐进），完成即隐藏
+		if ed.doneCount < ed.total {
+			progressRow := ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(0, 0, 4, 0)
+			progressRow.Children(func() {
+				ui.Progress(c, float64(ed.doneCount)/float64(ed.total)).Grow(1).Height(6)
+				ui.Text(c, fmt.Sprintf("渲染缩略图 %d/%d", ed.doneCount, ed.total)).
+					FontSize(12).TextColor(t.TextMuted).Shrink(0)
+			})
+		}
+
 		// 画布卡片：GridView（尺寸随缩放档；Reorder/Selection/Selected 框架开箱——
 		// Selected/Selection 必须接指针，否则点击不生效）
 		canvasCard := ui.Column(c).Grow(1).Margin(8, 0, 0, 0).Padding(8).Radius(10).
@@ -386,9 +504,10 @@ func (a *app) pagePdfEditor(c *ui.Context) {
 		canvasCard.Children(func() {
 			ui.GridView(c, &ed.grid, len(ed.pages), tier.gridMinW, tier.gridCellH, func(i int) {
 				page := ed.pages[i]
-				thumb, hasThumb := ed.thumbs[page.srcPage]
-				_, isRendering := ed.rendering[page.srcPage]
-				edited := page.rotation != 0 // 有编辑变化：Accent 底色提醒（用户定案「background 有颜色提醒」）
+				key := thumbKey{srcPage: page.srcPage, rotation: page.rotation}
+				thumb, hasThumb := ed.thumbs[key]
+				_, isRendering := ed.rendering[key]
+				edited := page.rotation != 0 // 有编辑变化：Accent 底色提醒（用户定案）
 				// 固定布局（勿用 Grow——溢出即重叠，第一版教训）
 				cell := ui.Column(c).Gap(4).Padding(6).AlignItems(ui.Center).
 					Radius(8).Background(t.Surface).Border(1, t.Border)
@@ -412,17 +531,4 @@ func (a *app) pagePdfEditor(c *ui.Context) {
 			}).Grow(1)
 		})
 	})
-}
-
-// editorToolButton 画布工具行的统一小按钮
-func editorToolButton(c *ui.Context, t *ui.Theme, label string, onClick func()) {
-	button := ui.ButtonBase(c).Height(30).MinWidth(30).Padding(0, 10).Radius(8).
-		Border(1, t.Border).Cursor(ui.CursorPointer).Shrink(0)
-	pressFeedback(button, t)
-	button.Children(func() {
-		ui.Text(c, label).FontSize(13)
-	})
-	if button.Clicked() {
-		onClick()
-	}
 }

@@ -334,7 +334,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return dir + "/" + name + "-" + String(Int(Date().timeIntervalSince1970)) + "." + ext  // 兜底
     }
 
-    // 内嵌引擎：本 app Resources/zpack（宿主自身 bundle）
+    // 内嵌引擎：本 app Resources/zpack-cli（宿主自身 bundle；旧名 zpack 兜底）
     private func hostedZpackPath() -> String {
         // 2026-11-24 引擎改名 zpack-cli；旧名 zpack 兜底
         let resourcePath = Bundle.main.path(forResource: "zpack-cli", ofType: nil)
