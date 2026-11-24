@@ -892,6 +892,14 @@ func (a *app) browseFiles() {
 	}()
 }
 
+// browseCompressDir 选择一个文件夹并入压缩清单。对话框同样必须在 goroutine 里发起（见 browseFiles）；
+// 选到的文件夹由引擎以目录名为根前缀整树打包
+func (a *app) browseCompressDir() {
+	a.toolBrowse("选择要压缩的文件夹", true, func(path string) {
+		a.addInputs([]string{path})
+	})
+}
+
 // browseOutDir 选择保存目录（对话框 Directory 模式）——必须在 goroutine
 // 里发起：Dialog.Open 阻塞等待选窗，帧构建闭包里同步调会把主 goroutine
 // 卡进嵌套事件泵、面板失灵（browseFiles 同款教训）。
@@ -1126,9 +1134,7 @@ func (a *app) heroPane(c *ui.Context) {
 		}, t)
 	case pageBurn:
 		hero(c, "拖入镜像或文件夹刻录", "CD · DVD · 蓝光；默认可追加", func() {
-			if ui.Button(c, "浏览选择…").Cursor(ui.CursorPointer).Clicked() {
-				a.browseBurnFiles()
-			}
+			heroActions(c, t, func() { a.browseBurnFiles() }, func() { a.browseBurnDir() })
 		}, t)
 	case pageTasks:
 		hero(c, "还没有任务", "从压缩台开始，或直接把文件拖进窗口", nil, t)
@@ -1140,11 +1146,21 @@ func (a *app) heroPane(c *ui.Context) {
 		}, t)
 	default:
 		hero(c, "拖入文件或文件夹", "支持多选，默认保存在文件旁，同名自动加序号", func() {
-			if ui.Button(c, "浏览选择…").Cursor(ui.CursorPointer).Clicked() {
-				a.browseFiles()
-			}
+			heroActions(c, t, func() { a.browseFiles() }, func() { a.browseCompressDir() })
 		}, t)
 	}
+}
+
+// heroActions 空态 hero 的动作行：主按钮「浏览选择…」（选文件）+ 幽灵钮「选择文件夹…」。
+// 多选对话框选不到文件夹，所以能收文件夹的两页（压缩台、刻录）在空态就把两个入口都摆出来
+// （2026-11-24 补：此前空态下文件夹只能靠拖拽）
+func heroActions(c *ui.Context, t *ui.Theme, browse func(), pickDir func()) {
+	ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
+		if ui.Button(c, "浏览选择…").Cursor(ui.CursorPointer).Clicked() {
+			browse()
+		}
+		leadDirPickButton(c, t, pickDir)
+	})
 }
 
 // hero 单个空态邀请块：标题 + 副文案 +（可选动作按钮），垂直居中且
@@ -1173,11 +1189,14 @@ func (a *app) pageCompress(c *ui.Context) {
 	}
 	column.Children(func() {
 		// 引导行（用户定案文案）：清单头行=状态句 + 整句按钮「点击此处浏览」
-		//（弹 Finder 选择框 browseFiles()）——首行间距全 app 统一（m05764）
-		ui.Row(c).Padding(14, 0, 4, 0).Gap(8).AlignItems(ui.Center).Children(func() {
+		//（弹 Finder 选择框 browseFiles()）——首行间距全 app 统一（m05764）。
+		// 「选择文件夹…」2026-11-24 补上（刻录页同款）：此前文件夹只能靠拖拽加入。
+		// 引导行放不下才换行（同刻录页，2026-11-23 用户定案）：多一个按钮之后，最小窗口里不换行会把句子挤成竖条
+		ui.Row(c).Padding(14, 0, 4, 0).Gap(8).AlignItems(ui.Center).Wrap().Children(func() {
 			ui.Text(c, "已准备的压缩归档 "+itoa(len(a.inputs))+" 项共 "+humanSize(a.totalSize())+"，可拖拽加入或").
-				FontSize(13).TextColor(t.TextMuted)
+				FontSize(13).TextColor(t.TextMuted).Basis(LEAD_SENTENCE_MIN_WIDTH).Grow(1)
 			leadBrowseButton(c, t, "浏览选择…", func() { a.browseFiles() })
+			leadDirPickButton(c, t, func() { a.browseCompressDir() })
 		})
 
 		// 已选清单：单卡片列表（用户定案）——拖拽排序换框架组件 ui.List
@@ -1959,6 +1978,23 @@ func leadBrowseButton(c *ui.Context, t *ui.Theme, label string, onClick func()) 
 		ui.Text(c, label).FontSize(13).TextColor(t.Accent)
 	})
 	if button.Clicked() {
+		onClick()
+	}
+}
+
+// leadDirPickButton 引导行的「选择文件夹…」幽灵钮：透明底 + 文件夹图标 + 灰字，悬停 / 按下有反馈。
+// 文件多选对话框选不到文件夹（Finder 与 Windows 的通用对话框都如此），所以文件夹另给一个入口。
+// 压缩台与刻录页共用（压缩台 2026-11-24 补上，此前文件夹只能靠拖拽加入）
+func leadDirPickButton(c *ui.Context, t *ui.Theme, onClick func()) {
+	dirPick := ui.ButtonBase(c).Height(24).Padding(0, 10).Radius(7).Gap(4).
+		AlignItems(ui.Center).Cursor(ui.CursorPointer).
+		Background(ui.RGBA(0, 0, 0, 0)).Border(0, t.Border)
+	pressFeedback(dirPick, t)
+	dirPick.Children(func() {
+		ui.Image(c, iconFolder).Size(13, 13)
+		ui.Text(c, "选择文件夹…").FontSize(13).TextColor(t.TextMuted)
+	})
+	if dirPick.Clicked() {
 		onClick()
 	}
 }
@@ -5610,17 +5646,7 @@ func (a *app) pageBurn(c *ui.Context) {
 			ui.Text(c, "已准备的刻录内容 "+itoa(len(a.burnInputs))+" 项，可拖拽加入或").
 				FontSize(13).TextColor(t.TextMuted).Basis(LEAD_SENTENCE_MIN_WIDTH).Grow(1)
 			leadBrowseButton(c, t, "浏览选择…", func() { a.browseBurnFiles() })
-			dirPick := ui.ButtonBase(c).Height(24).Padding(0, 10).Radius(7).Gap(4).
-				AlignItems(ui.Center).Cursor(ui.CursorPointer).
-				Background(ui.RGBA(0, 0, 0, 0)).Border(0, t.Border)
-			pressFeedback(dirPick, t)
-			dirPick.Children(func() {
-				ui.Image(c, iconFolder).Size(13, 13)
-				ui.Text(c, "选择文件夹…").FontSize(13).TextColor(t.TextMuted)
-			})
-			if dirPick.Clicked() {
-				a.browseBurnDir()
-			}
+			leadDirPickButton(c, t, func() { a.browseBurnDir() })
 			if len(a.burnInputs) > 0 {
 				if ui.Button(c, "清空").FontSize(13).Height(22).Padding(0, 8).
 					TextColor(t.TextMuted).Cursor(ui.CursorPointer).Clicked() {

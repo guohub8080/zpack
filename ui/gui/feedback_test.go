@@ -95,6 +95,8 @@ func feedbackTargets(sample feedbackSamples) []feedbackTarget {
 	withPhoto := func(a *app) { a.imageCmpInputs = []string{sample.photo} }
 	return []feedbackTarget{
 		{(*app).pageCompress, "浏览选择…", "压缩台·引导行浏览钮", withCompress, false},
+		{(*app).pageCompress, "选择文件夹…", "压缩台·引导行文件夹钮", withCompress, false},
+		{(*app).heroPane, "选择文件夹…", "压缩台·空态文件夹钮", func(a *app) { a.page = pageCompress }, false},
 		{(*app).pageCompress, "选择", "压缩台·保存位置选择钮", withCompress, false},
 		{(*app).pageCompress, ".zip", "压缩台·后缀下拉触发器", withCompress, false},
 		{(*app).pageCompress, "无动作", "压缩台·完成后下拉触发器", withCompress, false},
@@ -159,6 +161,7 @@ func feedbackTargets(sample feedbackSamples) []feedbackTarget {
 		{(*app).pageBurn, sample.manual, "刻录·清单行（拖拽把手）", sample.withDevice(), true},
 		{(*app).pageBurn, "浏览选择…", "刻录·引导行浏览钮", sample.withDevice(), false},
 		{(*app).pageBurn, "选择文件夹…", "刻录·引导行文件夹钮", sample.withDevice(), false},
+		{(*app).heroPane, "选择文件夹…", "刻录·空态文件夹钮", func(a *app) { a.page = pageBurn }, false},
 		{(*app).pageBurn, "清空", "刻录·引导行清空钮", sample.withDevice(), false},
 		{(*app).pageBurn, "刷新", "刻录·刷新钮", sample.withDevice(), false},
 		{(*app).pageBurn, "可追加", "刻录·写入模式下拉", sample.withDevice(), false},
