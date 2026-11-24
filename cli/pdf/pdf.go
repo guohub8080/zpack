@@ -48,9 +48,62 @@ func runPdf(args []string) {
 		pdfInfo(restArgs)
 	case "render":
 		pdfRender(restArgs)
+	case "collect":
+		pdfCollect(restArgs)
 	default:
-		stdout.ErrorPrint("用法: pdf merge <1.pdf 2.pdf [3.pdf...]> <输出.pdf>\n或: pdf extract <输入.pdf> [--pages 1-3,5,8-] [--output 输出.pdf]\n或: pdf resize <输入.pdf> --size a4|letter|210x297mm [--pages 1-3] [--force] [--output 输出.pdf]\n或: pdf rotate-left|rotate-right|rotate-180 <输入.pdf> [--pages 1-3] [--output 输出.pdf]\n或: pdf info <输入.pdf>\n或: pdf render <输入.pdf> [--pages 1-3,5] [--dpi 96] [--format png|jpg] [--output 目录]")
+		stdout.ErrorPrint("用法: pdf merge <1.pdf 2.pdf [3.pdf...]> <输出.pdf>\n或: pdf extract <输入.pdf> [--pages 1-3,5,8-] [--output 输出.pdf]\n或: pdf resize <输入.pdf> --size a4|letter|210x297mm [--pages 1-3] [--force] [--output 输出.pdf]\n或: pdf rotate-left|rotate-right|rotate-180 <输入.pdf> [--pages 1-3] [--output 输出.pdf]\n或: pdf info <输入.pdf>\n或: pdf render <输入.pdf> [--pages 1-3,5] [--dpi 96] [--format png|jpg] [--output 目录]\n或: pdf collect <输入.pdf> --pages <保序页表,可重复> [--output 输出.pdf]")
 	}
+}
+
+// pdfCollect 按给定页序收集出新 PDF（保序、可重复——编辑器重排导出的原语；
+// 与 extract 的升序去重语义刻意不同，见 specs/pdf.md）
+func pdfCollect(args []string) {
+	var positional []string
+	pagesSpec := ""
+	var outputPath string
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		arg := args[argIndex]
+		switch {
+		case arg == "--pages":
+			if argIndex+1 >= len(args) {
+				stdout.ErrorPrint("--pages 需要一个页序列参数（保序、可重复，如 3,1,2 或 1-3,1）")
+			}
+			pagesSpec = args[argIndex+1]
+			argIndex++
+		case arg == "--output":
+			if argIndex+1 >= len(args) {
+				stdout.ErrorPrint("--output 需要一个输出路径参数")
+			}
+			outputPath = args[argIndex+1]
+			argIndex++
+		case !strings.HasPrefix(arg, "-"):
+			positional = append(positional, arg)
+		}
+	}
+	if len(positional) != 1 || pagesSpec == "" {
+		stdout.ErrorPrint("用法: pdf collect <输入.pdf> --pages <保序页表> [--output 输出.pdf]\n页表保序、可重复（3,1,2 按此序收集；2,2 收集两份）——与 extract 的升序去重刻意不同")
+	}
+	inputPath, _ := filepath.Abs(positional[0])
+	if _, statErr := os.Stat(inputPath); statErr != nil {
+		stdout.ErrorPrint("路径不存在：" + inputPath)
+	}
+	pageCount, countErr := engine.CountPages(inputPath)
+	if countErr != nil {
+		stdout.ErrorPrint(countErr.Error())
+	}
+	sequence, seqErr := engine.ParsePageSequence(pagesSpec, pageCount)
+	if seqErr != nil {
+		stdout.ErrorPrint(seqErr.Error())
+	}
+	if outputPath == "" {
+		outputPath = strings.TrimSuffix(positional[0], filepath.Ext(positional[0])) + "-collect.pdf"
+	}
+	absoluteOutput, _ := filepath.Abs(outputPath)
+	result, collectErr := engine.CollectFile(inputPath, absoluteOutput, sequence)
+	if collectErr != nil {
+		stdout.ErrorPrint(collectErr.Error())
+	}
+	stdout.JSONPrint(result)
 }
 
 // pdfRender 页面渲染为图片（MuPDF 引擎，cgo 分层 stub——纯构建报「需完整版」）

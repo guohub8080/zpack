@@ -275,6 +275,7 @@ const (
 	pageOffice     = "office"
 	pagePdfRotate  = "pdfrotate"
 	pagePdfResize  = "pdfresize"
+	pagePdfEditor  = "pdfeditor"
 	pageHash       = "hash"
 	pageRandom     = "random"
 	pageArchive    = "archive"
@@ -289,6 +290,9 @@ type app struct {
 	page      string
 	service   *Service
 	themeMode int // 外观态：themeModeSystem/Light/Dark（gui-settings.json 持久化，见 appearance.go）
+
+	// PDF 页面编辑器（specs/gui.md 2.12——画布页，懒创建）
+	pdfEd *pdfEditorState
 
 	// 用户反馈（异步 toast 队列——帧外 goroutine/回调入队，pane 帧首 drain，见 sniff.go）
 	pendingToasts []string
@@ -441,6 +445,7 @@ type app struct {
 	burnInputs     []string // 刻录内容清单（任意数量文件/文件夹，2026-11-22 用户定案）
 	burnDevices    []BurnDevice
 	burnDevStr     string
+	burnDevLast    string  // 上一帧选中的刻录机——变了就复位「先擦空再烧」（syncBurnDeviceSwitch）
 	burnModeStr    string  // 可追加（multi 不封盘）/ 一次性烧录（mastered 封盘）
 	burnSpeedIdx   float64 // 刻录速度档：0=自动；1-6 → 4/8/16/24/32/48x
 	burnBlank      bool
@@ -569,6 +574,7 @@ func (a *app) sidebar(c *ui.Context, bar ui.TitleBar, controlsLeft bool) {
 			a.navItem(c, pageOffice, iconDoc, "Office 转换", &page, 0)
 			a.navItem(c, pagePdfRotate, iconDoc, "PDF 旋转", &page, 0)
 			a.navItem(c, pagePdfResize, iconDoc, "页面尺寸", &page, 0)
+			a.navItem(c, pagePdfEditor, iconDoc, "PDF 页面编辑", &page, 0)
 			a.navSectionHeader(c, "加密与编码")
 			a.navItem(c, pageKeys, iconKey, "生成密钥", &page, 0)
 			a.navItem(c, pageEncrypt, iconLock, "加密", &page, 0)
@@ -763,6 +769,8 @@ func (a *app) pane(c *ui.Context, bar ui.TitleBar, controlsRight bool) {
 					a.pagePdfRotate(c)
 				case pagePdfResize:
 					a.pagePdfResize(c)
+				case pagePdfEditor:
+					a.pagePdfEditor(c)
 				case pageHash:
 					a.pageHash(c)
 				case pageRandom:
@@ -857,6 +865,8 @@ func pageTitle(p string) string {
 		return "PDF 旋转"
 	case pagePdfResize:
 		return "页面尺寸"
+	case pagePdfEditor:
+		return "PDF 页面编辑"
 	case pageHash:
 		return "文件哈希"
 	case pageRandom:
@@ -5574,6 +5584,16 @@ func (a *app) burnRefreshDevices() {
 	a.win.Invalidate()
 }
 
+// syncBurnDeviceSwitch 换选刻录机（或刷新后重新枚举、选中项变了）就复位「先擦空再烧」。
+// 开关只在可擦写介质上出现：在可擦写的那台上打开后换选另一台，开关不见了、值却还在——照传 --blank
+// 会把没打算擦的盘擦掉，而擦除不可逆（2026-11-24 修复；gui spec 9.2 第 6 条）
+func (a *app) syncBurnDeviceSwitch() {
+	if a.burnDevStr != a.burnDevLast {
+		a.burnDevLast = a.burnDevStr
+		a.burnBlank = false
+	}
+}
+
 // burnSelectedDevice 当前选中的刻录机（下拉选中项按显示名对应；没选中返回零值与 false）
 func (a *app) burnSelectedDevice() (BurnDevice, bool) {
 	for _, device := range a.burnDevices {
@@ -5730,6 +5750,8 @@ func (a *app) pageBurn(c *ui.Context) {
 				ui.Box(c).Grow(1)
 			})
 		})
+
+		a.syncBurnDeviceSwitch()
 
 		// 光盘名称（2026-11-24 用户定案）：只有空白盘能起名，已有内容的盘沿用盘上名称。
 		// 非空白态不摆灰掉的输入框，直接一句话说清为什么不能改。输入框与分卷大小、码率等

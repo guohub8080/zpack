@@ -185,3 +185,32 @@ func TestBurnModeHint(t *testing.T) {
 		}
 	}
 }
+
+// TestBurnBlankResetsOnDeviceSwitch 换选刻录机时「先擦空再烧」必须复位：开关只在可擦写介质上出现，
+// 在可擦写的那台上打开后换选另一台，开关不见了、值却还在——照传 --blank 会把没打算擦的盘擦掉（2026-11-24 修复）
+func TestBurnBlankResetsOnDeviceSwitch(t *testing.T) {
+	registerMiSans()
+	application := newApp()
+	application.burnQueried = true // 不触发设备枚举（无头环境下枚举回调没有主循环可投递）
+	application.burnInputs = []string{"/tmp/备份.iso"}
+	application.burnDevices = []BurnDevice{
+		{Index: 0, Path: "E:\\", Vendor: "lenovo", Product: "DVD 刻录机", Media: "DVD-RW", Status: "appendable"},
+		{Index: 1, Path: "F:\\", Vendor: "lenovo", Product: "DVD 刻录机", Media: "DVD-R", Status: "appendable"},
+	}
+	application.burnDevStr = burnDeviceLabel(application.burnDevices[0])
+	tester := ui.NewTester(func(c *ui.Context) {
+		c.SetTheme(brandTheme(c))
+		application.pageBurn(c)
+	}, FEEDBACK_WINDOW_WIDTH, FEEDBACK_WINDOW_HEIGHT)
+	tester.Frame()
+	application.burnBlank = true // 在可擦写的那台上打开了开关
+	tester.Frame()
+	if !application.burnBlank {
+		t.Fatal("同一台刻录机上开关应保持打开")
+	}
+	application.burnDevStr = burnDeviceLabel(application.burnDevices[1]) // 换选一次写入的盘
+	tester.Frame()
+	if application.burnBlank {
+		t.Fatal("换选刻录机后「先擦空再烧」应复位——否则 --blank 会照传给没打算擦的盘")
+	}
+}
