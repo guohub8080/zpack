@@ -80,7 +80,7 @@ stdout 上**有且只有一个最终输出**，三种信封（`internal/stdout/l
 
 stderr 是过程日志，调用方可以整体忽略（`2>/dev/null`），不影响对结果的判断。
 
-- 格式统一：`[YYYY-MM-DD HH:MM:SS] 消息内容`（本地时间）。没有级别标签——单级类别是零信息装饰；标签位为将来的例外级（如 WARN）预留，出现标签本身就是信号。
+- 格式统一：`[YYYY-MM-DD HH:MM:SS] 消息内容`（本地时间）。**没有级别标签是常态**——单级类别是零信息装饰。唯一的例外是**警告**：`[YYYY-MM-DD HH:MM:SS] [WARN] 消息内容`（`LoggerWarn`），只用于「操作会照常继续，但后果不可逆、又不直观」的提醒。出现标签本身就是信号：调用方可以只盯着 `[WARN]` 看，人也能一眼从滚动的日志里把它挑出来；所以不要拿它记普通提示。首例是往有数据的盘写镜像（burn.md 3.4）。
 - **统一开始日志**：每个命令入口 stderr 恒有一行 `zpack <命令名> 开始执行`，由装配层（`cli/root.go` 的 `PersistentPreRun`）一处约束全部命令，命令代码不各自输出。**只记命令名、绝不记参数**——参数可能含密码或密钥，落终端或日志即泄密。
 - 进度条：操作耗时超过 5 秒时每 5 秒采样一次，格式如 `压缩中 ███████░░░░ 25.0% | 500.0MB/2.0GB | 100.0MB/s | 1/4 文件 | 剩余 15秒`；5 秒内完成的操作不输出进度。
 - 各功能特有的过程日志（GBK 名修复、跳过已存在、分卷创建、刻录心跳等）见各自的 spec。
@@ -122,11 +122,11 @@ zpack compress 目录/ --output out.zip > /dev/null 2>&1 && echo "OK" || echo "F
 
 | 部分 | 路径 | 说明 |
 |---|---|---|
-| 输出契约层 | `internal/stdout/log.go` | 信封编码、五个 print 函数、过程日志 |
+| 输出契约层 | `internal/stdout/log.go` | 信封编码、五个 print 函数、过程日志（`LoggerInfo` 无标签；`LoggerWarn` 带 `[WARN]`，行由纯函数 `warnLogLine` 拼） |
 | 旗标小件 | `internal/cmdutil/flags.go` | `HasFlag` / `FlagValue` / `ParseIntStrict` / `FirstPositional`（纯逻辑，引擎也能引用） |
 | 命令面公共底座 | `internal/cliutil/` | `help.go`（HelpAwareRun）、`cliutil.go`（RestAfterPositional / FileOutputJSON）、`logf.go`（StderrLogf / EngineLogf）；依赖 cobra 与输出层，只给命令面用 |
 | 装配与信号 | `cli/root.go` | `Execute`、统一开始日志、Ctrl+C 处理；命令实现都在 `cli/` 的功能子包里 |
-| 单测 | `internal/stdout/log_test.go`、`internal/cmdutil/flags_test.go` | 原子输出、严格整数解析 |
+| 单测 | `internal/stdout/log_test.go`、`internal/cmdutil/flags_test.go` | 原子输出、严格整数解析、警告行的格式 |
 
 命令面按功能分子包：`cli/archive`、`cli/burn`、`cli/crypto`、`cli/image`、`cli/media`（视频 + 音频 + ffmpeg 代理）、`cli/office`、`cli/pdf`、`cli/tools`。子包里引入引擎一律用别名 `engine`（如 `engine "github.com/guohub8080/zpack/core"`），所以命令面代码里统一写 `engine.X`。
 
@@ -148,3 +148,4 @@ zpack compress 目录/ --output out.zip > /dev/null 2>&1 && echo "OK" || echo "F
 | 2026-11-24 | 初版：从代码与 AGENTS.md 整理 | fb313db |
 | 2026-11-24 | 数值严格校验补漏：crypto / bench 改用 `ParseIntStrict`（此前 `--length 5abc` 被当成 5） | 6016f9b |
 | 2026-11-24 | 命令面按功能拆子包；过程日志去向改为按调用参数判定，pdf / audio 的 `--quiet` 生效 | 6d31586、40fb9e7 |
+| 2026-11-24 | 启用一直预留着的警告级别：`[WARN]` 标签行（`LoggerWarn`），只给「照常继续、后果不可逆且不直观」的提醒用；首例是往有数据的盘写镜像（burn.md 3.4） | （提交后回填） |

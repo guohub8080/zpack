@@ -101,3 +101,64 @@ func TestBurnBlockedByMedia(t *testing.T) {
 		}
 	}
 }
+
+// TestBurnImageCaution 镜像 + 已有内容的盘才提醒（表驱动）：空白盘、文件夹、勾了「先擦空再烧」、
+// 判不出状态的盘都不提醒
+func TestBurnImageCaution(t *testing.T) {
+	cases := []struct {
+		name   string
+		status string
+		inputs []string
+		erase  bool
+		want   string // 期望的提醒；空串=不提醒
+	}{
+		{"镜像 + 可追加的盘：提醒", "appendable", []string{"a.ISO"}, false, BURN_IMAGE_ON_USED_DISC_CAUTION},
+		{"镜像 + 空白盘", "blank", []string{"a.iso"}, false, ""},
+		{"镜像 + 勾了先擦空再烧：擦完是空白盘", "appendable", []string{"a.iso"}, true, ""},
+		{"文件夹 + 可追加的盘（会导入上一区段）", "appendable", []string{"备份"}, false, ""},
+		{"macOS 有盘时状态为空：判不出有没有数据，不提醒", "", []string{"a.iso"}, false, ""},
+		{"已封盘的盘：反正会被拦", "full", []string{"a.iso"}, false, ""},
+	}
+	for _, testCase := range cases {
+		if got := burnImageCaution(testCase.status, testCase.inputs, testCase.erase); got != testCase.want {
+			t.Errorf("%s: 提醒 %q ≠ %q", testCase.name, got, testCase.want)
+		}
+	}
+}
+
+// TestBurnImageCautionRow 刻录页的「写入提醒」行：镜像 + 已有内容的盘时出现，换成空白盘就消失；
+// 副标在标签列里恒一行。不拦截——主按钮照常可点
+func TestBurnImageCautionRow(t *testing.T) {
+	registerMiSans()
+	application := newApp()
+	application.burnQueried = true // 不触发设备枚举（无头环境下枚举回调没有主循环可投递）
+	application.burnInputs = []string{"/tmp/备份.iso"}
+	application.burnDevices = []BurnDevice{{Index: 0, Path: "E:\\", Vendor: "lenovo", Product: "UltraslimDVD", Status: "appendable"}}
+	application.burnDevStr = burnDeviceLabel(application.burnDevices[0])
+	tester := ui.NewTester(func(c *ui.Context) {
+		c.SetTheme(brandTheme(c))
+		application.pageBurn(c)
+	}, FEEDBACK_WINDOW_WIDTH, FEEDBACK_WINDOW_HEIGHT)
+	tester.Frame()
+	if !tester.HasText("这张盘已有内容。镜像是原样写进新区段的") {
+		t.Fatal("镜像 + 已有内容的盘应有「写入提醒」")
+	}
+	if hint, found := tester.Find("镜像不合并"); !found || hint.H >= HINT_ONE_LINE_TOP {
+		t.Errorf("副标应存在且恒一行: found=%v 高=%.0f", found, hint.H)
+	}
+	if start, found := tester.Find("刻录"); !found {
+		t.Fatal("提醒不拦截：主按钮应仍是「刻录」")
+	} else {
+		tester.Move(start.X+start.W/2, start.Y+start.H/2)
+		tester.Frame()
+		if tester.Cursor() != ui.CursorPointer {
+			t.Error("提醒不拦截：主按钮应可点")
+		}
+	}
+	application.burnDevices[0].Status = "blank"
+	application.burnDevStr = burnDeviceLabel(application.burnDevices[0])
+	tester.Frame()
+	if tester.HasText("这张盘已有内容。镜像是原样写进新区段的") {
+		t.Error("空白盘不应有「写入提醒」")
+	}
+}

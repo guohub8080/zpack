@@ -112,3 +112,26 @@ func TestBurnMediaRefusal(t *testing.T) {
 		}
 	}
 }
+
+// TestBurnImageOnUsedDiscWarning 镜像输入遇到非空白盘才警告（表驱动）：空白盘不警告，
+// 目录 / 多输入会导入上一区段、原有文件保持可见，也不警告
+func TestBurnImageOnUsedDiscWarning(t *testing.T) {
+	blank := imapi2.Media{Type: imapi2.MEDIA_TYPE_DVDDASHR, HeuristicallyBlank: true}
+	used := imapi2.Media{Type: imapi2.MEDIA_TYPE_DVDDASHR}
+	cases := []struct {
+		name   string
+		inputs []string
+		media  imapi2.Media
+		want   string // 期望的警告；空串=不警告
+	}{
+		{"镜像写进有数据的盘：警告后允许", []string{"a.ISO"}, used, BURN_IMAGE_ON_USED_DISC_WARNING},
+		{"镜像写进空白盘", []string{"a.iso"}, blank, ""},
+		{"目录写进有数据的盘（会导入上一区段）", []string{"目录"}, used, ""},
+		{"多输入不警告（里面有镜像的组合在入口就被拒）", []string{"a.iso", "b"}, used, ""},
+	}
+	for _, testCase := range cases {
+		if got := burnImageOnUsedDiscWarning(testCase.inputs, testCase.media); got != testCase.want {
+			t.Errorf("%s: 警告 %q ≠ %q", testCase.name, got, testCase.want)
+		}
+	}
+}

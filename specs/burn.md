@@ -187,7 +187,7 @@
 
 ### 3.4 stderr 过程日志
 
-格式遵循 conventions.md（`[YYYY-MM-DD HH:MM:SS] 消息`）。本功能会输出：
+格式遵循 conventions.md（`[YYYY-MM-DD HH:MM:SS] 消息`；警告带 `[WARN]` 标签）。本功能会输出：
 
 | 日志 | 平台 | 何时 |
 |---|---|---|
@@ -196,6 +196,7 @@
 | `介质: <类型>（<状态>），剩余 <容量>` | Windows | 读到介质之后 |
 | `快速擦除光盘…` | Windows | 带了 `--blank` 且介质可擦写 |
 | `擦除中… 已用 N 秒` | Windows | 擦除期间，每 5 秒一条 |
+| `[WARN] 这张盘已有内容，而镜像是原样写进新区段的，不会与盘上原有文件合并——…`（全文见 4.1.3） | Windows | **镜像输入，且盘不是空白**（擦除之后重读再判）。只警告、不拦截，照常写入 |
 | `写入速度: N×` / `写入速度: 请求 N× 超出当前介质/刻录机支持的范围，按 M× 刻录` / `写入速度设置未生效（<原因>），按刻录机默认速度刻录` | Windows | 给了 `--speed` |
 | `镜像文件: <绝对路径>（<大小>）` | Windows | 镜像输入 |
 | `光盘名称: <名称>` | Windows | 目录 / 多输入，且最终使用的卷标非空 |
@@ -267,7 +268,7 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 | 3 | 写入前检查（4.3 的拒绝表） | 拒绝，不碰盘 |
 | 4 | 带了 `--blank`：介质不可擦写 → 报错；可擦写 → **快速擦除** → **重读介质** → 再过一遍拒绝检查（这次按「不带 `--blank`」判） | 擦除失败或复查仍异常 → 报错，不写入 |
 | 5 | 给了 `--speed`：落到支持的档位并设置（4.1.7） | 设置失败只记日志，按刻录机默认速度继续 |
-| 6 | 准备数据流（见下） | 报错 |
+| 6 | 准备数据流（见下）；在此之前，镜像是输入而盘不是空白时先打一条 `[WARN]`（4.1.3）——只警告，不拦 | 报错 |
 | 7 | 容量预检：待写字节数 > 剩余空间 → 「内容大小 … 超过光盘剩余空间 …」 | 报错，不写入 |
 | 8 | 设置是否封盘（`ForceMediaToBeClosed`） | 报错 |
 | 9 | 写入（阻塞到完成，期间每 5 秒一条心跳） | 「写入光盘失败: …」 |
@@ -276,6 +277,13 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 第 6 步「准备数据流」按输入形态分两条路（`burnWindowsSource`，cli/burn/burn_windows.go:219-284）：
 
 - **镜像输入**：把文件打开成只读的系统文件流，整个文件原样交给写入器。**不走镜像库，不导入上一区段，不使用卷标**——盘上卷标就是镜像自带的。
+  - **写进有数据的盘时先警告、再照常写入**（2026-11-24 用户拍板：警告后允许，不拦截——想故意这么刻的人不该被拦）。警告全文（`BURN_IMAGE_ON_USED_DISC_WARNING`，cli/burn/burn_windows.go）：
+
+    > 这张盘已有内容，而镜像是原样写进新区段的，不会与盘上原有文件合并——写入后电脑上通常只看得到镜像里的文件，原有文件虽没被擦掉，但一般工具读不到。要把新内容追加到原有文件之后，请改用目录或文件作为输入；要保留原有文件可见，请换一张空白盘
+
+  - 判定条件：恰一个输入且是镜像，并且介质不是「启发式空白」。带了 `--blank` 时在擦除、重读介质**之后**才判——擦完的盘是空白的，不警告。
+  - 为什么原文文件会看不到：镜像自带一套完整的文件系统，原样落在新区段的起点上；操作系统挂载光盘时读的是**最后一个区段**里的文件系统，它并不认识上一个区段里的文件。数据物理上还在，只是一般的工具读不到（IsoBuster 这类按区段浏览的工具可以）。「通常」「一般工具」是有意留的余地——这个行为**没有实盘验证过**（第 9 节【待确认】#4）。
+  - macOS / Linux 没有这条警告：这两个平台的 `burn` 不读介质状态，不知道盘是不是空白（第 5 节）。同样的后果在那两个平台上一样存在。
 - **目录 / 多输入**：经 `IFileSystemImage` 在内存里建镜像的目录结构，文件内容在写入时才从磁盘按需读取，不落临时文件。
   - 文件系统：ISO9660 + Joliet + UDF 三种全建，限于当前介质与多区段类型支持的范围（internal/imapi2/engine_windows.go:375-379）。
   - 多区段：盘不是「启发式空白」时导入上一区段（`ImportFileSystem`），旧文件在新区段里保持可见（internal/imapi2/engine_windows.go:359-383）。
@@ -436,9 +444,10 @@ macOS / Linux 上刻录命令（`hdiutil burn` / `xorriso -as cdrecord`）自己
 | 设备枚举 | `IDiscMaster2` 取刻录机，数据写入器读介质状态 | `drutil list` + `drutil status` | `xorriso -devices` + 逐台 `-toc` |
 | `path` 字段 | 盘符（`E:\`）；没有挂载点时是引擎唯一标识 | 空串 | 设备路径（`/dev/sr0`） |
 | 能报出的 status | `blank` `appendable` `full` `no-media` `damaged` `erase-required` `write-protected` `unsupported` `unrecognized` `unknown` | 只有 `no-media`（有盘时不报） | `blank` `appendable` `full` `no-media`；认不出的短语原样透传 |
+| 镜像写进有数据的盘时的 `[WARN]` | 有（4.1.3） | 没有：刻录流程不读介质状态，不知道盘是不是空白 | 没有：同左 |
 | 目录 / 多输入 | 系统镜像库流式生成后直烧，无临时 ISO | `hdiutil makehybrid` 产临时 ISO；多输入先聚舞台（目录逐文件硬链接克隆） | `xorriso -as mkisofs` 产临时 ISO；多输入先聚舞台（目录挂符号链接 + `-f`） |
 | 镜像输入 | 系统文件流直烧 | `hdiutil burn` | `xorriso -as cdrecord` |
-| 追加时导入上一区段 | 引擎 `ImportFileSystem`，旧文件在新视图里可见（实测） | 不导入。旧文件在新视图里是否可见【待确认】 | 不导入（没有用 mkisofs 的 `-M`）。旧文件在新视图里是否可见【待确认】 |
+| 追加时导入上一区段 | 目录 / 多输入：引擎 `ImportFileSystem`，旧文件在新视图里可见（实测）。镜像输入不导入，写进有数据的盘时先警告（4.1.3） | 不导入。旧文件在新视图里是否可见【待确认】 | 不导入（没有用 mkisofs 的 `-M`）。旧文件在新视图里是否可见【待确认】 |
 | 缺省卷标 | 目录名 / 当前目录名，**可以用中文** | 目录名 / 当前目录名，只保留 `A-Z` `0-9` `_` | 同 macOS |
 | 显式 `--volid` | 温和规范化后生效 | 没有传给任何工具，没有效果【待确认】 | 原样作 `-volid` 交给 mkisofs |
 | 追加区段沿用盘上名称 | 是（以 Windows 显示的卷标为准） | 否 | 否 |
@@ -645,7 +654,7 @@ GUI 不直连引擎，全部经这两条命令的 stdout JSON 驱动（见 gui s
 
 ### 6.15 改动时容易破坏的东西
 
-- **`burnMediaRefusal` 的判定顺序**。封盘 → 只读类型 + 写保护 → 写保护 → 损坏 → 半截区段 → 须先擦除 → 不支持 → 写入器不支持。顺序一变，同一个状态位组合会报出不同的文案（比如 `DAMAGED | UNSUPPORTED` 现在报「状态异常…请换一张空白盘」，而 `burn devices` 报的是 `unsupported`——两处顺序本来就不完全一致，是有意为之还是巧合【待确认】）。
+- **`burnMediaRefusal` 的判定顺序**。认不出 → 封盘 → 只读类型 + 写保护 → 写保护 → 损坏 → 半截区段 → 须先擦除 → 不支持 → 写入器不支持。「认不出」排在一切状态位之前：它的类型与状态位都不可信（2026-11-24 用户拍板）。顺序一变，同一个状态位组合会报出不同的文案（比如 `DAMAGED | UNSUPPORTED` 现在报「状态异常…请换一张空白盘」，而 `burn devices` 报的是 `unsupported`——两处顺序本来就不完全一致，是有意为之还是巧合【待确认】）。
 - **`StatusName` 的优先级**：`full` 要压过其他位；「只读类型 + 写保护」必须判成 `full` 而不是 `write-protected`，否则封盘的一次写入盘会在 `burn devices` 里显示成写保护、在 GUI 里不被 `burnBlockReason` 以「已封盘」拦截。
 - **追加区段不沿用卷标**：`burnWindowsSource` 里「没给 `--volid` 且盘非空白 → 卷标置空」这一句，以及 `applyVolumeName` / `chooseVolumeName`，任何一处改动都可能让盘名变回时间戳或乱码（6.6）。没有 Windows 卷标可读时不要硬写。
 - **任何异常状态走到 `Write`**：新增写路径必须先过 `burnMediaRefusal`（6.5）。
@@ -722,10 +731,12 @@ GUI 不直连引擎，全部经这两条命令的 stdout JSON 驱动（见 gui s
 | `TestBurnResolveVolumeName` | 缺省卷标的来源规则（表驱动） |
 | `TestBurnWindowsVolumeName`（仅 Windows） | Windows 卷标规范化（表驱动） |
 | `TestBurnDeviceEntry`（仅 Windows） | 引擎设备条目 → 输出契约条目 |
-| `TestBurnMediaRefusal`（仅 Windows） | 写入前拒绝的 13 种组合（表驱动） |
+| `TestBurnMediaRefusal`（仅 Windows） | 写入前拒绝的 15 种组合（表驱动） |
+| `TestBurnImageOnUsedDiscWarning`（仅 Windows） | 镜像 + 非空白盘才警告；空白盘、目录、多输入不警告（表驱动） |
+| `internal/stdout` 的 `TestWarnLogLine` | 警告行带 `[WARN]` 标签 |
 | `internal/imapi2` 的 `TestMediaStatusName` / `TestMediaErasable` / `TestIsRomMediaType` / `TestPickWriteSpeed` / `TestIsSCode` / `TestSanitizeVolumeName` / `TestChooseVolumeName` 等 | 状态名、可擦写、只读类型、速度落档、错误码识别、卷标还原与取舍（三平台都跑） |
 | `TestLiveReadOnly`（仅 Windows，需设 `ZPACK_IMAPI2_LIVE_TEST=1`） | 真机只读：枚举、读介质、设速度、从临时目录构建镜像；断言追加时沿用名 = Windows 卷标。全程不写盘 |
-| GUI：`TestBurnBlockReason` / `TestBurnMediaSuffix` / `TestBurnBlockedByMedia` / `TestPlanBurnVolumeName` / `TestBurnArguments` / `TestBurnVolumeNameRow` | status 词表在 GUI 侧的消费规则 |
+| GUI：`TestBurnBlockReason` / `TestBurnMediaSuffix` / `TestBurnBlockedByMedia` / `TestPlanBurnVolumeName` / `TestBurnArguments` / `TestBurnVolumeNameRow` / `TestBurnImageCaution` / `TestBurnImageCautionRow` | status 词表在 GUI 侧的消费规则；「镜像 + 已有内容的盘」的写入提醒行 |
 
 ### 8.3 手动验证
 
@@ -767,7 +778,7 @@ ZPACK_IMAPI2_LIVE_TEST=1 go test ./internal/imapi2 -run TestLiveReadOnly
 - **macOS / Linux 的 `size_bytes` 不是写入量**：是非目录输入的文件大小之和；输入全是目录时是第一个输入 `os.Stat` 的大小（没有意义）。`image` 是已经删除的临时 ISO 路径。两个字段在这两个平台上的语义与 Windows 不同，也没有文档说明过是否有意如此。
 - ~~**「光盘是只读盘（DVD-ROM：压盘或已封盘），无法继续写入」对读不出来的盘有误导性**~~ **已解决（2026-11-24 用户拍板）**：新增 `unrecognized` 状态，读不出的盘在 `burn devices`、GUI、写入拒绝文案里都按「光驱认不出这张光盘」处理并带排查提示（见 3.1、4.3、6.4、6.10）。遗留一点：软件层面分不出是放反、划伤还是盘型不支持，排查提示只能把这几种都列出来；「只读类型 + 写保护」形态的追加读取还没有实盘验证过。
 - **擦除之后仍然异常时的提示绕**：带 `--blank` 擦完重读仍异常时，拒绝文案里的提示还是「加 --blank 先擦除再刻」——用户已经加过了（cli/burn/burn_windows.go:141-144、209-215）。
-- **Windows 上往有数据的盘追加镜像时不导入上一区段**：镜像输入走的是整文件直烧（cli/burn/burn_windows.go:220-235），不经过镜像库的 `ImportFileSystem`。镜像之后再追加镜像，旧区段的文件在新视图里是否还可见【待确认】（没有实测过；「镜像区段之后追加目录」是验证过的，旧文件仍在）。
+- **Windows 上往有数据的盘写镜像时不导入上一区段**：镜像输入走的是整文件直烧（`burnWindowsSource`，cli/burn/burn_windows.go），不经过镜像库的 `ImportFileSystem`。后果与对策见 4.1.3：2026-11-24 用户拍板**警告后允许**（stderr 打一条 `[WARN]`，GUI 在主按钮上方出「写入提醒」行）。遗留：【待确认】镜像之后再追加镜像，旧区段的文件在新视图里到底还看不看得见——没有实测过；按「系统挂载最后一个区段的文件系统」推断是看不到，警告文案据此措辞并留了余地。（「镜像区段之后追加目录」是验证过的，旧文件仍在。）
 - **macOS / Linux 上外部工具的 stderr 没有时间戳**，是原样透传的（cli/burn/burn.go:690）；`error_info` 里只有「… 刻录失败: exit status N」，看不到工具给的真正原因。
 - **`burnLinux` 的参数 `stagedFromDir` 没有被使用**（cli/burn/burn.go:658）——是「目录原生刻录」旧设计的遗留。
 - **`burnRunCommand` 的注释与代码不一致**：注释说「会跳过调用方 defer 的临时镜像清理」，而调用方用的是显式 `cleanup()`（cli/burn/burn.go:310、685-686）。
@@ -801,7 +812,7 @@ ZPACK_IMAPI2_LIVE_TEST=1 go test ./internal/imapi2 -run TestLiveReadOnly
 | 1 | macOS `drutil list` 的列布局，与「丢掉最后两列」的解析是否吻合 | 没有 macOS 机器；这条路径没有真机验证记录 |
 | 2 | macOS 上 `--volid` 没有效果，是有意还是遗漏 | 代码没有任何注释说明；AGENTS.md 只说「原样交外部工具」 |
 | 3 | macOS / Linux 追加区段时不沿用盘上名称，是否符合预期 | 与定案文字不符，但没实跑过、也没有说明 |
-| 4 | Windows 上往有数据的盘追加镜像后，旧文件是否仍可见 | 没有实测；代码路径明确不导入上一区段 |
+| 4 | Windows 上往有数据的盘追加镜像后，旧文件是否仍可见 | 没有实测；代码路径明确不导入上一区段。2026-11-24 起警告后允许（4.1.3），警告文案按「看不到」措辞并留了余地——实测结果若不是这样，要改文案 |
 | 5 | Windows 上目录内部的符号链接 / 联接点如何进盘；是否跳过系统垃圾文件 | 由引擎的 `AddTree` 决定，没有验证 |
 | 6 | ISO9660 层的卷标上限是 30 还是 32 个字符 | AGENTS.md 两处记录互相矛盾 |
 | 7 | 「光驱里放着读不出来的盘」的具体物理原因 | 只有现象记录（`DVD-ROM / full`、从第 0 扇区起 CRC 错误），没法判断是放反、划伤还是盘型不支持 |
@@ -816,3 +827,4 @@ ZPACK_IMAPI2_LIVE_TEST=1 go test ./internal/imapi2 -run TestLiveReadOnly
 |---|---|---|
 | 2026-11-24 | 初版：从代码与 AGENTS.md 整理 | 40fb9e7 |
 | 2026-11-24 | 新增 `unrecognized` 状态：光驱认不出的盘（读不出身份，或被报成只读盘但读不出任何文件系统）在 `burn devices`、GUI、写入拒绝文案里都按「认不出」处理并带排查提示（3.1、3.3、4.1.1、4.3、5、6.4、6.5、6.10、9） | （提交后回填） |
+| 2026-11-24 | 往有数据的盘写镜像：从「不声不响地写」改为**警告后允许**——stderr 打一条 `[WARN]`（conventions.md 第 4 节首次启用警告级别），GUI 在主按钮上方出「写入提醒」行；只在读得到介质状态的 Windows 上有（3.4、4.1.2、4.1.3、5、8.2、9） | （提交后回填） |

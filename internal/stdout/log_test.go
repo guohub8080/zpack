@@ -51,6 +51,13 @@ func TestEncodeJSONToBuffer(t *testing.T) {
 	}
 }
 
+// TestWarnLogLine 警告日志的行格式：时间戳之后带 [WARN] 标签——与无标签的普通过程日志区分开
+func TestWarnLogLine(t *testing.T) {
+	if got, want := warnLogLine("2026-11-24 22:30:05", "这张盘已有内容"), "[2026-11-24 22:30:05] [WARN] 这张盘已有内容"; got != want {
+		t.Errorf("警告行 %q ≠ %q", got, want)
+	}
+}
+
 func TestEnvelopeKeyOrderDeterministic(t *testing.T) {
 	// 同一 struct 反复编码必须逐字节一致（v1 时代靠字母序；v2 时代靠声明序——生产禁 map 的原因）
 	first, err := encodeJSONToBuffer(envelope{IsSuccess: true, Data: testPayload{Name: "x", Count: 1}})

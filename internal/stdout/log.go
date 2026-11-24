@@ -21,9 +21,21 @@ func formatLogTime() string {
 }
 
 // LoggerInfo 输出过程日志到 stderr，格式：[YYYY-MM-DD HH:MM:SS] 消息。
-// 无级别标签即常态；标签位为未来的例外级（如 WARN）预留——出现标签本身就是信号
+// 无级别标签即常态；带标签的只有警告（LoggerWarn）——出现标签本身就是信号
 func LoggerInfo(message string) {
 	fmt.Fprintf(os.Stderr, "[%s] %s\n", formatLogTime(), message)
+}
+
+// LoggerWarn 输出警告到 stderr，格式：[YYYY-MM-DD HH:MM:SS] [WARN] 消息。
+// 只用于「操作会照常继续，但后果不可逆、又不直观」的提醒——不拿它记普通过程日志
+// （conventions.md 第 4 节；2026-11-24 首例：往有数据的盘写镜像）
+func LoggerWarn(message string) {
+	fmt.Fprintln(os.Stderr, warnLogLine(formatLogTime(), message))
+}
+
+// warnLogLine 警告日志的一行（纯函数，可单测）
+func warnLogLine(timestamp, message string) string {
+	return "[" + timestamp + "] [WARN] " + message
 }
 
 // envelope 信封结构：三键协议（is_success / error_info? / data?），键序=声明序（确定性）

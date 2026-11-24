@@ -5560,6 +5560,13 @@ func (a *app) burnVolumeNamePlan() burnVolumeNamePlan {
 	return plan
 }
 
+// burnImageCaution 刻录页的「写入提醒」行文案（空串=不出这一行）：镜像 + 已有内容的盘。
+// 引擎在 stderr 里也打同一条警告，但 GUI 不显示过程日志——刻录不可逆，提醒要在点下去之前看到
+func (a *app) burnImageCaution() string {
+	selected, _ := a.burnSelectedDevice()
+	return burnImageCaution(selected.Status, a.burnInputs, a.burnBlank)
+}
+
 // clearBurn 清空刻录内容
 func (a *app) clearBurn() {
 	a.burnInputs = nil
@@ -5816,6 +5823,13 @@ func (a *app) pageBurn(c *ui.Context) {
 				ui.Row(c).Grow(1).AlignItems(ui.Center).Children(func() {
 					ui.Switch(c, &a.burnBlank).Cursor(ui.CursorPointer)
 				})
+			})
+		}
+
+		// 镜像 + 已有内容的盘：点下去之前提醒「不与原有文件合并」（警告后允许，不拦截——规则见 burnImageCaution）
+		if caution := a.burnImageCaution(); caution != "" {
+			openSettingRowTop(c, t, "写入提醒", "镜像不合并", func() {
+				ui.Text(c, caution).FontSize(13).Wrap().Grow(1)
 			})
 		}
 
