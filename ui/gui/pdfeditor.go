@@ -2,11 +2,11 @@
 // 功能面对齐 PDF Arranger（GPL-3.0 参考实现，换成 zpack 的 Golang/cgo 与契约驱动）。
 //
 // 架构纪律（薄壳铁律）：编辑态是纯前端内存模型；所有落盘都编译成 CLI 调用
-// （collect 保序收集 + rotate 分组叠加）；缩略图渲染是**展示辅助**（非阻塞四定案：
-// 首屏优先/后台协程/缓存/跳页即渲——specs/pdf.md 6.12 双层架构的 GUI 侧）。
+// （collect 保序收集 + rotate 分组叠加）；缩略图渲染是**展示辅助**（非阻塞四定案——
+// specs/pdf.md 6.12 双层架构的 GUI 侧）。
 //
 // 第一版范围（2026-11-24）：单文档打开、缩略图网格、多选（Ctrl/Shift/A）、拖拽重排、
-// 旋转/删除、导出（collect 保序收集 + rotate 分组）；裁剪/页拆分/插图片/元数据待铺。
+// 旋转/删除、缩放档、导出（collect 保序收集 + rotate 分组）；裁剪/页拆分/插图片/元数据待铺。
 package main
 
 import (
@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"strings"
 
-
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	fitz "github.com/gen2brain/go-fitz"
@@ -25,9 +24,24 @@ import (
 // EDITOR_THUMB_DPI 缩略图渲染分辨率（屏幕预览档；与 CLI render 的交付 DPI 无关）
 const EDITOR_THUMB_DPI = 72
 
-// EDITOR_FIRST_BATCH 打开文档时优先渲染的头批页数（定案「跳页不等按序渲染」的第一块：
-// 先给首屏，其余按序后台渐进；跳页优先级队列待滚动状态可读后接）
+// EDITOR_FIRST_BATCH 打开文档时优先渲染的头批页数（定案「跳页不等按序渲染」的第一块）
 const EDITOR_FIRST_BATCH = 12
+
+// editorZoomTier 缩放档（页面对齐 pdfarranger 的放大/缩小；DIP 尺寸随档）
+type editorZoomTier struct {
+	label     string  // 工具栏显示（百分比）
+	gridMinW  float32 // GridView 单元最小宽
+	gridCellH float32 // 单元高
+	thumbW    float32 // 缩略图显示宽
+}
+
+// EDITOR_ZOOM_TIERS 缩放档表（缺省档 1 = 100%）
+var EDITOR_ZOOM_TIERS = []editorZoomTier{
+	{"50%", 72, 100, 60},
+	{"100%", 140, 190, 120},
+	{"150%", 210, 280, 186},
+	{"200%", 280, 370, 252},
+}
 
 // editorPage 编辑态页：源页码（1 基）+ 旋转角（顺时针 0/90/180/270——导出叠加到产物）
 type editorPage struct {
@@ -37,26 +51,31 @@ type editorPage struct {
 
 // pdfEditorState 编辑器全部状态
 type pdfEditorState struct {
-	docPath   string                 // 打开的 PDF（第一版：单文档）
-	pageCount int                    // 源文档总页数
-	pages     []editorPage           // 编辑态页序
-	rotation  map[int]int            // 源页码 → 旋转角（缩略图显示与导出编译共用）
-	thumbs    map[int]ui.ImageSource // 源页码 → 已渲缩略图（第一版全缓存；LRU 待大文档实测）
-	rendering map[int]bool
-	grid      ui.GridState       // 画布网格（Reorder/Selection 框架开箱）
-	selection ui.Selection[int]  // 多选（键=编辑序下标）
-	selected  int                // 最后一次点击（-1 无）
+	docPath    string                 // 打开的 PDF（第一版：单文档）
+	pageCount  int                    // 源文档总页数
+	pages      []editorPage           // 编辑态页序
+	rotation   map[int]int            // 源页码 → 旋转角（缩略图显示与导出编译共用）
+	thumbs     map[int]ui.ImageSource // 源页码 → 已渲缩略图（第一版全缓存；LRU 待大文档实测）
+	rendering  map[int]bool
+	grid       ui.GridState      // 画布网格（Selected/Selection/Reorder 框架开箱）
+	selection  ui.Selection[int] // 多选（键=编辑序下标）
+	selected   int               // 最后一次点击（-1 无）
+	zoomIdx    int               // 缩放档索引（缺省 1=100%）
 	quitRender chan struct{}     // 换文档时停渲染协程
 }
 
-// ensureEditorState 懒初始化
+// ensureEditorState 懒初始化（含 GridState 的指针接线——Selected/Selection 不接指针
+// 点击永远不生效，第一版漏接被用户指出）
 func (a *app) ensureEditorState() *pdfEditorState {
 	if a.pdfEd == nil {
 		a.pdfEd = &pdfEditorState{
 			thumbs:    map[int]ui.ImageSource{},
 			rendering: map[int]bool{},
 			selected:  -1,
+			zoomIdx:   1,
 		}
+		a.pdfEd.grid.Selected = &a.pdfEd.selected
+		a.pdfEd.grid.Selection = &a.pdfEd.selection
 	}
 	return a.pdfEd
 }
@@ -113,13 +132,13 @@ func (a *app) editorOpen(docPath string) {
 		ed.selected = -1
 		ed.selection = ui.Selection[int]{}
 		ed.quitRender = make(chan struct{})
-		go ed.renderLoop(a, ed)
+		go ed.renderLoop(ed)
 	})
 }
 
-// renderLoop 渲染协程：文档打开一次复用；首屏优先队列（前 EDITOR_FIRST_BATCH 页先渲）；
-// 退出靠 quitRender 关闭。
-func (ed *pdfEditorState) renderLoop(a *app, state *pdfEditorState) {
+// renderLoop 渲染协程：文档打开一次复用；首屏优先队列；退出靠 quitRender 关闭。
+// 非阻塞四定案（specs/gui.md 2.12）：网格立即可浏览（未渲页占位），缩略图到达即贴。
+func (ed *pdfEditorState) renderLoop(state *pdfEditorState) {
 	document, openErr := fitz.New(ed.docPath)
 	if openErr != nil {
 		a.toast("PDF 打开失败：" + openErr.Error())
@@ -147,7 +166,7 @@ func (ed *pdfEditorState) renderLoop(a *app, state *pdfEditorState) {
 		rgba, renderErr := document.ImageDPI(srcPage-1, EDITOR_THUMB_DPI)
 		if renderErr != nil {
 			state.rendering[srcPage] = false
-			continue // 单页失败不阻塞后续（渐进渲染，失败页显示占位）
+			continue // 单页失败不阻塞后续（失败页显示占位）
 		}
 		bitmap := ui.NewBitmap(rgba)
 		mygo.RunOnMain(func() {
@@ -158,7 +177,7 @@ func (ed *pdfEditorState) renderLoop(a *app, state *pdfEditorState) {
 	}
 }
 
-// toast 前缀化入 toast 队列（sniff.go 的 pendingToasts 通道）
+// toast 入 toast 队列（sniff.go 的 pendingToasts 通道）
 func (a *app) toast(message string) {
 	a.toastMu.Lock()
 	a.pendingToasts = append(a.pendingToasts, message)
@@ -179,7 +198,7 @@ func (ed *pdfEditorState) editorSelectedIndices() []int {
 	return indices
 }
 
-// editorRotate 选中页旋转（顺时针 dir 次，每次 90°）：编辑态改角 + 缩略图重贴由显示层 Rotate 完成
+// editorRotate 选中页旋转（顺时针 dir 次，每次 90°）
 func (ed *pdfEditorState) editorRotate(indices []int, clockwise bool) {
 	for _, index := range indices {
 		if index < 0 || index >= len(ed.pages) {
@@ -193,7 +212,7 @@ func (ed *pdfEditorState) editorRotate(indices []int, clockwise bool) {
 	}
 }
 
-// editorDelete 删除选中页（编辑态移除）
+// editorDelete 删除选中页
 func (ed *pdfEditorState) editorDelete(indices []int) {
 	remove := map[int]bool{}
 	for _, index := range indices {
@@ -210,7 +229,7 @@ func (ed *pdfEditorState) editorDelete(indices []int) {
 	ed.selected = -1
 }
 
-// editorExport 编译导出：编辑态 → CLI 调用序列（薄壳铁律：落盘必经契约）。
+// editorExport 编译导出（薄壳铁律：落盘必经契约）：
 // ① `pdf collect --pages <编辑序>` 保序收集（重排/删除/复制的页序语义）
 // ② 非零旋转按角分组 → `pdf rotate-right/left/180 --pages <产物位置集>` 叠加 /Rotate
 func (a *app) editorExport() {
@@ -230,7 +249,6 @@ func (a *app) editorExport() {
 	outputPath := strings.TrimSuffix(ed.docPath, filepath.Ext(ed.docPath)) + "-edited.pdf"
 	absoluteOutput, _ := filepath.Abs(outputPath)
 
-	// 任务链：collect → 逐旋转角组 rotate（回调串行——RunTool 的完成即下一命令）
 	args := []string{"pdf", "collect", ed.docPath, "--pages", joinInts(sequence), "--output", absoluteOutput}
 	a.service.RunTool(args, func(result ToolResult) {
 		if result.Err != "" {
@@ -286,52 +304,78 @@ func joinInts(values []int) string {
 	return strings.Join(parts, ",")
 }
 
-// pagePdfEditor PDF 页面编辑器页（画布范式）
+// RunToolEnvelope 执行短命令并回传完整信封 raw（页数等 data 字段的消费通道——
+// RunTool 只出 Output/Extra/Err，不带 data 其他字段）。失败信封也在 stdout（契约）。
+func (service *Service) RunToolEnvelope(args []string, callback func(raw []byte, err string)) {
+	if service.zpackPath() == "" {
+		callback(nil, "未找到 zpack 引擎")
+		return
+	}
+	go func() {
+		cmd := exec.Command(service.zpackPath(), args...)
+		hideConsole(cmd)
+		raw, runErr := cmd.Output()
+		if runErr != nil {
+			if exitErr, isExit := runErr.(*exec.ExitError); isExit {
+				callback(raw, fmt.Sprintf("exit %d", exitErr.ExitCode()))
+				return
+			}
+			callback(nil, runErr.Error())
+			return
+		}
+		callback(raw, "")
+	}()
+}
+
+// pagePdfEditor PDF 页面编辑器页（经典排版骨架：lead 行 + 设置行 + 画布卡片）
 func (a *app) pagePdfEditor(c *ui.Context) {
 	ed := a.ensureEditorState()
 	t := c.Theme()
+	tier := EDITOR_ZOOM_TIERS[ed.zoomIdx%len(EDITOR_ZOOM_TIERS)]
 	column := pageColumn(c)
 	column.Children(func() {
-		// 顶行：打开 + 操作钮 + 状态
-		ui.Row(c).Padding(14, 0, 4, 0).Gap(6).AlignItems(ui.Center).Children(func() {
-			open := ui.ButtonBase(c).Height(28).Padding(0, 12).Radius(6).
-				Border(1, t.Border).Cursor(ui.CursorPointer).Shrink(0)
-			pressFeedback(open, t)
-			open.Children(func() {
-				ui.Text(c, "打开 PDF").FontSize(13)
-			})
-			if open.Clicked() {
-				a.editorBrowse()
-			}
-			if ed.docPath != "" {
-				for _, act := range []struct {
-					label string
-					run   func()
-				}{
-					{"旋转左 ⟲", func() { ed.editorRotate(ed.editorSelectedIndices(), false) }},
-					{"旋转右 ⟳", func() { ed.editorRotate(ed.editorSelectedIndices(), true) }},
-					{"删除所选", func() { ed.editorDelete(ed.editorSelectedIndices()) }},
-				} {
-					button := ui.ButtonBase(c).Height(28).Padding(0, 12).Radius(6).
-						Border(1, t.Border).Cursor(ui.CursorPointer).Shrink(0)
-					pressFeedback(button, t)
-					button.Children(func() {
-						ui.Text(c, act.label).FontSize(13)
-					})
-					if button.Clicked() {
-						act.run()
-					}
+		a.convertLeadRow(c, "PDF", ed.docPath, a.editorBrowse)
+
+		// 工具行：打开/旋转/删除/缩放/导出（经典排版：与转换族同一行高与间距）
+		toolRow := ui.Row(c).Gap(6).AlignItems(ui.Center).Padding(0, 0, 8, 0)
+		toolRow.Children(func() {
+			if ed.docPath == "" {
+				open := ui.ButtonBase(c).Height(30).Padding(0, 14).Radius(8).
+					Border(1, t.Border).Cursor(ui.CursorPointer).Shrink(0)
+				pressFeedback(open, t)
+				open.Children(func() {
+					ui.Text(c, "打开 PDF").FontSize(13)
+				})
+				if open.Clicked() {
+					a.editorBrowse()
 				}
 				ui.Spacer(c)
-				exportButton := primaryCTA(c, t, "导出 PDF", len(ed.pages) > 0)
-				if exportButton.Clicked() && len(ed.pages) > 0 {
-					a.editorExport()
+				return
+			}
+			editorToolButton(c, t, "旋转左 ⟲", func() { ed.editorRotate(ed.editorSelectedIndices(), false) })
+			editorToolButton(c, t, "旋转右 ⟳", func() { ed.editorRotate(ed.editorSelectedIndices(), true) })
+			editorToolButton(c, t, "删除所选", func() { ed.editorDelete(ed.editorSelectedIndices()) })
+			// 缩放档：− / 百分比 / +（pdfarranger 同款 zoom）
+			editorToolButton(c, t, "−", func() {
+				if ed.zoomIdx > 0 {
+					ed.zoomIdx--
 				}
+			})
+			ui.Text(c, tier.label).FontSize(12).TextColor(t.TextMuted).Shrink(0)
+			editorToolButton(c, t, "+", func() {
+				if ed.zoomIdx < len(EDITOR_ZOOM_TIERS)-1 {
+					ed.zoomIdx++
+				}
+			})
+			ui.Spacer(c)
+			exportButton := primaryCTA(c, t, "导出 PDF", len(ed.pages) > 0)
+			if exportButton.Clicked() && len(ed.pages) > 0 {
+				a.editorExport()
 			}
 		})
 
 		if ed.docPath == "" {
-			// hero：拖入/打开引导（拖入已接入整页拖放通则——dropZone/页面 switch 已接线）
+			// hero：拖入引导（拖入已接入整页拖放通则——dropZone/页面 switch 已接线）
 			hero := ui.Column(c).Gap(8).AlignItems(ui.Center).Grow(1).Center()
 			hero.Children(func() {
 				ui.Text(c, "拖入 PDF 开始页面编排").FontSize(16)
@@ -344,24 +388,25 @@ func (a *app) pagePdfEditor(c *ui.Context) {
 		// 状态行：文档名 + 页数 + 选择数
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, filepath.Base(ed.docPath)).FontSize(13)
-			ui.Text(c, fmt.Sprintf("%d 页 · 选中 %d", len(ed.pages), len(ed.editorSelectedIndices()))).
+			ui.Text(c, fmt.Sprintf("%d 页 · 选中 %d · 缩放 %s", len(ed.pages), len(ed.editorSelectedIndices()), tier.label)).
 				FontSize(12).TextColor(t.TextMuted)
 		})
 
-		// 画布：缩略图网格（Reorder 拖拽重排 / Selection 多选——mygo 开箱）
-		gridArea := ui.Column(c).Grow(1).Margin(8, 0, 0, 0)
-		gridArea.Children(func() {
-			ui.GridView(c, &ed.grid, len(ed.pages), 140, 190, func(i int) {
+		// 画布卡片：GridView（尺寸随缩放档；Reorder/Selection/Selected 框架开箱——
+		// Selected/Selection 必须接指针，否则点击不生效）
+		canvasCard := ui.Column(c).Grow(1).Margin(8, 0, 0, 0).Padding(8).Radius(10).
+			Background(t.Surface).Border(1, t.Border)
+		canvasCard.Children(func() {
+			ui.GridView(c, &ed.grid, len(ed.pages), tier.gridMinW, tier.gridCellH, func(i int) {
 				page := ed.pages[i]
 				thumb, hasThumb := ed.thumbs[page.srcPage]
 				_, isRendering := ed.rendering[page.srcPage]
-				cell := ui.Column(c).Gap(4).Padding(6).Radius(8).
-					Background(t.Surface).Border(1, t.Border).AlignItems(ui.Center)
+				// 固定布局（勿用 Grow——溢出即重叠，第一版教训）
+				cell := ui.Column(c).Gap(4).AlignItems(ui.Center)
 				cell.Children(func() {
 					switch {
 					case hasThumb:
-						ui.Image(c, thumb).Width(128).Grow(1).
-							Rotate(float32(page.rotation))
+						ui.Image(c, thumb).Width(tier.thumbW).Height(tier.gridCellH - 34)
 						if page.rotation != 0 {
 							ui.Text(c, fmt.Sprintf("⟳ %d°", page.rotation)).FontSize(11).TextColor(t.TextMuted)
 						}
@@ -372,29 +417,20 @@ func (a *app) pagePdfEditor(c *ui.Context) {
 					}
 					ui.Text(c, fmt.Sprintf("第 %d 页", page.srcPage)).FontSize(12)
 				})
-			})
+			}).Grow(1)
 		})
 	})
 }
 
-// RunToolEnvelope 执行短命令并回传完整信封 raw（页数等 data 字段的消费通道——
-// RunTool 只出 Output/Extra/Err，不带 data 其他字段）。失败信封也在 stdout（契约）。
-func (service *Service) RunToolEnvelope(args []string, callback func(raw []byte, err string)) {
-	if service.zpackPath() == "" {
-		callback(nil, "未找到 zpack 引擎")
-		return
+// editorToolButton 画布工具行的统一小按钮
+func editorToolButton(c *ui.Context, t *ui.Theme, label string, onClick func()) {
+	button := ui.ButtonBase(c).Height(30).MinWidth(30).Padding(0, 10).Radius(8).
+		Border(1, t.Border).Cursor(ui.CursorPointer).Shrink(0)
+	pressFeedback(button, t)
+	button.Children(func() {
+		ui.Text(c, label).FontSize(13)
+	})
+	if button.Clicked() {
+		onClick()
 	}
-	go func() {
-		cmd := exec.Command(service.zpackPath(), args...)
-		raw, runErr := cmd.Output()
-		if runErr != nil {
-			if exitErr, isExit := runErr.(*exec.ExitError); isExit {
-				callback(raw, fmt.Sprintf("exit %d", exitErr.ExitCode()))
-				return
-			}
-			callback(nil, runErr.Error())
-			return
-		}
-		callback(raw, "")
-	}()
 }

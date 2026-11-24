@@ -335,6 +335,7 @@ func (service *Service) StartCompress(inputs []string, format string, level int,
 // 不判定终态——调用方据退出码 finish。进程起不来时在内部以失败收尾并返回 ok=false。
 func (service *Service) runTask(task *Task, arguments []string) (raw []byte, exitCode int, ok bool) {
 	cmd := exec.Command(service.zpackPath(), arguments...)
+	hideConsole(cmd)
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
 	exited := make(chan struct{}) // 进程收尾完毕（cmd.Wait 已返回，或根本没起来）时关闭
@@ -539,6 +540,7 @@ func (service *Service) Inspect(path string, callback func(InspectResult)) {
 	go func() {
 		result := InspectResult{Volumes: countVolumes(path)}
 		cmd := exec.Command(service.zpackPath(), "info", path)
+		hideConsole(cmd)
 		raw, err := cmd.Output()
 		if err != nil {
 			// 退出非零先别弃——引擎 error 信封可能已在 stdout（is_success:false），
@@ -751,6 +753,7 @@ func (service *Service) RunTool(args []string, callback func(ToolResult)) {
 	}
 	go func() {
 		cmd := exec.Command(service.zpackPath(), args...)
+		hideConsole(cmd)
 		raw, err := cmd.Output()
 		var envelope struct {
 			IsSuccess bool   `json:"is_success"`
@@ -801,6 +804,7 @@ func (service *Service) HashExec(args []string, callback func(entries []HashEntr
 	}
 	go func() {
 		cmd := exec.Command(service.zpackPath(), args...)
+		hideConsole(cmd)
 		raw, err := cmd.Output()
 		var envelope struct {
 			IsSuccess bool   `json:"is_success"`
@@ -864,6 +868,7 @@ func (service *Service) ListArchive(path string, callback func(ListResult)) {
 	}
 	go func() {
 		cmd := exec.Command(service.zpackPath(), "list", path)
+		hideConsole(cmd)
 		raw, err := cmd.Output()
 		var envelope struct {
 			IsSuccess bool   `json:"is_success"`
@@ -911,6 +916,7 @@ func (service *Service) TestArchive(path string, callback func(ok bool, tested i
 	}
 	go func() {
 		cmd := exec.Command(service.zpackPath(), "test", path)
+		hideConsole(cmd)
 		raw, err := cmd.Output()
 		var envelope struct {
 			IsSuccess bool   `json:"is_success"`
@@ -965,6 +971,7 @@ func (service *Service) runToolOutput(args []string, stdin []byte, callback func
 	}
 	go func() {
 		cmd := exec.Command(service.zpackPath(), args...)
+		hideConsole(cmd)
 		if stdin != nil {
 			cmd.Stdin = bytes.NewReader(stdin)
 		}
