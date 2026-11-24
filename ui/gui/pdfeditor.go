@@ -331,11 +331,11 @@ func (a *app) pagePdfEditor(c *ui.Context) {
 		})
 
 		if ed.docPath == "" {
-			// hero：拖入/打开引导（拖放到画布随 4.x 拖放通则后续接入）
+			// hero：拖入/打开引导（拖入已接入整页拖放通则——dropZone/页面 switch 已接线）
 			hero := ui.Column(c).Gap(8).AlignItems(ui.Center).Grow(1).Center()
 			hero.Children(func() {
-				ui.Text(c, "打开一个 PDF 开始页面编排").FontSize(16)
-				ui.Text(c, "合并外的重排 / 删页 / 旋转都在这里：拖拽缩略图重排，保存时按编辑序导出").
+				ui.Text(c, "拖入 PDF 开始页面编排").FontSize(16)
+				ui.Text(c, "重排 / 删页 / 旋转都在这里：拖拽缩略图重排，保存时按编辑序导出；也可点上方「打开 PDF」").
 					FontSize(13).TextColor(t.TextMuted)
 			})
 			return

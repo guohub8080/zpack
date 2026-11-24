@@ -663,6 +663,7 @@ func (a *app) pane(c *ui.Context, bar ui.TitleBar, controlsRight bool) {
 		a.page == pagePdfExtract || a.page == pageMediaCmp ||
 		a.page == pageAudioCvt || a.page == pageAudioCmp || a.page == pageImageCmp ||
 		a.page == pageOffice || a.page == pagePdfRotate || a.page == pagePdfResize ||
+		a.page == pagePdfEditor ||
 		a.page == pageHash || a.page == pageBurn
 	dragOver := dropZone && pane.FileDragOver()
 	if dropZone {
@@ -694,6 +695,8 @@ func (a *app) pane(c *ui.Context, bar ui.TitleBar, controlsRight bool) {
 				a.setPdfRotatePath(files[0])
 			case pagePdfResize:
 				a.setPdfResizePath(files[0])
+			case pagePdfEditor:
+				a.editorOpen(files[0]) // 编辑器单文档：取首件
 			case pageHash:
 				a.addHashFiles(files)
 			case pageImage:
