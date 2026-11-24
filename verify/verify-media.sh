@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# zpack 媒体功能验收门禁：只测 bin/zpack（CGO 完整版）。
-# 前置：brew ffmpeg（夹具生成与产物校验）+ bin/zpack 为 CGO 构建（build_cli/mac/build.sh 产物）。
+# zpack 媒体功能验收门禁：只测 bin/zpack-cli（CGO 完整版）。
+# 前置：brew ffmpeg（夹具生成与产物校验）+ bin/zpack-cli 为 CGO 构建（build_cli/mac/build.sh 产物）。
 # 与 verify.sh 分离：媒体门禁需要 libav 环境，纯 Go 主门禁不受影响。
 set -u
 
-NEW_CLI="$(cd "$(dirname "$0")/.." && pwd)/bin/zpack"
+NEW_CLI="$(cd "$(dirname "$0")/.." && pwd)/bin/zpack-cli"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -19,10 +19,10 @@ assert_equal() {
   if [ "$2" = "$3" ]; then report_pass; else report_fail "$1" "$2" "$3"; fi
 }
 
-# 环境检查：bin/zpack 必须含媒体引擎
+# 环境检查：bin/zpack-cli 必须含媒体引擎
 probe_out=$("$NEW_CLI" media convert /dev/null /tmp/x.mp4 2>&1)
 if echo "$probe_out" | grep -q "完整版"; then
-  echo "⛔ bin/zpack 为纯 Go 构建（无媒体引擎）——请用 build_cli/mac/build.sh 产物运行本门禁"
+  echo "⛔ bin/zpack-cli 为纯 Go 构建（无媒体引擎）——请用 build_cli/mac/build.sh 产物运行本门禁"
   exit 1
 fi
 if ! command -v ffmpeg >/dev/null; then

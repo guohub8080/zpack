@@ -632,7 +632,7 @@ AVIF 归 HEIC 通道是有来历的：`ConvertHEIC` 早先调用的 `execFFmpeg`
 
 ### 纯 Go 构建与完整版（cgo 构建）的差别
 
-| 能力 | 纯 Go（`CGO_ENABLED=0`，开发期的 `bin/zpack-dev`） | 完整版（`build_cli` 产线，交付的 `bin/zpack`） |
+| 能力 | 纯 Go（`CGO_ENABLED=0`，开发期的 `bin/zpack-dev`） | 完整版（`build_cli` 产线，交付的 `bin/zpack-cli`） |
 |---|---|---|
 | 12 个子命令的标准格式路径 | 全部可用 | 全部可用 |
 | 输入是 exr / hdr / rgbe / jxl | exit 1，`EXR/HDR/JXL 需完整版（CGO 构建）` | 可读 |
@@ -640,7 +640,7 @@ AVIF 归 HEIC 通道是有来历的：`ConvertHEIC` 早先调用的 `execFFmpeg`
 | `image info` 遇到 HEIC | Live Photo 载荷 | **相同**——完整版也不解码 |
 | `image livephoto` | 可用（纯文件操作） | 可用；错误文案略有不同（`拷贝视频失败: …`，纯 Go 是 `读取视频失败` / `写入视频失败`） |
 
-纯 Go 构建只是开发期快速编译循环的工具，不是交付物；交付的 `bin/zpack` 恒为完整版（AGENTS.md:188-190）。
+纯 Go 构建只是开发期快速编译循环的工具，不是交付物；交付的 `bin/zpack-cli` 恒为完整版（AGENTS.md:188-190）。
 
 代码上靠 build tag 分层：`//go:build cgo` 对应 `image/hdr_cgo.go`、`image/heic.go`，`//go:build !cgo` 对应 `image/hdr_nocgo.go`、`image/heic_nocgo.go`。下面这几样在两侧**各有一份**，改名必须两边一起改：
 
@@ -806,7 +806,7 @@ HEIC 本质是 ISOBMFF 容器 + 单帧 HEVC，FFmpeg 的 mov 解复用器加 hev
 - **需要系统 ffmpeg / ffprobe**，没装就跑不了（AGENTS.md:288 记录过实测机没装）。
 - `verify/verify.sh` 里只有两组 image 用例，其余图片行为全在 `verify-image.sh`：「失败时不得删文件」一节的 3 条，和「image --quiet 生效」一节的 7 条（2026-11-24 新增：`resize` 不带 `--quiet` 有换算说明、带 `--quiet` 时 exit 0 / stderr 只剩开始执行一行 / stdout 仍是成功 JSON；`compress --target-size --quiet` 的 exit 与 stderr 行数）。夹具用 `image new` 造，纯 Go 构建即可跑。
 
-### `verify/verify-media.sh`（需完整版 `bin/zpack`）
+### `verify/verify-media.sh`（需完整版 `bin/zpack-cli`）
 
 | 分节 | 覆盖的内容 |
 |---|---|
@@ -829,7 +829,7 @@ HEIC 本质是 ISOBMFF 容器 + 单帧 HEVC，FFmpeg 的 mov 解复用器加 hev
 zpack image --help; echo $?                      # 0
 zpack image; echo $?                             # 1，用法文案
 bin/zpack-dev image convert a.exr out.png; echo $?   # 纯构建：需完整版，exit 1
-bin/zpack image convert a.exr out.png; echo $?       # 完整版：exit 0
+bin/zpack-cli image convert a.exr out.png; echo $?       # 完整版：exit 0
 ```
 
 带方向的手机照片手动验证：`zpack image info 照片.jpg` 看 `orientation`，再 `zpack image convert 照片.jpg 转出.png`，用任意看图软件确认方向是正的。

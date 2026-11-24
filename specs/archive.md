@@ -594,7 +594,7 @@ tar 条目由单个协程顺序写入，内存有界（并行只发生在 gzip �
 
 | 能力 | Windows | macOS | Linux |
 |---|---|---|---|
-| 7z 写入（`--output *.7z`） | **不可用**：报 `zpack 7z 写入需完整版（CGO 构建 + 7z 静态产线）`。完整版 `bin/zpack.exe` 也一样——引擎文件的构建约束是 `cgo && darwin`，其余平台一律编译桩（internal/sevenzipcli/cli_cgo.go:1、cli_stub.go:1） | 完整版（cgo 构建）可用；纯 Go 开发构建报同样的话 | 不可用，同 Windows（产线未铺） |
+| 7z 写入（`--output *.7z`） | **不可用**：报 `zpack 7z 写入需完整版（CGO 构建 + 7z 静态产线）`。完整版 `bin/zpack-cli.exe` 也一样——引擎文件的构建约束是 `cgo && darwin`，其余平台一律编译桩（internal/sevenzipcli/cli_cgo.go:1、cli_stub.go:1） | 完整版（cgo 构建）可用；纯 Go 开发构建报同样的话 | 不可用，同 Windows（产线未铺） |
 | tar 解压遇到符号链接 | 创建符号链接需要特权。没开开发者模式、也不是管理员时失败（错误码 1314），**降级为拷贝归档内的目标文件**并打日志；有特权时与 mac / Linux 相同 | 创建符号链接，无需特权 | 同 macOS |
 | 硬链接（tar 解压） | 复制目标成员的内容（不用 `os.Link`，所以无特权也能用） | 同左 | 同左 |
 | tar 压缩遇到符号链接 | 三平台代码相同：读出链接目标写进头，保留为符号链接【待确认：Windows 上未实测】 | 保留 | 保留 |
@@ -815,7 +815,7 @@ tar 条目由单个协程顺序写入，内存有界（并行只发生在 gzip �
 | 测试·引擎 | `core/core_test.go`（1352 行）、`core/crypto_fixture_test.go`、`core/parallel_failure_test.go`、`core/sevenz_test.go` | 纯逻辑与端到端往返；7z 写入的两个用例在没有引擎的构建里跳过 |
 | 测试·夹具 | `core/testdata/` | 7z、rar（含多卷与加密）、wim、cab、ar、asar、iso、lzip、.Z、uu / xx、加密 zip |
 | 测试·命令面与小件 | `cli/archive/compress_test.go`、`internal/cmdutil/flags_test.go`、`internal/cmdutil/glob_test.go`、`internal/stdout/log_test.go` | 卷尺寸解析、严格整数、glob、信封编码 |
-| 验收脚本 | `verify/verify.sh` | 行为门禁，只测 `bin/zpack` |
+| 验收脚本 | `verify/verify.sh` | 行为门禁，只测 `bin/zpack-cli` |
 | 真实体感语料 | `scripts/genenv` | realEnvTest：进度条、媒体、加密分卷（目录不入库） |
 
 依赖（全部纯 Go）：klauspost/compress（flate / gzip / zstd）、golang.org/x/text（GBK 解码）、ulikunitz/xz、pierrec/lz4/v4、andybalholm/brotli、bodgit/sevenzip v1.6.5、nwaples/rardecode v1.1.3、nradchenko/go-wim、kdomanski/iso9660、sorairolake/lzip-go、kentalee/go-lzx（go.mod:7–24）。
@@ -824,7 +824,7 @@ tar 条目由单个协程顺序写入，内存有界（并行只发生在 gzip �
 
 ### 8.1 `verify/verify.sh` 里覆盖本功能的用例
 
-脚本只测仓库里的 `bin/zpack`，每条用例同时比对输出与退出码（verify/verify.sh:12、24）。下表的行号是脚本里的行号，用例数是按断言调用静态数的近似值（整份脚本静态数约 368，实际运行会因环境少几条）。
+脚本只测仓库里的 `bin/zpack-cli`，每条用例同时比对输出与退出码（verify/verify.sh:12、24）。下表的行号是脚本里的行号，用例数是按断言调用静态数的近似值（整份脚本静态数约 368，实际运行会因环境少几条）。
 
 | 分节（行号） | 覆盖内容 | 用例数 |
 |---|---|---|
@@ -1041,7 +1041,7 @@ bin/zpack-race compress 一个几百 MB 的目录 --output /tmp/big.tar.gz   # �
 | 21 | `core/zip.go` 文件头注释：「>16MB 文件 128KB 分块并行」；`core/tar.go` 的 `tarCompress` 注释：「单流顺序写（jobs 不参与）」；`core/core.go` 的 `Jobs` 字段注释：「tar 单流忽略」；`core/core.go` 包注释里「已实现格式」写了两遍、第一遍过时 | 同第 1、2 条 | core/zip.go:1；core/tar.go:168；core/core.go:83、9 | core/zip.go:31；core/tar.go:185 |
 | 22 | `core/asar.go` 文件头注释的布局是「8 字节长度头 + JSON 目录」 | 函数注释写的是真实布局：双 pickle `[u32=4][u32 H][u32 J][JSON]…`，代码也按此解析 | core/asar.go:1 | core/asar.go:28 |
 | 23 | `core/wim.go` 注释：「镜像名不安全字符就地清洗为下划线」 | 清洗函数只做 `path.Clean`，对 `.`、`..`、`/` 返回空串，**没有替换非法字符** | core/wim.go:38 | core/wim.go:100 |
-| 24 | 门禁 7z 写入分节的注释：「bin/zpack 恒为完整版故不设能力门控」 | Windows 的完整版里也没有 7z 引擎，这一分节在 Windows 上整段失败 | verify/verify.sh:1126 | internal/sevenzipcli/cli_cgo.go:1 |
+| 24 | 门禁 7z 写入分节的注释：「bin/zpack-cli 恒为完整版故不设能力门控」 | Windows 的完整版里也没有 7z 引擎，这一分节在 Windows 上整段失败 | verify/verify.sh:1126 | internal/sevenzipcli/cli_cgo.go:1 |
 | 25 | 验收用例注释「大单文件 128KB 分块并行（>16MB 触发）」 | 触发阈值是 256KB + 1，用例只是用了 17MB 的样本 | verify/verify.sh:122 | core/zip.go:31 |
 | 26 | zip 的 HSA 前置直通「不可压扩展名 30+」 | 清单里是 28 个扩展名 | AGENTS.md:126 | core/zip.go:57 |
 | 27 | 7z 写入的已知限制：「`--jobs` / `--password-table` / 注释对 7z 忽略（logf 提示）」 | 只有后两者有提示；`--jobs` 是静默忽略 | AGENTS.md:235 | core/sevenz.go:96 |

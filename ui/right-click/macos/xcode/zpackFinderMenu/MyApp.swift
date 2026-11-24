@@ -336,9 +336,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // 内嵌引擎：本 app Resources/zpack（宿主自身 bundle）
     private func hostedZpackPath() -> String {
-        if let path = Bundle.main.path(forResource: "zpack", ofType: nil),
-           FileManager.default.isExecutableFile(atPath: path) {
-            return path
+        // 2026-11-24 引擎改名 zpack-cli；旧名 zpack 兜底
+        let resourcePath = Bundle.main.path(forResource: "zpack-cli", ofType: nil)
+            ?? Bundle.main.path(forResource: "zpack", ofType: nil)
+        if let enginePath = resourcePath, FileManager.default.isExecutableFile(atPath: enginePath) {
+            return enginePath
         }
         return ""
     }

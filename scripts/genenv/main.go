@@ -11,7 +11,7 @@
 //	go run ./scripts/genenv --fast     # 只生成小件（<300MB，秒级冒烟）
 //	go run ./scripts/genenv --clean    # 删除 realEnvTest/ 整树
 //
-// 媒体族依赖 bin/zpack 完整版（进程内 ffmpeg 直调）；纯 Go 件（语料/PDF/归档）无依赖。
+// 媒体族依赖 bin/zpack-cli 完整版（进程内 ffmpeg 直调）；纯 Go 件（语料/PDF/归档）无依赖。
 package main
 
 import (
@@ -29,7 +29,7 @@ import (
 
 var (
 	root  string // realEnvTest/
-	zpack string // bin/zpack 完整版路径
+	zpack string // bin/zpack-cli 完整版路径
 )
 
 func main() {
@@ -44,7 +44,11 @@ func main() {
 		fatal("请在仓库根目录运行：go run ./scripts/genenv")
 	}
 	root = filepath.Join(repoRoot, "realEnvTest")
-	zpack = filepath.Join(repoRoot, "bin", "zpack")
+	// 2026-11-24 引擎改名 zpack-cli；改名之前铸的旧名产物也认
+	zpack = filepath.Join(repoRoot, "bin", "zpack-cli")
+	if _, statErr := os.Stat(zpack); statErr != nil {
+		zpack = filepath.Join(repoRoot, "bin", "zpack")
+	}
 
 	if *clean {
 		_ = os.RemoveAll(root)
@@ -160,7 +164,7 @@ func genRandFile(path string, size int64) {
 		float64(size)/(1<<20)/time.Since(started).Seconds())
 }
 
-// ── 媒体（依赖 bin/zpack 完整版进程内 ffmpeg）────────────────────────────────
+// ── 媒体（依赖 bin/zpack-cli 完整版进程内 ffmpeg）────────────────────────────────
 
 func genMedia() {
 	if !fileExists(zpack) {

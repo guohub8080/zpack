@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# zpack 验收门禁：只测 bin/zpack 的预期行为（不与旧版对拍、不依赖旧版存在）。
+# zpack 验收门禁：只测 bin/zpack-cli 的预期行为（不与旧版对拍、不依赖旧版存在）。
 #
 # 原则：确定性输出与预期值全字节比对；随机性用例比对"形状"（长度/字符集/行数）；
 #       退出码一并比对。全绿才算一个命令实现完成。
@@ -9,7 +9,7 @@
 # 用法：bash verify/verify.sh
 set -u
 
-NEW_CLI="$(cd "$(dirname "$0")/.." && pwd)/bin/zpack"
+NEW_CLI="$(cd "$(dirname "$0")/.." && pwd)/bin/zpack-cli"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -1160,7 +1160,7 @@ echo "  · 跳过 burn 多文件真实写入用例：检测到刻录机（刻录
 fi
 rm -f "${burn_multi_a}" "${burn_multi_b}" "${burn_iso_tmp}"
 
-# ── 7z 写入（2026-11-22 用户拍板：全量接入官方 C；bin/zpack 恒为完整版故不设能力门控）──
+# ── 7z 写入（2026-11-22 用户拍板：全量接入官方 C；bin/zpack-cli 恒为完整版故不设能力门控）──
 sevenz_w_src="/tmp/zpack-verify-7zw-src-$$"
 mkdir -p "$sevenz_w_src/资料 目录"
 printf '7z 写入门禁载荷' > "$sevenz_w_src/a.txt"

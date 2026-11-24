@@ -13,7 +13,7 @@
    - 纯 Go 开发构建（`CGO_ENABLED=0`）——开发期快速编译循环用的工具；
    - 交叉编译出来的 Windows exe（同样是纯 Go）；
    - 完整版产线（mac 与 Windows 两套）——把 ffmpeg 全家、office_oxide、7z 直调库从源码静态链进**一个**可执行文件，并断言没有非系统出厂的动态依赖。
-2. **规定哪种产物可以交付**：`bin/zpack`、`bin/zpack.exe` 与两个 mac 装机位里的引擎恒为完整版；纯 Go 构建只是开发期工具，不得作为交付或装机产物（AGENTS.md:188-190，2026-11-22 用户定案）。
+2. **规定哪种产物可以交付**：`bin/zpack-cli`、`bin/zpack-cli.exe` 与两个 mac 装机位里的引擎恒为完整版；纯 Go 构建只是开发期工具，不得作为交付或装机产物（AGENTS.md:188-190，2026-11-22 用户定案）。
 3. **规定一次改动怎样才算做完**：`go test ./...`、三平台 `go vet`、三个验收脚本全绿（铁律 1，AGENTS.md:15）。
 4. **生成真实体感语料**（`scripts/genenv`）：门禁测的是确定性小样本，genenv 生成几 GB 的数据，用来看进度条、真实媒体转换、加密分卷。
 5. **mac 装机位刷新**（`ui/right-click/macos/refresh-engine.sh`）：动过引擎之后，把新引擎换进两个已签名的 .app 并重签。
@@ -29,7 +29,7 @@
 **会在什么场景下用它。**
 
 - 日常迭代纯 Go 功能（pdf、hash、压缩、图片标准格式……）：走纯 Go 循环，秒级反馈。
-- 动了 cgo 层或引擎代码之后：重跑产线重铸 `bin/zpack`；在 mac 上再跑 `refresh-engine.sh`。
+- 动了 cgo 层或引擎代码之后：重跑产线重铸 `bin/zpack-cli`；在 mac 上再跑 `refresh-engine.sh`。
 - 升级配料版本、改编译旗标、改产线补丁：动手前先读第 6 节的陷阱清单。
 - 换了机器：从零重建 prefix。
 - 拿到一个二进制，想知道它是不是完整版（第 3.3 节）。
@@ -44,10 +44,10 @@
 | 形态 | 命令 | 产物 | 版本串 | 用途与限制 | 出处 |
 |---|---|---|---|---|---|
 | 纯 Go 开发构建 | `CGO_ENABLED=0 go build -o bin/zpack-dev ./cmd/zpack` | `bin/zpack-dev` | `dev`（没注入版本号） | **开发期快速编译循环**（热缓存约 1 秒、冷启动约 10 秒）。media / audio / HDR / HEIC / ffmpeg 代理 / office 内置引擎 / 7z 写入都报「需完整版」。**不得交付、不得装机** | AGENTS.md:193-198 |
-| 交叉编译 Windows exe | `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o bin/zpack.exe ./cmd/zpack` | `bin/zpack.exe` | `dev` | 纯 Go；AGENTS.md 只标了「交叉编译」，没有说明用途。注意产物与 Windows 完整版**同名同路径**（见第 9 节） | AGENTS.md:175 |
-| 带版本号的通用构建 | `go build -ldflags "-s -w -X main.version=$(git rev-parse --short HEAD)" -o bin/zpack ./cmd/zpack` | `bin/zpack` | `<短哈希>` | AGENTS.md 列的第一条。命令本身不指定 CGO 开关，产物形态跟着环境的缺省值走（见第 9 节） | AGENTS.md:174 |
-| mac 完整版 | `bash build_cli/mac/build.sh` | `bin/zpack` | `<短哈希>` | **交付与装机产物**。缺产物时会自动触发三个配料脚本 | AGENTS.md:179；`build_cli/mac/build.sh:9-16` |
-| Windows 完整版 | `bash build_cli/windows/build.sh` | `bin/zpack.exe` | `<短哈希>-full` | **交付与装机产物**。等价于 `bash build_cli/windows/build.sh all` | `build_cli/windows/build.sh:19,65-66` |
+| 交叉编译 Windows exe | `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o bin/zpack-cli.exe ./cmd/zpack` | `bin/zpack-cli.exe` | `dev` | 纯 Go；AGENTS.md 只标了「交叉编译」，没有说明用途。注意产物与 Windows 完整版**同名同路径**（见第 9 节） | AGENTS.md:175 |
+| 带版本号的通用构建 | `go build -ldflags "-s -w -X main.version=$(git rev-parse --short HEAD)" -o bin/zpack-cli ./cmd/zpack` | `bin/zpack-cli` | `<短哈希>` | AGENTS.md 列的第一条。命令本身不指定 CGO 开关，产物形态跟着环境的缺省值走（见第 9 节） | AGENTS.md:174 |
+| mac 完整版 | `bash build_cli/mac/build.sh` | `bin/zpack-cli` | `<短哈希>` | **交付与装机产物**。缺产物时会自动触发三个配料脚本 | AGENTS.md:179；`build_cli/mac/build.sh:9-16` |
+| Windows 完整版 | `bash build_cli/windows/build.sh` | `bin/zpack-cli.exe` | `<短哈希>-full` | **交付与装机产物**。等价于 `bash build_cli/windows/build.sh all` | `build_cli/windows/build.sh:19,65-66` |
 | 完整循环（开发期 cgo 构建） | 先 `export PKG_CONFIG_PATH=build_cli/mac/prefix/lib/pkgconfig`，再 cgo 构建 | — | — | media / audio / HDR / ffmpeg 直调开发时用。AGENTS.md 没给出完整的 go build 命令，可以照 `build_cli/mac/build.sh:14-16` 的三步：export → `go clean -cache` → `CGO_ENABLED=1 go build …` | AGENTS.md:199 |
 
 版本号由 `-X main.version` 注入（`cmd/zpack/main.go:15`，缺省 `dev`）。只有 Windows 完整版给版本串加了 `-full` 后缀（`build_cli/windows/build.sh:65`）。
@@ -58,14 +58,14 @@
 |---|---|---|---|
 | `go test ./...` | 单测（表驱动；只测纯逻辑函数，`run*` 函数直接 `os.Exit` 所以不测） | Go 工具链。纯 Go 构建和 cgo 构建都能跑；缺 7z 引擎时相关用例自动跳过 | AGENTS.md:177；`core/sevenz_test.go:15-17` |
 | `go vet ./...`，再加 `GOOS=windows go vet ./...`、`GOOS=linux go vet ./...` | 三平台编译验证 | 同上 | AGENTS.md:178 |
-| `bash verify/verify.sh` | 行为门禁 | `bin/zpack`（应当是完整版）；外部命令 python3、perl、unzip、shasum、tar、gzip、bzip2，以及 BSD 形态的 `stat -f%z` | AGENTS.md:181；`verify/verify.sh:12` |
-| `bash verify/verify-media.sh` | 媒体门禁 | 完整版 `bin/zpack`；系统自带的 `ffmpeg` / `ffprobe`（造夹具、校验产物）；office 段用到 macOS 的 `textutil` | `verify/verify-media.sh:2-3,22-31` |
-| `bash verify/verify-image.sh` | 图片门禁 | `bin/zpack`（纯 Go 即可，image 零 cgo）；系统 `ffmpeg` / `ffprobe` 造夹具；BSD 形态的 `stat -f%z` 和 `md5 -q` | `verify/verify-image.sh:2,12-14`、`:106-107` |
-| `go run ./scripts/genenv` | 生成 realEnvTest 语料 | 必须在仓库根目录跑（目录名还得是 `zpack`）；媒体族要完整版 `bin/zpack` | `scripts/genenv/main.go:43-47` |
+| `bash verify/verify.sh` | 行为门禁 | `bin/zpack-cli`（应当是完整版）；外部命令 python3、perl、unzip、shasum、tar、gzip、bzip2，以及 BSD 形态的 `stat -f%z` | AGENTS.md:181；`verify/verify.sh:12` |
+| `bash verify/verify-media.sh` | 媒体门禁 | 完整版 `bin/zpack-cli`；系统自带的 `ffmpeg` / `ffprobe`（造夹具、校验产物）；office 段用到 macOS 的 `textutil` | `verify/verify-media.sh:2-3,22-31` |
+| `bash verify/verify-image.sh` | 图片门禁 | `bin/zpack-cli`（纯 Go 即可，image 零 cgo）；系统 `ffmpeg` / `ffprobe` 造夹具；BSD 形态的 `stat -f%z` 和 `md5 -q` | `verify/verify-image.sh:2,12-14`、`:106-107` |
+| `go run ./scripts/genenv` | 生成 realEnvTest 语料 | 必须在仓库根目录跑（目录名还得是 `zpack`）；媒体族要完整版 `bin/zpack-cli` | `scripts/genenv/main.go:43-47` |
 | `ZPACK_IMAPI2_LIVE_TEST=1 go test ./internal/imapi2 -run TestLiveReadOnly` | 刻录真机只读回归（不写盘） | 光驱里有内容的盘 | AGENTS.md:277 |
-| `bash ui/right-click/macos/refresh-engine.sh` | 把引擎换进两个 mac 装机位并重签 | 完整版 `bin/zpack`；重签 Finder 宿主要 Apple Development 证书 | `ui/right-click/macos/refresh-engine.sh:11-16,25,35` |
+| `bash ui/right-click/macos/refresh-engine.sh` | 把引擎换进两个 mac 装机位并重签 | 完整版 `bin/zpack-cli`；重签 Finder 宿主要 Apple Development 证书 | `ui/right-click/macos/refresh-engine.sh:11-16,25,35` |
 
-三个验收脚本都写死了 `bin/zpack`（不带 `.exe`）。2026-11-24 在 Windows 10 的 Git Bash 上 `verify/verify.sh` 能跑起来（见第 4.6 节），说明 Git Bash 能把它解析到 `bin/zpack.exe`。
+三个验收脚本都写死了 `bin/zpack-cli`（不带 `.exe`）。2026-11-24 在 Windows 10 的 Git Bash 上 `verify/verify.sh` 能跑起来（见第 4.6 节），说明 Git Bash 能把它解析到 `bin/zpack-cli.exe`。
 
 ### 2.3 产线脚本清单
 
@@ -80,7 +80,7 @@
 | `build_cli/windows/deps_static.sh` | Windows：编码器全家 8 步 → `build_cli/windows/prefix/`，直调库另拷 `internal/ffmpegcli/libs/` | 无 | `FORCE=1`（清空 prefix 内容，`:19`）；`KEEP_WORK=1`（保留临时目录，`:23`）；`ZPACK_FFMPEG_SEED`（本地种子旁路，`:179`）；`https_proxy`（`:28-30`） |
 | `build_cli/windows/office_static.sh` | Windows：office_oxide v0.1.16 → `office/libs/` | 无 | `KEEP_WORK=1`（`:20`）；`https_proxy`（`:6` 的注释） |
 | `build_cli/linux/build.sh`、`build_cli/linux/prepare.sh` | Linux 产线占位（还是 musl + zig cc 的旧设想） | — | — |
-| `ui/right-click/macos/refresh-engine.sh` | 把 `bin/zpack` 换进 `/Applications/zpack.app` 与 `/Applications/zpack Finder Menu.app` 并重签 | 无 | `IDENTITY`（签名身份；没设就自动找第一个 Apple Development 证书，`:16`） |
+| `ui/right-click/macos/refresh-engine.sh` | 把 `bin/zpack-cli` 换进 `/Applications/zpack.app` 与 `/Applications/zpack Finder Menu.app` 并重签 | 无 | `IDENTITY`（签名身份；没设就自动找第一个 Apple Development 证书，`:16`） |
 | `scripts/genenv/main.go` | 生成 `realEnvTest/` 语料 | `--fast` / `--full` / `--clean`（见第 4.7 节） | — |
 
 （全局规则见 [conventions.md](conventions.md)。构建与验收没有对外命令，所以也没有 CLI 旗标——「开关」就是上表最后一列的环境变量。）
@@ -92,9 +92,9 @@
 | 产物 | 形态 | 体积 | 动态依赖的硬约束 | 能不能交付 |
 |---|---|---|---|---|
 | `bin/zpack-dev` | 纯 Go | — | — | **不能**。只是开发期工具 |
-| `bin/zpack.exe`（交叉编译出来的） | 纯 Go | AGENTS.md:279 记 2026-11-08 的纯 Go `-s -w` 产物是 16.99MB（那之后又加了不少功能，只作量级参考） | AGENTS.md:404 记纯 Go 的 win exe「始终仅 kernel32.dll」 | **不能** |
-| `bin/zpack`（mac 完整版） | cgo 静态链 | AGENTS.md:179、:204 记约 48MB。【待确认】这是不是接进 office_oxide（AGENTS.md:233 记增重约 12MB）与 7z 之后的数字 | `otool -L` 里不得出现 `/opt/homebrew`（`build_cli/mac/build.sh:19-23`），动态依赖只能是系统出厂库 | **能** |
-| `bin/zpack.exe`（Windows 完整版） | cgo 静态链 | 83MB（AGENTS.md:275、:323；:294 记的是 82MB。产线脚本最后打印的体积取的是 `du -h` 的输出） | import 表里只允许白名单内的系统 DLL（`build_cli/windows/build.sh:69`）；AGENTS.md:403 记 32 个导入 DLL 全是系统出厂 | **能** |
+| `bin/zpack-cli.exe`（交叉编译出来的） | 纯 Go | AGENTS.md:279 记 2026-11-08 的纯 Go `-s -w` 产物是 16.99MB（那之后又加了不少功能，只作量级参考） | AGENTS.md:404 记纯 Go 的 win exe「始终仅 kernel32.dll」 | **不能** |
+| `bin/zpack-cli`（mac 完整版） | cgo 静态链 | AGENTS.md:179、:204 记约 48MB。【待确认】这是不是接进 office_oxide（AGENTS.md:233 记增重约 12MB）与 7z 之后的数字 | `otool -L` 里不得出现 `/opt/homebrew`（`build_cli/mac/build.sh:19-23`），动态依赖只能是系统出厂库 | **能** |
+| `bin/zpack-cli.exe`（Windows 完整版） | cgo 静态链 | 83MB（AGENTS.md:275、:323；:294 记的是 82MB。产线脚本最后打印的体积取的是 `du -h` 的输出） | import 表里只允许白名单内的系统 DLL（`build_cli/windows/build.sh:69`）；AGENTS.md:403 记 32 个导入 DLL 全是系统出厂 | **能** |
 | 两个 mac 装机位里的 `Contents/Resources/zpack` | mac 完整版的拷贝 | 同上 | 同上，而且所在的 .app 必须保持签名有效 | **能**（这就是装机产物） |
 
 依赖准入的总规则（静态优先、体积预算、零新增动态链接、许可证不作硬约束）见第 6.1 节。
@@ -130,7 +130,7 @@
 | 脚本 | 成功 | 失败 |
 |---|---|---|
 | `build_cli/mac/build.sh` | 打印 `✓ 零 brew 动态依赖`、产物体积与动态依赖清单、`✓ 完成（单文件自包含：媒体引擎 + ffmpeg CLI 进程内直调，零释放）`（`:24-29`），exit 0 | `otool -L` 里出现 `/opt/homebrew`：打印 `✗ 仍链接 brew 动态库 …`，exit 1（`:19-23`）。其它任何一步命令失败，`set -euo pipefail` 直接中止（`:5`） |
-| `build_cli/windows/build.sh` | 打印 `✓ DLL 全部系统出厂` 与 `✓ <仓库>/bin/zpack.exe（完整版 <体积>）`（`:74-75`），exit 0 | 白名单外有 DLL：打印 `✗ 非出厂 DLL 入链：…`，exit 1（`:69-73`）。子命令不认识：打印 `用法: … [deps\|build\|all]`，exit 1（`:78`）。定位不到用户目录：打印 `✗ 无法定位用户目录：…`，exit 1（`:26-31`） |
+| `build_cli/windows/build.sh` | 打印 `✓ DLL 全部系统出厂` 与 `✓ <仓库>/bin/zpack-cli.exe（完整版 <体积>）`（`:74-75`），exit 0 | 白名单外有 DLL：打印 `✗ 非出厂 DLL 入链：…`，exit 1（`:69-73`）。子命令不认识：打印 `用法: … [deps\|build\|all]`，exit 1（`:78`）。定位不到用户目录：打印 `✗ 无法定位用户目录：…`，exit 1（`:26-31`） |
 | `ffmpeg_static.sh` / `deps_static.sh` | 末尾打印 `═══ 产线就绪 ═══`（`build_cli/mac/ffmpeg_static.sh:155`）/ `═══ 编码器产线就绪 ═══`（`build_cli/windows/deps_static.sh:261`）和产物清单 | 同上，`set -euo pipefail` |
 
 ### 3.5 验收脚本的判定
@@ -138,7 +138,7 @@
 - 每个用例计一次数。最后打印 `验收结果：通过 N / 失败 M`（`verify/verify.sh:1178`）、`媒体门禁：通过 N / 失败 M`（`verify/verify-media.sh:494`）、`图片门禁：通过 N / 失败 M`（`verify/verify-image.sh:300`）。
 - 失败的用例打印 `✗ <用例名>`，下面跟「期望 / 实际」两行（`verify/verify.sh:18-23`）。
 - 退出码：失败数为 0 才是 0，否则是 1（`verify/verify.sh:1179`、`verify/verify-media.sh:495`、`verify/verify-image.sh:301`）。
-- `verify/verify-media.sh` 有两个前置检查，不过就直接 exit 1：纯 Go 构建打印 `⛔ bin/zpack 为纯 Go 构建（无媒体引擎）——请用 build_cli/mac/build.sh 产物运行本门禁`；系统里没有 `ffmpeg` 打印 `⛔ 需要 ffmpeg 生成夹具与校验产物`（`:22-31`）。
+- `verify/verify-media.sh` 有两个前置检查，不过就直接 exit 1：纯 Go 构建打印 `⛔ bin/zpack-cli 为纯 Go 构建（无媒体引擎）——请用 build_cli/mac/build.sh 产物运行本门禁`；系统里没有 `ffmpeg` 打印 `⛔ 需要 ffmpeg 生成夹具与校验产物`（`:22-31`）。
 - `verify/verify.sh` 检出刻录机时打印 `· 跳过 burn 多文件真实写入用例：检测到刻录机（刻录不可逆，门禁不写盘）`（`:1122`）。这是提示，不是失败。
 
 ## 4. 流程细则
@@ -154,7 +154,7 @@ bin/zpack-dev <命令>                                   # media/HDR/HEIC/ffmpeg
 （AGENTS.md:195-197。）
 
 - **适用范围**：pdf、hash、压缩、图片标准格式这类纯功能——除了第 3.2 节列出来的那几行，都在纯 Go 下可用。刻录在 Windows 上也可用（IMAPI2 经 go-ole 调用，纯 Go 构建，AGENTS.md:237）。
-- 产物名带 `-dev`，不占 `bin/zpack`。
+- 产物名带 `-dev`，不占 `bin/zpack-cli`。
 - `go test ./...` 在纯 Go 构建和缺 7z 引擎的机器上照样全绿：两个 7z 写入单测在引擎不可用时 `t.Skip`（`core/sevenz_test.go:15-17`、`:73-75`），行为断言放在 `verify/verify.sh` 的门禁里。
 - **新功能家族的落位惯例**（AGENTS.md:200）：引擎放顶层包（同 `image/`、`pdf/`，纯函数加文件），命令面放 `cli/<功能>/`，门禁进 `verify/verify.sh`——纯构建可跑、反馈秒级。只有真的要碰 ffmpeg / libav 才进 cgo 层。
 
@@ -162,18 +162,18 @@ bin/zpack-dev <命令>                                   # media/HDR/HEIC/ffmpeg
 
 1. **先在完整循环里验证**（mac）：`export PKG_CONFIG_PATH=build_cli/mac/prefix/lib/pkgconfig`，再 cgo 构建（AGENTS.md:199）。产线脚本每次都会 `go clean -cache`（`build_cli/mac/build.sh:15`），所以跑完产线后 cgo 冷构建要等一会，属预期（AGENTS.md:200）。
 2. **重铸交付产物**：mac 跑 `bash build_cli/mac/build.sh`，Windows 跑 `bash build_cli/windows/build.sh`。
-3. **刷新两个 mac 装机位**：`bash ui/right-click/macos/refresh-engine.sh`（引擎取 `bin/zpack`，`:8`、`:11`）。**禁止手工 cp**，原因见第 6.9 节。
+3. **刷新两个 mac 装机位**：`bash ui/right-click/macos/refresh-engine.sh`（引擎取 `bin/zpack-cli`，`:8`、`:11`）。**禁止手工 cp**，原因见第 6.9 节。
 
 `refresh-engine.sh` 做的事：
 
 | 步骤 | 做法 | 出处 |
 |---|---|---|
-| 前置 | `bin/zpack` 必须可执行，否则打印 `✗ 缺引擎 …（先跑产线 build_cli/mac/build.sh）`，exit 1 | `:25` |
-| GUI 本体 `/Applications/zpack.app`（存在才做） | 把引擎拷到 `Contents/Resources/zpack`，`xattr -cr` 清掉**拷贝件**的资源叉（引擎自带 Finder 自定义图标，codesign 见到就拒签；`bin/zpack` 原件不动）→ `codesign --force --sign -`（adhoc 签名）→ `codesign --verify --strict` | `:20-23`、`:27-32` |
+| 前置 | `bin/zpack-cli` 必须可执行，否则打印 `✗ 缺引擎 …（先跑产线 build_cli/mac/build.sh）`，exit 1 | `:25` |
+| GUI 本体 `/Applications/zpack.app`（存在才做） | 把引擎拷到 `Contents/Resources/zpack`，`xattr -cr` 清掉**拷贝件**的资源叉（引擎自带 Finder 自定义图标，codesign 见到就拒签；`bin/zpack-cli` 原件不动）→ `codesign --force --sign -`（adhoc 签名）→ `codesign --verify --strict` | `:20-23`、`:27-32` |
 | Finder 宿主 `/Applications/zpack Finder Menu.app`（存在才做） | 要有 Apple Development 证书（`IDENTITY`；没给就自动找第一个，找不到打印 `✗ 无 Apple Development 证书，无法重签 Finder 宿主`，exit 1）→ 同样换引擎 → `codesign --force --sign "$IDENTITY" --options runtime`（与 `build-xcode.sh` 同款；appex 没动，不用重签）→ `codesign --verify --deep --strict` | `:16`、`:34-40` |
 | 核对 | `pluginkit -mAvv -i <扩展 ID>` 看当前生效的扩展是不是真身里的 appex；不是就提示 `⚠ 右键扩展当前生效的是别处的副本：…——跑 build-xcode.sh 重新部署` | `:14-15`、`:41-45` |
 
-Windows 没有装机位刷新脚本：交付产物就是 `bin/zpack.exe`，GUI 的无头测试也直接认仓库里的 `bin/zpack.exe`（AGENTS.md:274）。
+Windows 没有装机位刷新脚本：交付产物就是 `bin/zpack-cli.exe`，GUI 的无头测试也直接认仓库里的 `bin/zpack-cli.exe`（AGENTS.md:274）。
 
 ### 4.3 mac 完整版产线（`build_cli/mac/`）
 
@@ -183,8 +183,8 @@ Windows 没有装机位刷新脚本：交付产物就是 `bin/zpack.exe`，GUI �
 2. `prefix/bin/ffmpeg` 不存在 → 跑 `ffmpeg_static.sh`（`:9`）。
 3. office 库不存在 → 跑 `office_static.sh`（`:10`。这一行查的路径不对，见第 9 节）。
 4. `internal/sevenzipcli/libs/libzpack_7zcli.a` 不存在 → 跑 `sevenzip_static.sh`（`:11`）。
-5. `export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"` → `go clean -cache` → `CGO_ENABLED=1 go build -ldflags "-s -w -X main.version=$(git rev-parse --short HEAD)" -o bin/zpack ./cmd/zpack`（`:14-16`）。
-6. 断言 `otool -L bin/zpack` 里 `/opt/homebrew` 出现 0 次，否则 exit 1（`:18-24`）。
+5. `export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"` → `go clean -cache` → `CGO_ENABLED=1 go build -ldflags "-s -w -X main.version=$(git rev-parse --short HEAD)" -o bin/zpack-cli ./cmd/zpack`（`:14-16`）。
+6. 断言 `otool -L bin/zpack-cli` 里 `/opt/homebrew` 出现 0 次，否则 exit 1（`:18-24`）。
 7. 打印产物体积与动态依赖清单（`:26-28`）。
 
 **前置工具**：Go、Xcode 命令行工具（clang / ar / ld，`sevenzip_static.sh:19`）、cargo（`brew install rust`，`office_static.sh:13`）、cmake、git、curl。产线脚本不替你装这些；会 `brew install` 的只有 POC 遗留的 `prepare.sh`。
@@ -297,11 +297,11 @@ winget install MSYS2.MSYS2                                          # 装到 C:\
 5. `build` 或 `all`：`export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"`、`CGO_ENABLED=1`、`mkdir -p internal/ffmpegcli/libs`、`go clean -cache`，然后：
 
    ```
-   go build -ldflags "-s -w -X main.version=$(git rev-parse --short HEAD)-full -extldflags '-Wl,-Bstatic -lpthread -Wl,-Bdynamic'" -o bin/zpack.exe ./cmd/zpack
+   go build -ldflags "-s -w -X main.version=$(git rev-parse --short HEAD)-full -extldflags '-Wl,-Bstatic -lpthread -Wl,-Bdynamic'" -o bin/zpack-cli.exe ./cmd/zpack
    ```
 
    （`:58-66`。`-extldflags` 追加在链接行末尾，原因见第 6.11 节 Windows 陷阱 #19。）
-6. **DLL 白名单校验**（`:69-73`）：`objdump -p bin/zpack.exe | grep "DLL Name"` 的结果里，匹配不上下面这串的算「非出厂 DLL」，打印 `✗ 非出厂 DLL 入链：…` 并 exit 1：
+6. **DLL 白名单校验**（`:69-73`）：`objdump -p bin/zpack-cli.exe | grep "DLL Name"` 的结果里，匹配不上下面这串的算「非出厂 DLL」，打印 `✗ 非出厂 DLL 入链：…` 并 exit 1：
 
    ```
    kernel32|ntdll|user32|advapi32|ws2_32|secur32|shlwapi|shell32|ole32|oleaut32|uuid|psapi|gdi32|vfw32|avicap32|userenv|bcrypt|crypt32|mfuuid|strmiids|ncrypt|api-ms-win
@@ -374,8 +374,8 @@ winget install MSYS2.MSYS2                                          # 装到 C:\
 | 并发 | 同一组里只留最后一个 run，进行中的旧 run 被取消 | `:29-31` |
 | 运行环境 | `windows-latest`；`msys2/setup-msys2@v2`（UCRT64，装的是和本机一样的那套包）；`actions/setup-go@v5`（1.27） | `:35-59` |
 | prefix 缓存 | 只缓存 `build_cli/windows/prefix`，key 是 `deps-n9.0-fullcodecs-win-native-v1` | `:61-65` |
-| 步骤 | `bash build_cli/windows/build.sh deps` → `bash build_cli/windows/build.sh build` → 冒烟 → 上传 artifact `zpack-windows-x64-full`（`bin/zpack.exe`） | `:67-86` |
-| 冒烟 | `./bin/zpack.exe --version`；`./bin/zpack.exe ffmpeg -version 2>/dev/null \| head -1 \|\| true`；数 `-encoders` 里 `libx264\|libx265\|libmp3lame\|libopus\|libvpx\|libjxl\|libaom` 命中几行，结果不校验（`\|\| true`） | `:75-80` |
+| 步骤 | `bash build_cli/windows/build.sh deps` → `bash build_cli/windows/build.sh build` → 冒烟 → 上传 artifact `zpack-windows-x64-full`（`bin/zpack-cli.exe`） | `:67-86` |
+| 冒烟 | `./bin/zpack-cli.exe --version`；`./bin/zpack-cli.exe ffmpeg -version 2>/dev/null \| head -1 \|\| true`；数 `-encoders` 里 `libx264\|libx265\|libmp3lame\|libopus\|libvpx\|libjxl\|libaom` 命中几行，结果不校验（`\|\| true`） | `:75-80` |
 
 两点从工作流文件读出来的现状：
 
@@ -388,9 +388,9 @@ winget install MSYS2.MSYS2                                          # 装到 C:\
 
 | 脚本 | 要什么产物 | 备注 |
 |---|---|---|
-| `verify/verify.sh` | `bin/zpack`，**应当是完整版** | 7z 写入那一段需要 7z 引擎——注释写明「bin/zpack 恒为完整版故不设能力门控」（`verify/verify.sh:1126`）。拿纯 Go 产物或 Windows 完整版去跑，这一段会红（见第 3.2 节）。有刻录机的机器自动少跑 2 例（`:1115-1123`） |
-| `verify/verify-media.sh` | **完整版** `bin/zpack` | 开头有纯构建探针，纯 Go 直接 exit 1（`:22-27`） |
-| `verify/verify-image.sh` | `bin/zpack`，纯 Go 就行 | image 零 cgo；HDR / HEIC 的用例在 verify-media.sh 里，不在这里 |
+| `verify/verify.sh` | `bin/zpack-cli`，**应当是完整版** | 7z 写入那一段需要 7z 引擎——注释写明「bin/zpack-cli 恒为完整版故不设能力门控」（`verify/verify.sh:1126`）。拿纯 Go 产物或 Windows 完整版去跑，这一段会红（见第 3.2 节）。有刻录机的机器自动少跑 2 例（`:1115-1123`） |
+| `verify/verify-media.sh` | **完整版** `bin/zpack-cli` | 开头有纯构建探针，纯 Go 直接 exit 1（`:22-27`） |
+| `verify/verify-image.sh` | `bin/zpack-cli`，纯 Go 就行 | image 零 cgo；HDR / HEIC 的用例在 verify-media.sh 里，不在这里 |
 
 **三个脚本对环境的假设**（都是照着 mac 写的）：
 
@@ -425,9 +425,9 @@ winget install MSYS2.MSYS2                                          # 装到 C:\
 
 - **幂等**：已经存在的件跳过（`main.go:85`、`:138`、`:202`、`:233`）。
 - **必须在仓库根目录跑**，而且目录名得是 `zpack`（`main.go:43-45`）——genenv 直接 import 了本模块的 `core` 包。
-- **媒体族怎么来**：调 `bin/zpack ffmpeg …`（进程内直调）用 lavfi 造 5 个夹具——`video-720p-60s.mp4`（testsrc2 + libx264 + aac）、`video-rotated.mp4`、`audio-tone-320k.mp3`（libmp3lame）、`photo-6000x4000.jpg`、`photo-transparent.png`（`main.go:165-221`）。`bin/zpack` 不在就打印「· 跳过媒体族：未找到 …（先跑 build_cli/mac/build.sh 铸完整版）」（`:166-169`）。
+- **媒体族怎么来**：调 `bin/zpack-cli ffmpeg …`（进程内直调）用 lavfi 造 5 个夹具——`video-720p-60s.mp4`（testsrc2 + libx264 + aac）、`video-rotated.mp4`、`audio-tone-320k.mp3`（libmp3lame）、`photo-6000x4000.jpg`、`photo-transparent.png`（`main.go:165-221`）。`bin/zpack-cli` 不在就打印「· 跳过媒体族：未找到 …（先跑 build_cli/mac/build.sh 铸完整版）」（`:166-169`）。
 - **归档族怎么来**：不经过二进制，genenv 在进程内直接调 `core.Compress`（`main.go:231-259`）——`archives/机密归档.zip`（密码 `test1234`）、`archives/项目备份.zip.001-002`（两份 1G 随机源，按 1GB 切卷）、`archives/文档集.tar.gz`。
-- **Windows 上媒体族恒被跳过**：genenv 找的是 `bin/zpack`，不带 `.exe`（`main.go:47`），而 Windows 的完整版叫 `bin/zpack.exe`。这是按代码读出来的，没有实跑。
+- **Windows 上媒体族恒被跳过**：genenv 找的是 `bin/zpack-cli`，不带 `.exe`（`main.go:47`），而 Windows 的完整版叫 `bin/zpack-cli.exe`。这是按代码读出来的，没有实跑。
 
 ## 5. 平台差异
 
@@ -435,7 +435,7 @@ winget install MSYS2.MSYS2                                          # 装到 C:\
 |---|---|---|---|
 | 完整版产线 | 有：`build_cli/windows/`，原生 MinGW（MSYS2 / UCRT64） | 有：`build_cli/mac/` | 没有，只有两个占位脚本 |
 | 7z 写入引擎 | **没有**——完整版里也报「需完整版」 | 有（构建标签 `cgo && darwin`；直调库只编 arm64） | 没有，同 Windows，走桩 |
-| 产物名与版本串 | `bin/zpack.exe`，版本串带 `-full` | `bin/zpack`，版本串不带后缀 | — |
+| 产物名与版本串 | `bin/zpack-cli.exe`，版本串带 `-full` | `bin/zpack-cli`，版本串不带后缀 | — |
 | 产物体积 | 83MB | 约 48MB（【待确认】，见第 3.1 节） | — |
 | 动态依赖怎么校验 | `objdump -p` 的输出对 DLL 白名单 | `otool -L` 里不得出现 `/opt/homebrew` | — |
 | ffmpeg 的 main 怎么改名 | `objcopy --redefine-sym`，在目标文件层改 | `-Dmain=zpack_ffmpeg_cli_main`，编译宏 | — |
@@ -449,8 +449,8 @@ winget install MSYS2.MSYS2                                          # 装到 C:\
 | `verify/verify.sh` | 要 `stat -f%z` → `stat -c%s` 的垫片；有环境噪音（第 4.6 节） | 三个脚本都是照着它写的 | AGENTS.md 里没有实测记录 |
 | `verify/verify-media.sh` | 依赖 macOS 的 `textutil`，按现状跑不了 | 要系统 ffmpeg，要完整版产物 | 同左，没有实测记录 |
 | `verify/verify-image.sh` | 要系统 ffmpeg / ffprobe 造夹具，还要 `stat` 垫片和 `md5 -q` | 同左 | 没有实测记录 |
-| genenv 的媒体族 | 恒被跳过（找的是 `bin/zpack`，不带 `.exe`） | 可用，要完整版 | 要完整版，而 Linux 还没有完整版产线 |
-| 刷新装机位 | 没有这一步，产物就是 `bin/zpack.exe` | `refresh-engine.sh` | — |
+| genenv 的媒体族 | 恒被跳过（找的是 `bin/zpack-cli`，不带 `.exe`） | 可用，要完整版 | 要完整版，而 Linux 还没有完整版产线 |
+| 刷新装机位 | 没有这一步，产物就是 `bin/zpack-cli.exe` | `refresh-engine.sh` | — |
 | 纯 Go 构建下的刻录 | 可用（IMAPI2，经 go-ole） | 可用（hdiutil） | 可用（xorriso；没装会报安装引导） |
 
 纯 Go 构建与完整版的差别不按平台分，见第 3.2 节的能力矩阵。唯一的平台例外是 7z 写入：mac 完整版有，Windows 完整版没有。
@@ -512,7 +512,7 @@ Windows 上才暴露、mac 上毫无症状的代码问题，记录在第 6.8 节
 
 ### 6.2 产物定案：为什么恒为完整版
 
-- **定案**（2026-11-22 用户拍板，AGENTS.md:188-190）：「无纯 Go 心结，一切以功能好用为基础」。`bin/zpack` 与装机产物恒为完整版（`build_cli` 产线的 CGO 构建，media / audio / HDR / HEIC / ffmpeg 直调全可用）。
+- **定案**（2026-11-22 用户拍板，AGENTS.md:188-190）：「无纯 Go 心结，一切以功能好用为基础」。`bin/zpack-cli` 与装机产物恒为完整版（`build_cli` 产线的 CGO 构建，media / audio / HDR / HEIC / ffmpeg 直调全可用）。
 - 纯 Go 构建只是**开发期快速编译循环**的工具，不得作为交付或装机产物。原因很直接：纯 Go 下 media 族报「需完整版」，交到用户手里会当场撞墙。
 - cgo 早就按构建标签分了层，所以纯功能开发用纯循环就行，不需要为了编译快去动 cgo 代码。
 - **分层怎么落的**：每个引擎包都是成对的文件——`//go:build cgo` 的真实现，加 `//go:build !cgo` 的桩；7z 更进一步，是 `cgo && darwin` 对 `!cgo || !darwin`。
@@ -625,7 +625,7 @@ go:embed 嵌入、尾注附二进制这两版都已经退役。`build_cli/mac/bu
 - 两个装机位——`/Applications/zpack.app` 和 `/Applications/zpack Finder Menu.app`——都是**已签名**的 .app。包里的文件事后被改，哪怕只是换了一个 `Resources/zpack`，签名就失效了。
 - Finder 宿主带 Hardened Runtime。签名一坏，系统就弃用真身，退回别处注册的旧副本。2026-11-23 的「右键图标又没了」就是这么来的：被选中的旧副本里没有 `zpack-menu.icns`（AGENTS.md:191）。
 - 所以换引擎必须走 `refresh-engine.sh`：拷进去 → 清资源叉 → 重签 → `codesign --verify` 校验 → 核对 pluginkit 当前生效的扩展是不是真身（步骤见第 4.2 节）。
-- 引擎自带 Finder 的自定义图标（在资源叉里），codesign 见到就拒签。脚本只对**拷贝件**做 `xattr -cr`，`bin/zpack` 原件不动（`refresh-engine.sh:18-22`；AGENTS.md:395）。
+- 引擎自带 Finder 的自定义图标（在资源叉里），codesign 见到就拒签。脚本只对**拷贝件**做 `xattr -cr`，`bin/zpack-cli` 原件不动（`refresh-engine.sh:18-22`；AGENTS.md:395）。
 - `ui/gui/install.sh` 同理：引擎是在 mygo 签名**之后**才注入的，注入完要 adhoc 重签并校验（AGENTS.md:390）。
 - 右键出问题时的诊断三连（AGENTS.md:390）：`pluginkit -mAvv -i <appex-id>` 看 Path 是不是 `/Applications` 下的真身 → `codesign --verify --deep --strict` 看签名 → `lsregister -dump | grep` 看有没有旧宿主。同 ID 多副本注册、appex 手动签名必带 `--options runtime` 这两条，细则在 [gui.md](gui.md)（AGENTS.md:389、:391）。
 
@@ -694,7 +694,7 @@ Windows 完整版对比 brew 版 ffmpeg 还有的缺口（配料待补，AGENTS.
 
 - **三个脚本都是照着 mac 写的**：`/tmp` 工作目录、`stat -f%z`、`textutil`、`/dev/null`、`/Applications/LibreOffice.app`。在 Windows 上跑要垫片，还会有环境噪音（第 4.6 节）。给脚本加新用例时，先想想这条用例在三个平台上各需要什么外部工具。
 - **门禁不许写盘**。刻录不可逆：`verify/verify.sh` 检出刻录机时跳过「真实写入」用例，只跑不碰设备的参数校验用例（`verify/verify.sh:1107-1123`；AGENTS.md:256）。这是 2026-11-24 Windows 接入 IMAPI2 之后补的保护——不补的话，门禁会真的往盘上写。**新增会碰到物理设备的用例时必须沿用这个保护。**
-- **门禁默认 `bin/zpack` 是完整版**。verify.sh 的 7z 写入段注释写明「bin/zpack 恒为完整版故不设能力门控」（`:1126`）——产物定案的另一面。
+- **门禁默认 `bin/zpack-cli` 是完整版**。verify.sh 的 7z 写入段注释写明「bin/zpack-cli 恒为完整版故不设能力门控」（`:1126`）——产物定案的另一面。
 - **「全绿」看的是失败数为 0，不是总数等于某个数**。用例总数会随环境变：verify.sh 有刻录机时少 2 例；verify-media.sh 看有没有 LibreOffice、JXL 夹具有没有生成（第 8 节）。
 - **门禁拿 zpack 自己做交叉验证**：JXL 解码链用 `zpack ffmpeg` 自己产夹具来验证（自举，`verify/verify-media.sh:349-357`）；hash 用 shasum 双向互操作；取字段尽量用 `zpack json get`，不靠 python3 或 jq。
 - **期望值和引擎文案绑死**。门禁大量用 `grep -q` 匹配 `error_info` 的文案（「输入不存在」「只能单独刻录」「没有可压缩的文件」……）。改引擎里的文案，必须同步改 `verify/verify.sh`（AGENTS.md:348）。
@@ -710,7 +710,7 @@ Windows 完整版对比 brew 版 ffmpeg 还有的缺口（配料待补，AGENTS.
 - **新增引擎包**：照成对文件的分层落位；纯 Go 桩要给出明确的「需完整版」文案；单测在引擎不可用时 `t.Skip`。
 - **新增验收用例**：用例数被 AGENTS.md 当作基线记录，加完要同步 AGENTS.md 和本 spec 的第 8 节。会碰物理设备的用例必须有第 6.12 节说的保护。
 - **新增依赖外部工具的用例**：三个平台上外部工具的可用性不一样。取字段用 `zpack json get`，少用 python3。
-- **改 `bin/zpack` 的路径或名字**：三个验收脚本、genenv、`refresh-engine.sh`、GUI 测试的 `repoEngine` 都写死了路径。
+- **改 `bin/zpack-cli` 的路径或名字**：三个验收脚本、genenv、`refresh-engine.sh`、GUI 测试的 `repoEngine` 都写死了路径。
 - **在放着完整版的仓库里跑交叉编译命令**（AGENTS.md:175）或通用构建命令（AGENTS.md:174）：产物同名，会把完整版覆盖掉。
 
 ## 7. 代码位置
@@ -817,7 +817,7 @@ Windows 完整版对比 brew 版 ffmpeg 还有的缺口（配料待补，AGENTS.
 
 - **运行时的总数**：无条件执行的是 144 例。装了 LibreOffice、JXL 夹具也生成了，是 158 例；没装 LibreOffice 是 147 例（JXL 夹具生成成功）或 146 例。
 - AGENTS.md:182 写的「128 用例」已经对不上现在的脚本。
-- **前置**：完整版 `bin/zpack`；系统的 `ffmpeg` / `ffprobe`；python3；macOS 的 `textutil`（office 段）；可选的 LibreOffice。AVIF 夹具还用到了系统 ffmpeg 的 `libsvtav1`（`:320`）。
+- **前置**：完整版 `bin/zpack-cli`；系统的 `ffmpeg` / `ffprobe`；python3；macOS 的 `textutil`（office 段）；可选的 LibreOffice。AVIF 夹具还用到了系统 ffmpeg 的 `libsvtav1`（`:320`）。
 
 ### 8.3 `verify/verify-image.sh`——113 例
 
@@ -841,15 +841,15 @@ Windows 完整版对比 brew 版 ffmpeg 还有的缺口（配料待补，AGENTS.
 
 - `go test ./...`：表驱动单测，只测纯逻辑函数；`run*` 函数直接 `os.Exit`，不测（AGENTS.md:177）。7z 写入的两个单测在引擎不可用时跳过（`core/sevenz_test.go:15-17`、`:73-75`）。
 - `go vet ./...` 加 `GOOS=windows`、`GOOS=linux` 各一遍：三平台编译验证（AGENTS.md:178）。为什么 Windows 上还得真跑一遍，见第 6.8 节。
-- GUI 的无头测试（`ui/gui`）归 [gui.md](gui.md)；它们认的是仓库里的 `bin/zpack(.exe)`（AGENTS.md:258、:274）。
+- GUI 的无头测试（`ui/gui`）归 [gui.md](gui.md)；它们认的是仓库里的 `bin/zpack-cli(.exe)`（AGENTS.md:258、:274）。
 
 ### 8.5 手动验证的方法
 
 | 要验证什么 | 怎么做 |
 |---|---|
 | 是不是完整版 | 见第 3.3 节 |
-| mac 产物没有挂 brew 的动态库 | `otool -L bin/zpack \| grep -c /opt/homebrew`，应该是 0（`build_cli/mac/build.sh:19`） |
-| Windows 产物的 import 表 | `objdump -p bin/zpack.exe \| grep "DLL Name"`，逐个对照 `build_cli/windows/build.sh:69` 的白名单 |
+| mac 产物没有挂 brew 的动态库 | `otool -L bin/zpack-cli \| grep -c /opt/homebrew`，应该是 0（`build_cli/mac/build.sh:19`） |
+| Windows 产物的 import 表 | `objdump -p bin/zpack-cli.exe \| grep "DLL Name"`，逐个对照 `build_cli/windows/build.sh:69` 的白名单 |
 | 编码器全家都链进去了 | `zpack ffmpeg -hide_banner -encoders \| grep -cE "libx264\|libx265\|libmp3lame\|libopus\|libvpx\|libjxl\|libaom"`（云端冒烟的同一条命令，`.github/workflows/build-windows.yml:80`）；`zpack ffmpeg -version` 的输出里要有 `libjxl`（`verify/verify-media.sh:337`） |
 | 零释放 | 跑一轮 `zpack ffmpeg …` 转码，前后对比临时目录和 CWD 的文件清单，只应该多出产出物；转码进行中系统里不该有 ffmpeg 子进程（AGENTS.md:213；门禁用例在 `verify/verify-media.sh:344-348`） |
 | 7z 写入的互操作 | `zpack compress <目录> --output x.7z`，再用 homebrew 的 7zz 测一遍（AGENTS.md:235 记 7zz 26.05 交叉读通过） |
@@ -896,7 +896,7 @@ Windows 完整版对比 brew 版 ffmpeg 还有的缺口（配料待补，AGENTS.
 
 **其它**：
 
-- `scripts/genenv/main.go:47` 找的是 `bin/zpack`，不带 `.exe`，提示语也只提 mac 产线（`:167`）——Windows 上媒体族恒被跳过。
+- `scripts/genenv/main.go:47` 找的是 `bin/zpack-cli`，不带 `.exe`，提示语也只提 mac 产线（`:167`）——Windows 上媒体族恒被跳过。
 - `cli/image/image.go:359-374`：`image info` 遇到 HEIC 时输出的 note 写着「像素解码需完整版（CGO 构建）」，而这段代码不区分构建形态，完整版下也是这一句。它归 [image.md](image.md) 管；在这里登记是因为它会影响「是不是完整版」的判断（第 3.3 节）。
 
 ### 9.3 代码与文档不一致的地方
@@ -910,7 +910,7 @@ Windows 完整版对比 brew 版 ffmpeg 还有的缺口（配料待补，AGENTS.
 | AGENTS.md:16 | 「当前实测静态全量约 130MB」 | 两套产线记录的是 mac 约 48MB（AGENTS.md:204）、Windows 83MB（AGENTS.md:275）。130MB 指什么不明 |
 | AGENTS.md:16 | ~~「许可证红线：GPL 库（x264/x265）不捆绑」~~ | **已解决（2026-11-24）**：铁律 2 改为「许可证不是硬约束」，项目按 GPL-2.0-or-later 发布（`LICENSE`），与两套产线都链 x264 / x265 的事实一致 |
 | AGENTS.md:181 | verify.sh「预期 354/354」 | 现在 362 例（有刻录机 360） |
-| AGENTS.md:181 | verify.sh「只测 bin/zpack（纯 Go 产物）」 | verify.sh 含 7z 写入 14 例，要完整版才绿（`verify/verify.sh:1126`） |
+| AGENTS.md:181 | verify.sh「只测 bin/zpack-cli（纯 Go 产物）」 | verify.sh 含 7z 写入 14 例，要完整版才绿（`verify/verify.sh:1126`） |
 | AGENTS.md:182 | verify-media.sh「128 用例」 | 最多 158 例，随 LibreOffice 和 JXL 夹具浮动 |
 | AGENTS.md:183 | verify-image.sh「65 用例」 | 113 例 |
 | AGENTS.md:206 | x265 取自 Bitbucket `multicoreware/x265_git`，「code.videolan.org 镜像要认证」 | mac 脚本仍从 `code.videolan.org` clone（`build_cli/mac/ffmpeg_static.sh:78`）；只有 Windows 脚本用的是 Bitbucket |
@@ -926,7 +926,7 @@ Windows 完整版对比 brew 版 ffmpeg 还有的缺口（配料待补，AGENTS.
 
 | 位置 | 文档说的 | 实际 |
 |---|---|---|
-| `build_cli/README.md:10-12` | mac 只有 `prepare.sh` 和 `build.sh`，`build.sh`「当前产出 poc/transcode」 | mac 有 `build.sh`、`ffmpeg_static.sh`、`office_static.sh`、`sevenzip_static.sh`，另有遗留的 `prepare.sh`；产物是 `bin/zpack` 完整版 |
+| `build_cli/README.md:10-12` | mac 只有 `prepare.sh` 和 `build.sh`，`build.sh`「当前产出 poc/transcode」 | mac 有 `build.sh`、`ffmpeg_static.sh`、`office_static.sh`、`sevenzip_static.sh`，另有遗留的 `prepare.sh`；产物是 `bin/zpack-cli` 完整版 |
 | `build_cli/README.md:13-15` | Windows 是「zig cc 全静态，待首跑验证」，有 `prepare.sh` 做「zig cc 交叉编译 libav-win64」 | 没有 `windows/prepare.sh`；三个脚本，走原生 MinGW，2026-11-22 已全线跑通（AGENTS.md:294） |
 | `build_cli/README.md:16-18` | Linux 有 `prepare.sh` 和 `build.sh`，「同 windows 模式」 | 是两个只打印提示的占位脚本 |
 | `build_cli/README.md:38-39` | 「主 go.mod 不引入 go-astiav」 | go.mod:8，go-astiav 是直接依赖 |

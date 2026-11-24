@@ -726,7 +726,7 @@ bake 与 `rotate --bake` 的分工：bake 是把**源已有**的显示元数据�
 
 ### 4.2 边界与退化输入
 
-标「实测」的都在 `bin/zpack-dev.exe`（纯构建）或 `bin/zpack.exe`（完整版）上跑过；标「按代码」的是读代码得出的，没有实跑。
+标「实测」的都在 `bin/zpack-dev.exe`（纯构建）或 `bin/zpack-cli.exe`（完整版）上跑过；标「按代码」的是读代码得出的，没有实跑。
 
 | 情形 | 行为 |
 |---|---|
@@ -778,7 +778,7 @@ bake 与 `rotate --bake` 的分工：bake 是把**源已有**的显示元数据�
 
 | 能力 | Windows | macOS | Linux |
 |---|---|---|---|
-| 完整版产线 | `build_cli/windows`：本机原生 MinGW（MSYS2 / UCRT64 gcc），`build.sh` 总入口 + `deps_static.sh` + `office_static.sh`。产物 `bin/zpack.exe`，版本串带 `-full` 后缀（build_cli/windows/build.sh:65） | `build_cli/mac`：`build.sh`，缺配料时自动触发 `ffmpeg_static.sh` 源码级全静态。产物 `bin/zpack` | **没有产线**。`build_cli/linux` 里只有两个占位脚本，正文是一句「⏳ 产线待首跑验证」。Linux 上只有纯 Go 可用，media 族全部报「需完整版」 |
+| 完整版产线 | `build_cli/windows`：本机原生 MinGW（MSYS2 / UCRT64 gcc），`build.sh` 总入口 + `deps_static.sh` + `office_static.sh`。产物 `bin/zpack-cli.exe`，版本串带 `-full` 后缀（build_cli/windows/build.sh:65） | `build_cli/mac`：`build.sh`，缺配料时自动触发 `ffmpeg_static.sh` 源码级全静态。产物 `bin/zpack-cli` | **没有产线**。`build_cli/linux` 里只有两个占位脚本，正文是一句「⏳ 产线待首跑验证」。Linux 上只有纯 Go 可用，media 族全部报「需完整版」 |
 | ffmpeg CLI 的 main 改名 | `objcopy --redefine-sym main=zpack_ffmpeg_cli_main`，在目标文件层改。`-Dmain=` 在这里不管用：fftools/cmdutils.h 的 `_WIN32` 分支把它 `#undef` 掉了（AGENTS.md:301-302） | 编译宏 `-Dmain=zpack_ffmpeg_cli_main`（build_cli/mac/ffmpeg_static.sh:145） | — |
 | Windows 独有的两处处理 | ① 产线 sed 删掉 cmdutils.c 里 `prepare_app_arguments` 的两处调用，否则 ffmpeg 会用 `GetCommandLineW()` 重取宿主 zpack.exe 的命令行（AGENTS.md:303）。② 链接时 zlib 钉静态：MinGW ld 默认优先 `libz.dll.a`，会把 MSYS2 的 `libz-1.dll` 带进 import 表，违反「仅出厂 DLL」铁律（internal/ffmpegcli/linkflags_windows.go:3-9） | 无 | — |
 | pthread | `-extldflags '-Wl,-Bstatic -lpthread -Wl,-Bdynamic'` 钉在链接行末尾：静态 libstdc++ 自己引用 pthread_*，解铃的库必须排在它后面（build_cli/windows/build.sh:63-65） | 直接 `-lpthread`（linkflags_other.go） | — |
@@ -787,7 +787,7 @@ bake 与 `rotate --bake` 的分工：bake 是把**源已有**的显示元数据�
 | JSON 里的路径 | 反斜杠的绝对路径（JSON 里转义成 `\\`） | 正斜杠 | 正斜杠 |
 | 媒体门禁 `verify/verify-media.sh` | 脚本是按 mac 写的：`stat -f%z`、`/tmp`、office 分节依赖 `textutil`。AGENTS.md 里没有它在 Windows 或 Linux 上跑通的记录（Windows 的记录只到 `verify.sh`） | 原生可跑，另需系统 `ffmpeg` 造夹具 | 同左 |
 
-**产物定案**（2026-11-22 用户拍板，AGENTS.md:188-191）：`bin/zpack` 与装机产物**恒为完整版**；纯 Go 构建只是开发期快速编译循环的工具，不得作为交付或装机产物。
+**产物定案**（2026-11-22 用户拍板，AGENTS.md:188-191）：`bin/zpack-cli` 与装机产物**恒为完整版**；纯 Go 构建只是开发期快速编译循环的工具，不得作为交付或装机产物。
 
 **纯 Go 构建与完整版在本功能上的差别**。引擎按 build tag 分层：纯 Go 部分是决策、计划、建议、预设（`go test ./...` 在纯构建下照常测得到），cgo 部分是探测与执行。纯构建下引擎调用全部换成返回明确指引的桩（media/stub_nocgo.go 与各 `*_nocgo.go`）。命令面自己的校验（输入存在、预设 ID、`--target-size` 解析、互斥）照常先跑，跑过了才撞到桩：
 
@@ -807,7 +807,7 @@ bake 与 `rotate --bake` 的分工：bake 是把**源已有**的显示元数据�
 
 上表每一条都在 `bin/zpack-dev.exe` 上实测过。注意纯构建下 `zpack ffmpeg` 是走 JSON 信封的——契约例外只在 ffmpeg 真正跑起来之后才成立。
 
-本机现有两个二进制：`bin/zpack.exe` 是完整版（`zpack version 40fb9e7-full`，即本 spec 对应的提交），`bin/zpack-dev.exe` 是纯构建（`zpack version dev`，拆包之前编的，代码与现在一致）。
+本机现有两个二进制：`bin/zpack-cli.exe` 是完整版（`zpack version 40fb9e7-full`，即本 spec 对应的提交），`bin/zpack-dev.exe` 是纯构建（`zpack version dev`，拆包之前编的，代码与现在一致）。
 
 ## 6. 设计与陷阱
 
@@ -910,7 +910,7 @@ bake 与 `rotate --bake` 的分工：bake 是把**源已有**的显示元数据�
 8. **`--quiet` 的判定用的是剥掉子命令名之后的那份参数**（`mediaLogf(args)` 的 `args` 是 `mediaRestArgs` 的结果）。`mediaRestArgs` 只剥第一个非旗标参数；audio 那边用的是 `cliutil.RestAfterPositional`，语义略有不同，别互相替换。
 9. **纯构建必须编得过**。给引擎加一个新的对外函数，就得同时加 `*_nocgo.go` 桩，否则 `CGO_ENABLED=0` 直接编译失败，连带 Windows 的一键交叉编译。
 10. **死代码别顺手接上**。`clipStreamCopy`、`renderSingleFrameVideo`、`mergeVideos`、`isTextSubtitle` / `subtitleTargetFor` / `subtitleCodecIDByName`、`BakeSupportedKinds` / `BakeNeedsReencode`、`swapEncodeDims` 现在都没有调用方。其中几个看起来像现成的功能，其实没有验证过。
-11. **产物定案**。动了引擎代码，收尾时要跑产线重铸 `bin/zpack` 并刷新两个装机位，用 `ui/right-click/macos/refresh-engine.sh`，不要手工 cp（AGENTS.md:191）。产线的 `build.sh` 会 `go clean -cache`，之后 cgo 冷构建要等一会儿，这是预期。
+11. **产物定案**。动了引擎代码，收尾时要跑产线重铸 `bin/zpack-cli` 并刷新两个装机位，用 `ui/right-click/macos/refresh-engine.sh`，不要手工 cp（AGENTS.md:191）。产线的 `build.sh` 会 `go clean -cache`，之后 cgo 冷构建要等一会儿，这是预期。
 12. **命令面里引擎包的别名固定是 `engine`**（`engine "github.com/guohub8080/zpack/media"`），与 audio 共用同一个别名。
 13. **ffmpeg 直调不要包一层 JSON**。它是契约里唯一的例外，任何「统一输出」的重构都必须把它绕开，否则 `pipe:1` 输出二进制流的用法会被 JSON 弄坏。
 
@@ -943,13 +943,13 @@ bake 与 `rotate --bake` 的分工：bake 是把**源已有**的显示元数据�
 | 产线 | `build_cli/mac/`、`build_cli/windows/` | 完整版构建；`build_cli/linux/` 只有占位脚本 |
 | GUI 耦合 | `ui/gui/main.go`、`ui/gui/service.go`、`ui/gui/validate.go` | 视频转换页、视频压缩页、前端校验表 |
 | Agent 文档 | `cli/tools/skill.md` | `go:embed` 进二进制的 SKILL.md |
-| 体感数据 | `scripts/genenv/` | realEnvTest 的媒体夹具生成（`media/video-720p-60s.mp4`、`media/video-rotated.mp4`，依赖完整版 `bin/zpack`，缺失时如实跳过） |
+| 体感数据 | `scripts/genenv/` | realEnvTest 的媒体夹具生成（`media/video-720p-60s.mp4`、`media/video-rotated.mp4`，依赖完整版 `bin/zpack-cli`，缺失时如实跳过） |
 
 ## 8. 验收用例
 
 ### 8.1 媒体门禁 `verify/verify-media.sh`
 
-只测 `bin/zpack`（完整版），开头先探一次：产物是纯构建就报「⛔」退出，没有系统 `ffmpeg` 也退出（verify/verify-media.sh:22-31）。夹具用系统 ffmpeg 从 `testsrc2` / `sine` 合成。与本 spec 相关的分节（断言点数是按脚本静态数的，没有实跑）：
+只测 `bin/zpack-cli`（完整版），开头先探一次：产物是纯构建就报「⛔」退出，没有系统 `ffmpeg` 也退出（verify/verify-media.sh:22-31）。夹具用系统 ffmpeg 从 `testsrc2` / `sine` 合成。与本 spec 相关的分节（断言点数是按脚本静态数的，没有实跑）：
 
 | 分节（行号） | 覆盖了什么 | 断言点 |
 |---|---|---|
@@ -1022,7 +1022,7 @@ zpack media convert <视频> <输出.webm>
 zpack ffmpeg -version | head -1                 # ffmpeg version …
 zpack ffmpeg -i <视频> -f null - ; echo $?      # 退出码是 ffmpeg 的
 
-# 媒体门禁（mac，需完整版 bin/zpack 与系统 ffmpeg）
+# 媒体门禁（mac，需完整版 bin/zpack-cli 与系统 ffmpeg）
 bash verify/verify-media.sh
 
 # 以后给 §9.3 的疑点补证据时，每个都用一份拷贝来做，不要拿唯一的原件

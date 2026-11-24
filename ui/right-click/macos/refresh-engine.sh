@@ -2,24 +2,26 @@
 # 刷新两装机位的内嵌引擎并重签——AGENTS.md「动过引擎代码 → 刷新两装机位」的可执行版。
 #
 # 为什么必须重签：两个装机位都是已签名的 .app，包内文件事后被改（哪怕只是换一个
-# Resources/zpack）封印即失效。Finder 宿主带 Hardened Runtime，封印一坏系统就弃用真身、
+# Resources/zpack-cli）封印即失效。Finder 宿主带 Hardened Runtime，封印一坏系统就弃用真身、
 # 退回别处注册的旧副本——2026-11-23「右键图标又没了」即此因（旧副本里没有 zpack-menu.icns）。
 #
-# 用法：bash ui/right-click/macos/refresh-engine.sh      # 引擎取 bin/zpack
+# 用法：bash ui/right-click/macos/refresh-engine.sh      # 引擎取 bin/zpack-cli
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-ENGINE="$ROOT/bin/zpack"
+ENGINE="$ROOT/bin/zpack-cli"
+# 2026-11-24 引擎改名 zpack-cli；改名之前铸的旧名产物也认
+[ -x "${ENGINE}" ] || ENGINE="$ROOT/bin/zpack"
 GUI="/Applications/zpack.app"
 HOST="/Applications/zpack Finder Menu.app"
 HOST_APPEX="$HOST/Contents/PlugIns/zpackSync.appex"
 PLUGIN_ID="devplaceholder.UGFOSNW3.zpackFinderMenu.zpackSync"
 IDENTITY="${IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | grep 'Apple Development' | head -1 | sed 's/.*"\(.*\)"/\1/')}"
 
-# 把引擎放进 .app 的 Resources/zpack。引擎自带 Finder 自定义图标（资源叉），codesign
-# 见到即拒签——只清拷贝件的，原件 bin/zpack 的图标不动。
+# 把引擎放进 .app 的 Resources/zpack-cli。引擎自带 Finder 自定义图标（资源叉），codesign
+# 见到即拒签——只清拷贝件的，原件 bin/zpack-cli 的图标不动。
 embed_engine() {
-  cp "$ENGINE" "$1/Contents/Resources/zpack"
-  xattr -cr "$1/Contents/Resources/zpack"
+  cp "$ENGINE" "$1/Contents/Resources/zpack-cli"
+  xattr -cr "$1/Contents/Resources/zpack-cli"
 }
 
 [ -x "$ENGINE" ] || { echo "✗ 缺引擎 $ENGINE（先跑产线 build_cli/mac/build.sh）"; exit 1; }

@@ -435,7 +435,7 @@ verify.sh 里有 23 行调用 python3（造 PDF 夹具、解析 zip 目录、读
 
 ## 8. 验收用例
 
-都在 `verify/verify.sh` 里，纯 Go 构建即可跑（`bash verify/verify.sh`，只测 `bin/zpack`）。
+都在 `verify/verify.sh` 里，纯 Go 构建即可跑（`bash verify/verify.sh`，只测 `bin/zpack-cli`）。
 
 ### base64（:585-595，注释「base64 编解码（甜点功能）」）
 

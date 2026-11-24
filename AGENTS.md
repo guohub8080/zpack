@@ -52,24 +52,24 @@
 
 ```bash
 CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=$(git rev-parse --short HEAD)-dev" -o bin/zpack-dev ./cmd/zpack   # 开发期纯 Go 构建（不是交付产物，见下方「产物定案」）
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o bin/zpack-dev.exe ./cmd/zpack  # 交叉编译（mac 上验证 Windows 可编译；别用完整版的文件名 bin/zpack.exe）
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o bin/zpack-dev.exe ./cmd/zpack  # 交叉编译（mac 上验证 Windows 可编译；别用完整版的文件名 bin/zpack-cli.exe）
 
 go test ./...          # 单测（表驱动；纯逻辑函数才测，run* 函数直接 os.Exit 不测）
 go vet ./...           # + GOOS=windows / GOOS=linux go vet ./... 三平台编译验证
 bash build_cli/windows/build.sh   # Windows 完整版产线：deps（prefix 幂等缓存）→ office → cgo 组装 → DLL 白名单校验；在 MSYS2 bash 里跑
 bash build_cli/mac/build.sh   # mac 完整版产线：自动触发 ffmpeg_static.sh（首次源码级全静态 ~25 分钟，prefix 幂等）→ 静态链接 go build（ffmpeg CLI 对象进程内直调，~48MB 单文件）→ 校验零 brew 动态依赖
 go run ./scripts/genenv       # realEnvTest 真实体感数据一键生成（≈3.4GB 算法生成可复现；--fast/--full/--clean；见 scripts/genenv/README.md——门禁测确定性小样本，realEnvTest 测进度条/媒体/加密分卷的真实体感；目录 gitignore 不入库）
-bash verify/verify.sh        # 行为门禁：只测 bin/zpack（恒为完整版），确定性输出全字节比对（用例数以脚本为准）
-bash verify/verify-media.sh  # 媒体门禁：需产线完整版 bin/zpack（128 用例：转码矩阵/压缩公式/几何变换/bake/HDR/EXIF/audio/ffmpeg 直调），夹具用系统 ffmpeg 生成
+bash verify/verify.sh        # 行为门禁：只测 bin/zpack-cli（恒为完整版），确定性输出全字节比对（用例数以脚本为准）
+bash verify/verify-media.sh  # 媒体门禁：需产线完整版 bin/zpack-cli（128 用例：转码矩阵/压缩公式/几何变换/bake/HDR/EXIF/audio/ffmpeg 直调），夹具用系统 ffmpeg 生成
 bash verify/verify-image.sh  # 图片门禁：纯 Go 即可（65 用例：格式互转/物理尺寸/变换 ffmpeg 像素级交叉/merge/EXIF 定向）
 ```
 
 ### 双层开发节奏（cgo 早已按 build tag 分层——纯功能开发用纯循环）
 
 > **产物定案（2026-11-22 用户拍板：无「纯 Go 心结」，一切以功能好用为基础）**：
-> `bin/zpack` 与装机产物**恒为完整版**（`build_cli` 产线 CGO 构建——media/audio/HDR/HEIC/ffmpeg 直调全可用）；
+> `bin/zpack-cli` 与装机产物**恒为完整版**（`build_cli` 产线 CGO 构建——media/audio/HDR/HEIC/ffmpeg 直调全可用）；
 > 纯 Go 构建只是**开发期快速编译循环**的工具，不得作为交付/装机产物（纯 Go 下 media 族报「需完整版」——用户会当场撞墙）。
-> 每轮改动收尾时若动过引擎代码：跑产线重铸 bin/zpack + 刷新两装机位——**用 `ui/right-click/macos/refresh-engine.sh`**（拷进 /Applications/zpack.app 与 zpack Finder Menu.app 各自 Resources/zpack 并重签）。**禁止手工 cp**：两个包都是已签名的，原地换文件封印即失效；Finder 宿主封印一坏系统就弃用真身、右键退回别处注册的旧副本（2026-11-23「右键图标又没了」即此因）。
+> 每轮改动收尾时若动过引擎代码：跑产线重铸 bin/zpack-cli + 刷新两装机位——**用 `ui/right-click/macos/refresh-engine.sh`**（拷进 /Applications/zpack.app 与 zpack Finder Menu.app 各自 Resources/zpack 并重签）。**禁止手工 cp**：两个包都是已签名的，原地换文件封印即失效；Finder 宿主封印一坏系统就弃用真身、右键退回别处注册的旧副本（2026-11-23「右键图标又没了」即此因）。
 
 **纯 Go 循环（开发期快速编译——pdf/hash/压缩/图片标准格式等纯功能的日常迭代）**：
 ```bash

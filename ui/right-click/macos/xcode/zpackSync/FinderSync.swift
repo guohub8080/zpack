@@ -12,12 +12,16 @@ class FinderSync: FIFinderSync {
     private var zpackPath: String {
         let bundle = Bundle(for: FinderSync.self)
         // appex 在 Host.app/Contents/PlugIns/ 下，zpack 在 Host.app/Contents/Resources/
-        let hostResources = bundle.bundleURL
+        let hostResourcesDir = bundle.bundleURL
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Contents/Resources/zpack").path
-        if FileManager.default.isExecutableFile(atPath: hostResources) {
-            return hostResources
+            .appendingPathComponent("Contents/Resources")
+        // 2026-11-24 引擎改名 zpack-cli；改名之前装的宿主里还是旧名 zpack，两个都认
+        for name in ["zpack-cli", "zpack"] {
+            let path = hostResourcesDir.appendingPathComponent(name).path
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
         }
         if FileManager.default.isExecutableFile(atPath: "/usr/local/bin/zpack") {
             return "/usr/local/bin/zpack"

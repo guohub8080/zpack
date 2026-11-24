@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# zpack 图片功能验收门禁：只测 bin/zpack（纯 Go 即可——image 零 cgo）。
+# zpack 图片功能验收门禁：只测 bin/zpack-cli（纯 Go 即可——image 零 cgo）。
 set -u
-NEW_CLI="$(cd "$(dirname "$0")/.." && pwd)/bin/zpack"
+NEW_CLI="$(cd "$(dirname "$0")/.." && pwd)/bin/zpack-cli"
 PASS_COUNT=0; FAIL_COUNT=0
 report_pass() { PASS_COUNT=$((PASS_COUNT + 1)); }
 report_fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "✗ $1"; echo "    期望: [$2]"; echo "    实际: [$3]"; }

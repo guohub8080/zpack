@@ -15,9 +15,9 @@
 ## 快速上手
 
 ```bash
-go build -ldflags "-s -w" -o bin/zpack ./cmd/zpack
-./bin/zpack compress ~/项目 --output /tmp/项目.zip      # 或 .tar / .tar.gz / .tgz
-./bin/zpack extract /tmp/项目.zip                        # 扩展名无关，魔数识别
+go build -ldflags "-s -w" -o bin/zpack-cli ./cmd/zpack
+./bin/zpack-cli compress ~/项目 --output /tmp/项目.zip      # 或 .tar / .tar.gz / .tgz
+./bin/zpack-cli extract /tmp/项目.zip                        # 扩展名无关，魔数识别
 bash verify/verify.sh   # 行为门禁 91/91
 ```
 

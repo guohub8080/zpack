@@ -397,9 +397,9 @@ GUI 是薄壳：所有数据都经 `zpack` 二进制的 stdout JSON 契约，引
 |---|---|---|
 | 1 | 环境变量 `ZPACK_BIN` | 显式指定；无头测试用它指向一个替身文件 |
 | 2 | GUI 可执行文件**同目录**的 `zpack`（Windows 是 `zpack.exe`） | 开发态平铺布局 |
-| 3 | GUI 可执行文件**上两级**目录下的 `Resources/zpack(.exe)` | 打包态：`<App>.app/Contents/MacOS/<可执行文件>` → `<App>.app/Contents/Resources/zpack` |
-| 4 | 从 GUI 可执行文件所在目录起**向上最多 5 层**，各层的 `bin/zpack(.exe)` | 开发态：仓库产线产物 |
-| 5 | `/Applications/zpack Finder Menu.app/Contents/Resources/zpack` | 装机兜底：FinderSync 宿主里内嵌的引擎（路径写死，不带 `.exe`） |
+| 3 | GUI 可执行文件**上两级**目录下的 `Resources/zpack-cli(.exe)` | 打包态：`<App>.app/Contents/MacOS/<可执行文件>` → `<App>.app/Contents/Resources/zpack-cli` |
+| 4 | 从 GUI 可执行文件所在目录起**向上最多 5 层**，各层的 `bin/zpack-cli(.exe)` | 开发态：仓库产线产物 |
+| 5 | `/Applications/zpack Finder Menu.app/Contents/Resources/zpack-cli` | 装机兜底：FinderSync 宿主里内嵌的引擎（路径写死，不带 `.exe`） |
 
 规则：
 
@@ -411,8 +411,8 @@ GUI 是薄壳：所有数据都经 `zpack` 二进制的 stdout JSON 契约，引
 
 两个由代码直接推出来、需要知道的后果：
 
-- **Windows 上第 2 项永远命不中**。Windows 的 GUI 产物名就是 `zpack.exe`（`ui/gui/build/windows-amd64/zpack.exe`），与引擎同名，同目录候选恒等于自己、被自体防护跳过。所以在 Windows 上引擎只能靠 `ZPACK_BIN` 或仓库的 `bin/zpack.exe` 找到。而 Windows 安装器（mygo 自带的 NSIS 安装器，按用户装到 `%LocalAppData%\Programs\zpack\`）里只有 GUI 自己和 `resources/` 的副本，不含引擎。合起来的结果：**用安装器装到仓库之外后，GUI 找不到引擎**，除非设 `ZPACK_BIN`。仓库里没有 Windows 侧的引擎注入或安装脚本（`install.sh` 只有 mac 版）。【待确认】是否有仓库之外的做法在用（比如手工拷引擎、改 GUI 可执行文件名）。
-- **`go test` 里引擎恒为「未找到」**。测试程序在系统临时目录，向上 5 层碰不到仓库的 `bin`；所以依赖真实引擎的三个用例靠 `repoEngine()` 直接拼 `../../bin/zpack(.exe)`（ui/gui/service_test.go:194-207），其余用例用 `ZPACK_BIN` 指向一个替身文件。
+- **Windows 上第 2 项永远命不中**。Windows 的 GUI 产物名就是 `zpack.exe`（`ui/gui/build/windows-amd64/zpack.exe`），与引擎同名，同目录候选恒等于自己、被自体防护跳过。所以在 Windows 上引擎只能靠 `ZPACK_BIN` 或仓库的 `bin/zpack-cli.exe` 找到。而 Windows 安装器（mygo 自带的 NSIS 安装器，按用户装到 `%LocalAppData%\Programs\zpack\`）里只有 GUI 自己和 `resources/` 的副本，不含引擎。合起来的结果：**用安装器装到仓库之外后，GUI 找不到引擎**，除非设 `ZPACK_BIN`。仓库里没有 Windows 侧的引擎注入或安装脚本（`install.sh` 只有 mac 版）。【待确认】是否有仓库之外的做法在用（比如手工拷引擎、改 GUI 可执行文件名）。
+- **`go test` 里引擎恒为「未找到」**。测试程序在系统临时目录，向上 5 层碰不到仓库的 `bin`；所以依赖真实引擎的三个用例靠 `repoEngine()` 直接拼 `../../bin/zpack-cli(.exe)`（ui/gui/service_test.go:194-207），其余用例用 `ZPACK_BIN` 指向一个替身文件。
 
 ### 3.3 调用的命令与旗标
 
@@ -671,7 +671,7 @@ GUI 不向用户展示引擎的 stderr。它唯一的用途是任务管线里找
 
 | 能力 | Windows | macOS | Linux |
 |---|---|---|---|
-| 引擎查找 | 只有 `ZPACK_BIN` 与仓库 `bin/zpack.exe` 两条路能中（同目录候选恒被自体防护跳过，见 3.2） | 五项都有效；打包态命中 `.app/Contents/Resources/zpack` | `ZPACK_BIN`、同目录、仓库 `bin` 可命中；`.app` 的两条通常不存在 |
+| 引擎查找 | 只有 `ZPACK_BIN` 与仓库 `bin/zpack-cli.exe` 两条路能中（同目录候选恒被自体防护跳过，见 3.2） | 五项都有效；打包态命中 `.app/Contents/Resources/zpack-cli` | `ZPACK_BIN`、同目录、仓库 `bin` 可命中；`.app` 的两条通常不存在 |
 | 窗口控制钮 | 右上 | 左上（红绿灯内嵌，悬于侧栏） | 每帧按系统设置适配（左或右布局） |
 | 标题条高度 | 36 | 52 | 52 |
 | 应用图标 | 全出血版 `resources/icon-windows.png` 经 `Dock.SetIcon`；exe 资源图标来自 `winres.rc` 铸的 `resource_windows_amd64.syso`（资源 ID 1，仅 Windows 构建消费） | 留白版 `resources/icon.png`；打包后用 .app 的 icns | 留白版 `resources/icon.png` |
@@ -686,7 +686,7 @@ GUI 不向用户展示引擎的 stderr。它唯一的用途是任务管线里找
 | 「可追加」的平台提示 | 提到后续将支持 UDF 优盘式 | 「已写入的内容不能删」 | 同 macOS |
 | 右键菜单 | 未做 | FinderSync 扩展 + 快速操作三服务 | 未做 |
 | GUI 装机 | mygo 自带的 NSIS 安装器：按用户装到 `%LocalAppData%\Programs\zpack\`，带开始菜单快捷方式与卸载器；**不含引擎**，仓库里也没有引擎注入步骤 | `install.sh` 一条龙：构建 → 注入引擎 → 重签 → 装到 `/Applications/zpack.app` | mygo 构建会一并产出带 `install.sh` 的 tar.gz（装到 `~/.local`）与 deb / RPM / PKGBUILD；仓库里没有包装脚本，也没验证过 |
-| 无头测试 | 仓库里有 `bin/zpack.exe` 时才跑 3 个真实引擎用例 | 需要仓库 `bin/zpack` | 同 macOS |
+| 无头测试 | 仓库里有 `bin/zpack-cli.exe` 时才跑 3 个真实引擎用例 | 需要仓库 `bin/zpack-cli` | 同 macOS |
 
 出处：ui/gui/main.go:5000-5042（定位与文案）、5104-5122（图标与标题条高度）；ui/gui/appearance.go:39-45（设置路径）；ui/gui/burnname.go:53-55（字符集提示）；ui/gui/main.go:5724-5734（写入模式提示）；ui/gui/burnstate.go:3-7（各平台状态来源）；ui/gui/service_test.go:194-207（引擎用例）。
 
@@ -824,7 +824,7 @@ GUI 不向用户展示引擎的 stderr。它唯一的用途是任务管线里找
 | 无头测试里点复制钮就死锁 | `Release` 会触发点击，`Clipboard.WriteText` 要回主线程，无头环境没有主循环 | 反馈矩阵只 `Press` 不 `Release`（ui/gui/feedback_test.go:212-216） | — |
 | Windows 上整套 GUI 测试挂死（10 分钟超时被杀） | `Service.BurnDevices` 的「未找到引擎」分支同步回调，页面回调里的 `RunOnMain` 等不到主循环 | 回调一律异步给（ui/gui/service.go:1003-1008；AGENTS.md:258） | 测试里预设 `burnQueried` 避开枚举 |
 | `TestConvertSummary` 在 Windows 失败 | 测试把带反斜杠的路径直接拼进 JSON 字符串，整段信封解析失败（mac 路径无反斜杠所以没症状） | 测试里转义反斜杠（ui/gui/service_test.go:112-114） | — |
-| Windows 上 3 个引擎用例恒跳过 | `repoEngine` 只认裸名 `bin/zpack`，Windows 产物叫 `zpack.exe` | 两个名字都认（ui/gui/service_test.go:194-207；AGENTS.md:274） | — |
+| Windows 上 3 个引擎用例恒跳过 | `repoEngine` 只认裸名 `bin/zpack-cli`，Windows 产物叫 `zpack.exe` | 两个名字都认（ui/gui/service_test.go:194-207；AGENTS.md:274） | — |
 | 三帧像素比对结果不对 | `Tester.Image` 可能复用缓冲 | 比较前先拷贝一帧（ui/gui/feedback_test.go:456-462） | — |
 | 矩阵里 `Find("加密")` 找错元素 | 带侧栏渲染时命中的是导航项而不是页内按钮 | 页面单独渲染，不带侧栏 | — |
 | 矩阵里目标悬停不到 | 目标在屏外 | 窗口拉高到 1100 | — |
@@ -910,14 +910,14 @@ GUI 不向用户展示引擎的 stderr。它唯一的用途是任务管线里找
 | 扩展 | 沙箱 + 硬化运行时；部署目标 macOS 27.0 |
 | 宿主 | 非沙箱；`LSUIElement`（无 Dock 图标） |
 
-扩展的 bundle ID 在三处各写了一遍：`build-xcode.sh`、`refresh-engine.sh`、宿主里任务文件的路径（`xcode/zpackFinderMenu/MyApp.swift:78-79` 把 `~/Library/Containers/<扩展 ID>/Data/zpack-job.json` 整个写死）。改 ID 要三处一起改。`bin/zpack` 不存在时 `build-xcode.sh` 会先跑 `build_cli/mac/build.sh` 铸引擎。
+扩展的 bundle ID 在三处各写了一遍：`build-xcode.sh`、`refresh-engine.sh`、宿主里任务文件的路径（`xcode/zpackFinderMenu/MyApp.swift:78-79` 把 `~/Library/Containers/<扩展 ID>/Data/zpack-job.json` 整个写死）。改 ID 要三处一起改。`bin/zpack-cli` 不存在时 `build-xcode.sh` 会先跑 `build_cli/mac/build.sh` 铸引擎。
 
 **陷阱清单**（据 AGENTS.md:388-396，全部 mac 实测；对应逻辑已固化在 `build-xcode.sh`）：
 
 - **同一个扩展 ID 注册了多个副本 = 右键消失 / 图标没了的元凶。** Xcode 图形界面构建会把 DerivedData 下的产物登记进 LaunchServices，而 `pkd` 每次 Finder 重启都与 LaunchServices 重新同步——只 `pluginkit -r` 拔不干净，重启后旧副本又被捞回来当选。正解是两处一起处理：其它宿主全部 `lsregister -u`，真身的宿主与扩展都 `lsregister -f`，再 `pluginkit -a` 真身。`build-xcode.sh` 收尾做四项验收：LaunchServices 名下只剩真身 / Finder 重启后当选路径连查两次稳定 / 真身封印完好 / 扩展已启用。
-- **已签名包内的文件禁止原地替换**（禁止手工 `cp`）。哪怕只是换一个 `Resources/zpack`，封印也会失效；Finder 宿主带硬化运行时，封印一坏系统就弃用真身、退回别处注册的旧副本——2026-11-23「右键图标又没了」就是这个原因。刷新引擎必须用 `ui/right-click/macos/refresh-engine.sh`：拷进引擎、清资源叉、重签、校验。GUI 本体的 `install.sh` 同理（引擎是在 mygo 签名之后才注入的）。
+- **已签名包内的文件禁止原地替换**（禁止手工 `cp`）。哪怕只是换一个 `Resources/zpack-cli`，封印也会失效；Finder 宿主带硬化运行时，封印一坏系统就弃用真身、退回别处注册的旧副本——2026-11-23「右键图标又没了」就是这个原因。刷新引擎必须用 `ui/right-click/macos/refresh-engine.sh`：拷进引擎、清资源叉、重签、校验。GUI 本体的 `install.sh` 同理（引擎是在 mygo 签名之后才注入的）。
 - **扩展手动签名必须带 `--options runtime`**：裸签会抹掉硬化运行时，macOS 26 的 pluginkit 拒载。签名顺序先扩展后外壳。
-- **资源叉会让 codesign 拒签**：`bin/zpack` 带着 Finder 自定义图标，拷进包后要 `xattr -cr`（只清拷贝件，原件不动）。
+- **资源叉会让 codesign 拒签**：`bin/zpack-cli` 带着 Finder 自定义图标，拷进包后要 `xattr -cr`（只清拷贝件，原件不动）。
 - **扩展注册走 pluginkit，与宿主进程无关**，不要裸 `open` 宿主（它会常驻并吞掉下一单）。
 - **全新 xcodebuild 产物的扩展包里没有 Resources 目录**，拷图标前必须先建目录（历史上是靠增量构建的残留才没出事）。
 - **诊断三连**：`pluginkit -mAvv -i <扩展 ID>` 看当选路径是不是 `/Applications` 下的真身 → `codesign --verify --deep --strict` 看封印 → `lsregister -dump` 看有没有旧宿主。扩展里写文件探针到自家容器（统一日志在扩展里不可靠），宿主可以写 `/tmp`。
@@ -941,7 +941,7 @@ GUI 不向用户展示引擎的 stderr。它唯一的用途是任务管线里找
 | Office 族匹配规则 | `officeTargetOf` 的扩展名映射 |
 | 引擎默认输出名规则 | GUI 自己拼的产物名（`-compressed`、`-extract`、`-rotated`、`-resized`） |
 | 引擎新增了值得暴露的旗标 | 对应页面加控件 + Service 拼参 + 3.3 的表 |
-| 产线重铸了 `bin/zpack` | mac 上跑 `ui/right-click/macos/refresh-engine.sh` 刷新两个装机位（AGENTS.md:191） |
+| 产线重铸了 `bin/zpack-cli` | mac 上跑 `ui/right-click/macos/refresh-engine.sh` 刷新两个装机位（AGENTS.md:191） |
 
 ### 6.10 改动检查清单
 
@@ -992,7 +992,7 @@ GUI 不向用户展示引擎的 stderr。它唯一的用途是任务管线里找
 | 部分 | 路径 | 说明 |
 |---|---|---|
 | 构建与装机 | `ui/right-click/macos/build-xcode.sh` | Xcode 构建扩展 → 嵌入引擎与图标 → 签名 → 清理旧副本 → 装到 `/Applications/zpack Finder Menu.app` → 四项验收 |
-| 刷新引擎 | `ui/right-click/macos/refresh-engine.sh` | 把 `bin/zpack` 换进 GUI 与 Finder 宿主两个装机位并重签 |
+| 刷新引擎 | `ui/right-click/macos/refresh-engine.sh` | 把 `bin/zpack-cli` 换进 GUI 与 Finder 宿主两个装机位并重签 |
 | 快速操作 | `ui/right-click/macos/quickaction.sh` | 生成 `~/Library/Services/` 下的三个工作流 |
 | 工作流模板 | `ui/right-click/macos/src/document.wflow.template` | Automator「运行 Shell 脚本」的真样例模板 |
 | 菜单图标生成器 | `ui/right-click/macos/gen-menu-icon.py` | 由 `assets/zpack-icon-1024.png` 生成 `assets/zpack-menu.icns`（需 Pillow） |
@@ -1044,13 +1044,13 @@ go tool mygo build -skip-installer                                   # Windows �
 **mac 装机**：`bash ui/gui/install.sh`（ui/gui/install.sh:14-33）。
 
 1. `go tool mygo build`。
-2. 要求仓库的 `bin/zpack` 存在且可执行，否则中止。
-3. 把引擎拷进 `.app/Contents/Resources/zpack`，`xattr -cr` 清掉资源叉，adhoc 重签并校验——引擎是在 mygo 签名之后才注入的，不重签封装出来的包封印是坏的。
+2. 要求仓库的 `bin/zpack-cli` 存在且可执行，否则中止。
+3. 把引擎拷进 `.app/Contents/Resources/zpack-cli`，`xattr -cr` 清掉资源叉，adhoc 重签并校验——引擎是在 mygo 签名之后才注入的，不重签封装出来的包封印是坏的。
 4. 删掉旧的 `/Applications/zpack.app`，`ditto` 新包过去，再校验一次。
 
 装机后 GUI 自己带着引擎（查找顺序第 3 项命中），安装包自包含。App 的正名是 `zpack`；Finder 宿主让位改叫 `zpack Finder Menu.app`（ui/gui/install.sh:4-7）。
 
-**刷新引擎**：引擎代码动过之后，`bash ui/right-click/macos/refresh-engine.sh` 把新铸的 `bin/zpack` 换进两个装机位并重签——GUI 本体 adhoc 签名；Finder 宿主用 Apple Development 证书 + 硬化运行时重签，所以这台机器的钥匙串里必须有证书。脚本最后还会检查扩展当前生效的路径是不是 `/Applications` 下的真身（ui/right-click/macos/refresh-engine.sh:20-45）。
+**刷新引擎**：引擎代码动过之后，`bash ui/right-click/macos/refresh-engine.sh` 把新铸的 `bin/zpack-cli` 换进两个装机位并重签——GUI 本体 adhoc 签名；Finder 宿主用 Apple Development 证书 + 硬化运行时重签，所以这台机器的钥匙串里必须有证书。脚本最后还会检查扩展当前生效的路径是不是 `/Applications` 下的真身（ui/right-click/macos/refresh-engine.sh:20-45）。
 
 **Windows**：仓库里只有 `go tool mygo build` 的产物，没有引擎注入或装机步骤，安装器里不含引擎（3.2）。`resources/windows-amd64/` 这样的按平台资源目录是现成的随包分发通道，但目前没用上；即便用上也有两个障碍——引擎与 GUI 的可执行文件同名 `zpack.exe`，且查找顺序里没有对应的候选（9.2 第 1 条）。
 
@@ -1110,7 +1110,7 @@ GUI 没有脚本门禁：`verify/verify.sh`、`verify-media.sh`、`verify-image.
 | | `TestRunToolStdinHyphen` | **需真实引擎**：以 `-` 开头的文本经 stdin 原样送达 |
 | `ui/gui/fontprobe_test.go` | `TestFontProbe` | 开发辅助，默认跳过；不是断言，是产出量测日志与参考图 |
 
-期望结果（未运行，按代码推）：仓库里有 `bin/zpack(.exe)` 时 38 个通过、1 个跳过（字体探针）；没有引擎时 35 个通过、4 个跳过。AGENTS.md:258 记的「32 过 / 4 跳过」是修挂死当时的数，之后又加过测试，口径对不上，【待确认】以实际运行为准。
+期望结果（未运行，按代码推）：仓库里有 `bin/zpack-cli(.exe)` 时 38 个通过、1 个跳过（字体探针）；没有引擎时 35 个通过、4 个跳过。AGENTS.md:258 记的「32 过 / 4 跳过」是修挂死当时的数，之后又加过测试，口径对不上，【待确认】以实际运行为准。
 
 ### 8.2 怎么跑
 
@@ -1124,7 +1124,7 @@ ZPACK_GUI_FONT_PROBE=1 go test -run TestFontProbe -count=1 -v .   # 字体探针
 - 必须进 `ui/gui` 目录跑：它是独立 module，仓库根目录的 `go test ./...` 不包含它。
 - 首次需要下载 mygo 模块。`proxy.golang.org` 不可达的机器上加 `GOPROXY=https://goproxy.cn,direct`（AGENTS.md:403）。
 - Windows 上 Go 不在 PATH 时先 `export PATH="/c/Program Files/Go/bin:$PATH"`（ui/gui/FONT-PROBE.md:19）。
-- 三个标了「需真实引擎」的用例直接调 `Service{binary: 引擎}`，跑仓库的 `bin/zpack(.exe)`，只写测试临时目录；没有这个文件就跳过。其余用例一律不执行引擎——用 `ZPACK_BIN` 指向一个替身文件，或预设状态绕开枚举。
+- 三个标了「需真实引擎」的用例直接调 `Service{binary: 引擎}`，跑仓库的 `bin/zpack-cli(.exe)`，只写测试临时目录；没有这个文件就跳过。其余用例一律不执行引擎——用 `ZPACK_BIN` 指向一个替身文件，或预设状态绕开枚举。
 
 跑测试、写测试时要知道的坑（详见 6.6）：无头环境没有主循环，`RunOnMain` 永远等不到；`Release` 会触发点击，写剪贴板的元素一点即死锁，所以矩阵只 `Press`；刻录页测试必须预设 `burnQueried = true`；渲染页面函数要经 `heroAwarePage`；反馈矩阵要把页面单独渲染、窗口拉到 1100 高、比较前拷贝帧。
 
@@ -1157,7 +1157,7 @@ ZPACK_GUI_FONT_PROBE=1 go test -run TestFontProbe -count=1 -v .   # 字体探针
 
 按影响从大到小。标「推出」的是从代码读出来、没有在真机上复现的。
 
-1. **Windows 装机后 GUI 找不到引擎**（3.2）：同目录候选恒被自体防护跳过，安装器里不含引擎，仓库里也没有 Windows 侧的引擎注入步骤。在仓库目录里直接跑 `ui/gui/build/windows-amd64/zpack.exe` 是能用的（向上找到仓库的 `bin/zpack.exe`），装到别处就不行。
+1. **Windows 装机后 GUI 找不到引擎**（3.2）：同目录候选恒被自体防护跳过，安装器里不含引擎，仓库里也没有 Windows 侧的引擎注入步骤。在仓库目录里直接跑 `ui/gui/build/windows-amd64/zpack.exe` 是能用的（向上找到仓库的 `bin/zpack-cli.exe`），装到别处就不行。
 2. **macOS / Linux 上光盘名称永远填不了**。`planBurnVolumeName` 只在 `status == "blank"` 或勾了擦除时出输入框，而这两个平台的引擎在有盘时不报 `blank`（macOS 报空串）。除非盘是可擦写且勾了「先擦空再烧」，名称行恒为「需空白光盘 / 放入空白光盘后可以设置名称」——盘其实在光驱里（ui/gui/burnname.go:31-43；ui/gui/burnstate.go:4-5）。
 3. **选了「加密」但密码框留空，产出的包不加密**，界面没有任何提示（4.6）。
 4. **取消的清理范围**：只有压缩任务登记了清理；其它任务被杀后可能留半截产物。「杀进程后不等进程退出就删文件」的时序问题已修（3.5、6.6）。删除出错仍被忽略（ui/gui/service.go:169-177）：Windows 上若有别的程序短暂占着刚写出的归档（如杀毒软件在扫描），那一次删除会落空、留下半成品——这种情况没有实测过，遇到再说。
@@ -1176,7 +1176,7 @@ ZPACK_GUI_FONT_PROBE=1 go test -run TestFontProbe -count=1 -v .   # 字体探针
 17. **Finder 右键（Swift 版）的几个问题**（读代码得出，未在 mac 上复现）：
     - 菜单项动作把**整份选中清单**交给宿主（`xcode/zpackSync/FinderSync.swift:98-124`），而引擎的 `extract` 与 `test` 只取第一个位置参数（`cli/archive/extract.go:103-106`、`cli/archive/list.go:46-61`）。多选时「解压到此处」「测试归档」只处理第一个；混合选择时第一个若不是归档就直接失败。菜单分类时算好的「归档 / 非归档」两组没有传给动作。
     - 构建菜单时对**每个**选中的非目录文件同步起一次 `zpack list`，没有上限（`FinderSync.swift:45-50`、`86-94`）；已删除的第一代 Objective-C 版曾有 20 个的探测上限。
-    - 扩展里的引擎查找有一个写死的开发机路径 `~/WebstormProjects/zpack/bin/zpack`（`FinderSync.swift:25`）；宿主则只认自己 bundle 里的引擎（`MyApp.swift:338-344`）。
+    - 扩展里的引擎查找有一个写死的开发机路径 `~/WebstormProjects/zpack/bin/zpack-cli`（`FinderSync.swift:25`）；宿主则只认自己 bundle 里的引擎（`MyApp.swift:338-344`）。
     - 宿主里还留着 GURL 与 `--zpack-job` 两条通道（`MyApp.swift:44-51`、`67-72`、`107-125`），注释与 AGENTS.md「GURL 不可达、任务文件才是主通道」的结论互相矛盾；另有一个没人调用的 `extractField`（`MyApp.swift:347-357`）。
     - 宿主的体积写法是 `2.3 MB`（带空格、一位小数，`MyApp.swift:228-237`），与 GUI 的 `2.3MB`（4.5）不一致。
 18. ~~**第一代 Objective-C 版右键菜单仍留在仓库里**（`build.sh`、`src/`），与现行的 Xcode 版并存，文档没有说明它的去留。~~ **已删除（2026-11-24 用户定案）**：`ui/right-click/macos/build.sh` 与 `src/` 下的 `ZpackSync.m`、`host_main.m`、`host-Info.plist`、`appex-Info.plist` 一并移除，仓库里不再有被取代的那一套。现行的是 Xcode 版（`build-xcode.sh` + `xcode/`）与快速操作（`quickaction.sh` + `src/document.wflow.template`），都没动。删除只在仓库里做，本机是 Windows，没法核对 macOS 上已装的那套旧菜单——装过它的话要手工清（6.8）。

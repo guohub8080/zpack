@@ -338,7 +338,7 @@
 
 ### 纯 Go 构建与完整版（cgo 构建）的差别
 
-| 能力 | 纯 Go（`CGO_ENABLED=0`，开发期的 `bin/zpack-dev`） | 完整版（`build_cli` 产线，交付的 `bin/zpack`） |
+| 能力 | 纯 Go（`CGO_ENABLED=0`，开发期的 `bin/zpack-dev`） | 完整版（`build_cli` 产线，交付的 `bin/zpack-cli`） |
 |---|---|---|
 | `convert` / `compress` / `info` | 全部 exit 1：`无法读取输入: 媒体功能需要完整版（build_cli 产线 CGO 构建）；纯 Go 版不含 libav 引擎`（media/stub_nocgo.go:10-18） | 可用 |
 | 旗标与位置参数的校验 | 照常生效。顺序不同：`convert` 先校验旗标再探测；`compress` 先探测再校验旗标，所以纯构建下永远先报「需要完整版」，`--bitrate abc` 的报错被盖住 | 同左 |
@@ -429,7 +429,7 @@ GUI 经 CLI 二进制契约驱动：
 
 ## 8. 验收用例
 
-### `verify/verify-media.sh`（需完整版 `bin/zpack`）
+### `verify/verify-media.sh`（需完整版 `bin/zpack-cli`）
 
 「audio 命令族」一节（445–480 行），夹具 `audio-src.m4a` 由第 36 行生成：5 秒 440 Hz 正弦、aac 256k。注意 `sine` 源缺省是**单声道** 44.1 kHz，所以整个音频门禁里没有一段立体声。
 
@@ -451,17 +451,17 @@ GUI 经 CLI 二进制契约驱动：
 - **立体声保真**：夹具是单声道，`--mono` 的断言在「一律单声道」的情况下也会通过。
 - `--sample-rate` 的两条报错、`--quiet`、compress 的 32k 下限、码率探测不到的源、无损格式输出。
 - `convert` 不带旗标的直拷路径（`action:"copy"`）；视频容器输出 + 旗标（`audio-only`）；`.aac`、`.flac`、`.ogg`、`.wav` 四种输出。
-- 纯 Go 构建下的「需完整版」文案——这个脚本发现 `bin/zpack` 是纯构建会直接拒绝运行（22–27 行）。
+- 纯 Go 构建下的「需完整版」文案——这个脚本发现 `bin/zpack-cli` 是纯构建会直接拒绝运行（22–27 行）。
 
 ### 手动验证
 
 ```bash
 zpack audio --help; echo $?                   # 0
-bin/zpack audio info 歌.mp3                    # 看 bitrate / sample_rate / channels
+bin/zpack-cli audio info 歌.mp3                    # 看 bitrate / sample_rate / channels
 bin/zpack-dev audio info 歌.mp3; echo $?       # 纯构建：需完整版，exit 1
 ```
 
-验证 9 里的声道疑似缺陷：拿一段**立体声** wav，`bin/zpack audio convert 立体声.wav 测试.mp3`，再用 ffprobe 看声道数——是 2 就说明没问题，是 1 就坐实了。
+验证 9 里的声道疑似缺陷：拿一段**立体声** wav，`bin/zpack-cli audio convert 立体声.wav 测试.mp3`，再用 ffprobe 看声道数——是 2 就说明没问题，是 1 就坐实了。
 
 ## 9. 未结项与已知限制
 

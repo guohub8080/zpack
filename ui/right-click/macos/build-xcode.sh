@@ -29,7 +29,10 @@ ls_records() {
 }
 
 [ -z "$IDENTITY" ] && { echo "✗ 无 Apple Development 证书（Xcode → Settings → Accounts）"; exit 1; }
-[ -x "$ROOT/bin/zpack" ] || { echo "→ 先构建 Go 引擎..."; cd "$ROOT" && bash build_cli/mac/build.sh >/dev/null 2>&1; }
+ENGINE="$ROOT/bin/zpack-cli"
+# 2026-11-24 引擎改名 zpack-cli；改名之前铸的旧名产物也认
+[ -x "${ENGINE}" ] || ENGINE="$ROOT/bin/zpack"
+[ -x "${ENGINE}" ] || { echo "→ 先构建 Go 引擎..."; cd "$ROOT" && bash build_cli/mac/build.sh >/dev/null 2>&1; }
 
 echo "── 构建 FinderSync 扩展（Xcode）──"
 cd "$XCODE_DIR"
@@ -47,7 +50,7 @@ echo "── 嵌入 Go 引擎 + 双图标 ──"
 # 双图标各司其职：zpack.icns=app 本体（squircle 底板 80.5% 内缩+透明边距）/ zpack-menu.icns=右键菜单（透明底造型）
 # 陷阱备忘：全新 xcodebuild 产物 appex 无 Contents/Resources 目录（历史靠增量残留）——cp 前必须 mkdir -p
 mkdir -p "$APP/Contents/PlugIns/zpackSync.appex/Contents/Resources"
-cp "$ROOT/bin/zpack" "$APP/Contents/Resources/zpack"
+cp "$ROOT/bin/zpack-cli" "$APP/Contents/Resources/zpack"
 chmod +x "$APP/Contents/Resources/zpack"
 cp "$ROOT/assets/zpack.icns" "$APP/Contents/Resources/"
 cp "$ROOT/assets/zpack-menu.icns" "$APP/Contents/Resources/"
@@ -65,7 +68,7 @@ for path in (f"{app}/Contents/Info.plist",
         plistlib.dump(pl, f)
 print("✓ Info.plist 图标声明")
 PYEOF
-xattr -cr "$APP"  # 清资源叉（bin/zpack 的 Finder 自定义图标会让 codesign 拒签）
+xattr -cr "$APP"  # 清资源叉（bin/zpack-cli 的 Finder 自定义图标会让 codesign 拒签）
 
 echo "── 签名（先内后外；appex 必带 --options runtime——裸签抹掉 Hardened Runtime=macOS 26 拒载）──"
 codesign --force --sign "$IDENTITY" --options runtime --preserve-metadata=entitlements \

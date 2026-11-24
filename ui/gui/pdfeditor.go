@@ -198,8 +198,10 @@ func (ed *pdfEditorState) editorSelectedIndices() []int {
 	return indices
 }
 
-// editorRotate 选中页旋转（顺时针 dir 次，每次 90°）
-func (ed *pdfEditorState) editorRotate(indices []int, clockwise bool) {
+// editorRotate 选中页旋转（顺时针 dir 次，每次 90°）——编辑态改角后显式触发一帧，
+// 否则立即模式框架不知道状态变了，用户看不到旋转效果（2026-11-24 实测反馈）
+func (a *app) editorRotate(indices []int, clockwise bool) {
+	ed := a.ensureEditorState()
 	for _, index := range indices {
 		if index < 0 || index >= len(ed.pages) {
 			continue
@@ -210,10 +212,12 @@ func (ed *pdfEditorState) editorRotate(indices []int, clockwise bool) {
 			ed.pages[index].rotation = (ed.pages[index].rotation + 270) % 360
 		}
 	}
+	a.win.Update(func() {}) // 旋转立即预览（变化页背景变色 + 缩略图转向）
 }
 
-// editorDelete 删除选中页
-func (ed *pdfEditorState) editorDelete(indices []int) {
+// editorDelete 删除选中页（同样显式触发一帧）
+func (a *app) editorDelete(indices []int) {
+	ed := a.ensureEditorState()
 	remove := map[int]bool{}
 	for _, index := range indices {
 		remove[index] = true
@@ -227,6 +231,7 @@ func (ed *pdfEditorState) editorDelete(indices []int) {
 	ed.pages = kept
 	ed.selection = ui.Selection[int]{}
 	ed.selected = -1
+	a.win.Update(func() {})
 }
 
 // editorExport 编译导出（薄壳铁律：落盘必经契约）：
@@ -258,6 +263,10 @@ func (a *app) editorExport() {
 		a.runExportRotations(absoluteOutput, rotationAt, []int{90, 180, 270}, func(finalErr string) {
 			mygo.RunOnMain(func() {
 				if finalErr == "" {
+					for idx := range ed.pages { // 产物已含旋转——编辑态变化标记清零（提醒色归位）
+						ed.pages[idx].rotation = 0
+					}
+					a.win.Update(func() {})
 					a.toast("已导出 " + filepath.Base(absoluteOutput))
 				} else {
 					a.toast("导出旋转失败：" + finalErr)
@@ -327,12 +336,13 @@ func (service *Service) RunToolEnvelope(args []string, callback func(raw []byte,
 	}()
 }
 
-// pagePdfEditor PDF 页面编辑器页（经典排版骨架：lead 行 + 设置行 + 画布卡片）
+// pagePdfEditor PDF 页面编辑器页（画布页不用 pageColumn 的 640px 定宽——铺满窗口；
+// 其余排版骨架与转换族同构：lead 行 + 工具行 + 卡片容器）
 func (a *app) pagePdfEditor(c *ui.Context) {
 	ed := a.ensureEditorState()
 	t := c.Theme()
 	tier := EDITOR_ZOOM_TIERS[ed.zoomIdx%len(EDITOR_ZOOM_TIERS)]
-	column := pageColumn(c)
+	column := ui.Column(c).Padding(contentPadTop, contentPadX, contentPadBtm, contentPadX).Grow(1)
 	column.Children(func() {
 		a.convertLeadRow(c, "PDF", ed.docPath, a.editorBrowse)
 
@@ -340,9 +350,9 @@ func (a *app) pagePdfEditor(c *ui.Context) {
 		// 浏览按钮——空态由 heroPane 接管，本函数只在 docPath 非空时被调用）
 		toolRow := ui.Row(c).Gap(6).AlignItems(ui.Center).Padding(0, 0, 8, 0)
 		toolRow.Children(func() {
-			editorToolButton(c, t, "旋转左 ⟲", func() { ed.editorRotate(ed.editorSelectedIndices(), false) })
-			editorToolButton(c, t, "旋转右 ⟳", func() { ed.editorRotate(ed.editorSelectedIndices(), true) })
-			editorToolButton(c, t, "删除所选", func() { ed.editorDelete(ed.editorSelectedIndices()) })
+			editorToolButton(c, t, "旋转左 ⟲", func() { a.editorRotate(a.pdfEd.editorSelectedIndices(), false) })
+			editorToolButton(c, t, "旋转右 ⟳", func() { a.editorRotate(a.pdfEd.editorSelectedIndices(), true) })
+			editorToolButton(c, t, "删除所选", func() { a.editorDelete(a.pdfEd.editorSelectedIndices()) })
 			// 缩放档：− / 百分比 / +（pdfarranger 同款 zoom）
 			editorToolButton(c, t, "−", func() {
 				if ed.zoomIdx > 0 {
@@ -378,14 +388,19 @@ func (a *app) pagePdfEditor(c *ui.Context) {
 				page := ed.pages[i]
 				thumb, hasThumb := ed.thumbs[page.srcPage]
 				_, isRendering := ed.rendering[page.srcPage]
+				edited := page.rotation != 0 // 有编辑变化：Accent 底色提醒（用户定案「background 有颜色提醒」）
 				// 固定布局（勿用 Grow——溢出即重叠，第一版教训）
-				cell := ui.Column(c).Gap(4).AlignItems(ui.Center)
+				cell := ui.Column(c).Gap(4).Padding(6).AlignItems(ui.Center).
+					Radius(8).Background(t.Surface).Border(1, t.Border)
+				if edited {
+					cell.Background(t.Accent).Border(1, t.Accent)
+				}
 				cell.Children(func() {
 					switch {
 					case hasThumb:
 						ui.Image(c, thumb).Width(tier.thumbW).Height(tier.gridCellH - 34)
 						if page.rotation != 0 {
-							ui.Text(c, fmt.Sprintf("⟳ %d°", page.rotation)).FontSize(11).TextColor(t.TextMuted)
+							ui.Text(c, fmt.Sprintf("⟳ %d°", page.rotation)).FontSize(11).TextColor(t.AccentText)
 						}
 					case isRendering:
 						ui.Text(c, "渲染中…").FontSize(12).TextColor(t.TextMuted)

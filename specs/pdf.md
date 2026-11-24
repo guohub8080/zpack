@@ -552,7 +552,7 @@ zpack pdf info 合同.pdf --all-pages | zpack json get data.pages.2.width_pt
 
 ### 6.6 纸型名查表的两个坑
 
-- **坑一（现网缺陷）**：代码先 `strings.ToUpper`，再拿结果去 pdfcpu 的 `types.PaperSize` 里查，而这个表的键是区分大小写的（pdf/resize_page.go:42-49）。pdfcpu 自己的 CLI 是让用户原样输入 `Letter`、`A4`。于是只有键本身全大写的纸型能命中；`Letter`、`Legal`、`Ledger`、`Tabloid`、`Executive`、`Arch1`–`Arch6`、各英制开本这 53 个全部查不到，落进自定义尺寸的分支报「需纸型」。实测 `--size letter`、`legal`、`ledger`、`tabloid` 都是这个结果，纯 Go 开发构建和完整版 `bin/zpack.exe` 上都复现了。帮助文案、AGENTS.md、skill.md、GUI 下拉里都还写着 `letter`。
+- **坑一（现网缺陷）**：代码先 `strings.ToUpper`，再拿结果去 pdfcpu 的 `types.PaperSize` 里查，而这个表的键是区分大小写的（pdf/resize_page.go:42-49）。pdfcpu 自己的 CLI 是让用户原样输入 `Letter`、`A4`。于是只有键本身全大写的纸型能命中；`Letter`、`Legal`、`Ledger`、`Tabloid`、`Executive`、`Arch1`–`Arch6`、各英制开本这 53 个全部查不到，落进自定义尺寸的分支报「需纸型」。实测 `--size letter`、`legal`、`ledger`、`tabloid` 都是这个结果，纯 Go 开发构建和完整版 `bin/zpack-cli.exe` 上都复现了。帮助文案、AGENTS.md、skill.md、GUI 下拉里都还写着 `letter`。
 - **坑二（修坑一时要一起考虑）**：尾缀是「剥掉最后一个字符再查表」。表里有 7 个键以 `l` 结尾（`Legal`、`GovLegal`、`JuniorLegal`、`Royal`、`SuperRoyal`、`Foolscap`、`DoubleFoolscap`），如果只把查表改成不分大小写，`legal` 又会被剥成 `lega` 加「强制横向」而查不到。能用的 97 个键里没有以 `L` / `P` 结尾的，所以这个歧义现在没有表现出来。
 
 ### 6.7 旋转：只动元数据

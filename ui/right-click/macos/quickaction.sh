@@ -6,8 +6,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 HERE="$ROOT/ui/right-click/macos"
 SERVICES="$HOME/Library/Services"
-ZPACK_EMBEDDED="/Applications/zpack Finder Menu.app/Contents/Resources/zpack"
-ZPACK_BIN="${ZPACK_BIN:-$([ -x "$ZPACK_EMBEDDED" ] && echo "$ZPACK_EMBEDDED" || echo "$ROOT/bin/zpack")}"
+# 2026-11-24 引擎改名 zpack-cli；改名之前装的宿主里还是旧名 zpack，两个都认
+HOST_RESOURCES="/Applications/zpack Finder Menu.app/Contents/Resources"
+ZPACK_EMBEDDED="$HOST_RESOURCES/zpack-cli"
+[ -x "${ZPACK_EMBEDDED}" ] || ZPACK_EMBEDDED="$HOST_RESOURCES/zpack"
+ZPACK_BIN="${ZPACK_BIN:-$([ -x "$ZPACK_EMBEDDED" ] && echo "$ZPACK_EMBEDDED" || echo "$ROOT/bin/zpack-cli")}"
 [ -x "$ZPACK_BIN" ] || { echo "✗ 缺 zpack 二进制"; exit 1; }
 
 # 服务动作脚本（Run Shell Script 以 argv 收路径；heredoc 仅做 bash 层转义——\$ 运行期展开）
